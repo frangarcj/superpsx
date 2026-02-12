@@ -1,0 +1,45 @@
+ENTRY(__start)
+SECTIONS {
+	. = 0x00400000;
+	.text : {
+		_ftext = .;
+		*(.text)
+		*(.text.*)
+		*(.gnu.linkonce.t*)
+		_etext = .;
+	}
+	.reginfo : { *(.reginfo) }
+	.data : {
+		_fdata = .;
+		*(.data)
+		*(.data.*)
+		*(.gnu.linkonce.d*)
+		SORT(CONSTRUCTORS)
+	}
+	.rodata : {
+		*(.rodata)
+		*(.rodata.*)
+		*(.gnu.linkonce.r*)
+	}
+	.sdata : {
+		_fsdata = .;
+		*(.sdata)
+		*(.sdata.*)
+		*(.gnu.linkonce.s*)
+	}
+	.sbss : {
+		_fsbss = .;
+		*(.sbss)
+		*(.sbss.*)
+		*(.gnu.linkonce.sb*)
+		*(.scommon)
+	}
+	.bss : {
+		_fbss = .;
+		*(.bss)
+		*(.bss.*)
+		*(.gnu.linkonce.b*)
+		*(COMMON)
+	}
+	_end = .;
+}
