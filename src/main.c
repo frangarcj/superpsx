@@ -33,7 +33,9 @@ void Init_SuperPSX(void) {
     fflush(stdout);
 
     Init_Graphics();
+    Init_Graphics();
     Init_Memory();
+    Init_Interrupts();
 
     if (Load_BIOS("host:SCPH1001.BIN") < 0) {
         printf("ERROR: Failed to load BIOS!\n");

@@ -664,19 +664,19 @@ static void emit_instruction(u32 opcode, u32 psx_pc) {
         } else if (rs == 0x10 && func == 0x10) {
             /* RFE - Return from exception */
             /* Shift Status register mode bits right by 2 */
-            EMIT_LW(REG_T0, CPU_COP0(COP0_SR), REG_S0);
+            EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
             emit(MK_I(0x0C, REG_T0, REG_T1, 0x3C)); /* andi $t1, $t0, 0x3C */
             emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x02)); /* srl $t1, $t1, 2 */
             emit(MK_I(0x0C, REG_T0, REG_T0, 0xFFFFFFC0 & 0xFFFF)); /* andi $t0, $t0, 0xFFC0 ... */
             /* Actually simpler: */
-            EMIT_LW(REG_T0, CPU_COP0(COP0_SR), REG_S0);
+            EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
             /* sr = (sr & 0xFFFFFFF0) | ((sr >> 2) & 0x0F) */
             EMIT_MOVE(REG_T1, REG_T0);
             emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x02)); /* srl $t1, 2 */
             emit(MK_I(0x0C, REG_T1, REG_T1, 0x0F));     /* andi $t1, 0x0F */
             emit(MK_I(0x0C, REG_T0, REG_T0, (u16)0xFFF0)); /* andi $t0, 0xFFF0 */
             EMIT_OR(REG_T0, REG_T0, REG_T1);
-            EMIT_SW(REG_T0, CPU_COP0(COP0_SR), REG_S0);
+            EMIT_SW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
         }
         break;
 
@@ -851,8 +851,8 @@ void Run_CPU(void) {
 
     /* ----- Real execution ----- */
     cpu.pc = 0xBFC00000;
-    cpu.cop0[COP0_SR] = 0x10900000; /* Initial status: BEV=1, ISC=0 */
-    cpu.cop0[COP0_PRID] = 0x00000002; /* R3000A */
+    cpu.cop0[PSX_COP0_SR] = 0x10900000; /* Initial status: BEV=1, ISC=0 */
+    cpu.cop0[PSX_COP0_PRID] = 0x00000002; /* R3000A */
 
     u32 iterations = 0;
     u32 max_iterations = 20000000; /* Increased limit */
@@ -873,6 +873,16 @@ void Run_CPU(void) {
 
         /* Execute the block */
         ((block_func_t)block)(&cpu, psx_ram, psx_bios);
+
+        /* Check for interrupts */
+        if (CheckInterrupts()) {
+            /* If interrupts are enabled in Status register (IEc=1, IM=something?)
+             * For now, just assume widespread enable bit (IEc) is relevant
+             */
+             if (cpu.cop0[PSX_COP0_SR] & 1) {
+                 PSX_Exception(0); /* Interrupt */
+             }
+        }
 
         iterations++;
 
