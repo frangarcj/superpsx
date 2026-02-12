@@ -20,11 +20,11 @@ typedef struct {
 #define CPU_COP0(n)   (32 * 4 + 12 + (n) * 4)
 
 /* COP0 register indices */
-#define COP0_SR       12
-#define COP0_CAUSE    13
-#define COP0_EPC      14
-#define COP0_PRID     15
-#define COP0_BADVADDR 8
+#define PSX_COP0_SR       12
+#define PSX_COP0_CAUSE    13
+#define PSX_COP0_EPC      14
+#define PSX_COP0_PRID     15
+#define PSX_COP0_BADVADDR 8
 
 extern R3000CPU cpu;
 
@@ -46,7 +46,13 @@ void WriteByte(u32 addr, u8 data);
 
 /*=== Hardware ===*/
 u32  ReadHardware(u32 addr);
+/*=== Hardware ===*/
+u32  ReadHardware(u32 addr);
 void WriteHardware(u32 addr, u32 data);
+void SignalInterrupt(u32 irq);
+int  CheckInterrupts(void);
+void Init_Interrupts(void);
+
 
 /*=== Dynarec ===*/
 void Init_Dynarec(void);

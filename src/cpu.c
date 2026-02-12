@@ -8,15 +8,15 @@ R3000CPU cpu;
 /* ---- PSX Exception Handling ---- */
 void PSX_Exception(u32 cause_code) {
     /* Save EPC and set Cause */
-    cpu.cop0[COP0_EPC] = cpu.pc;
-    cpu.cop0[COP0_CAUSE] = (cpu.cop0[COP0_CAUSE] & ~0x7C) | ((cause_code & 0x1F) << 2);
+    cpu.cop0[PSX_COP0_EPC] = cpu.pc;
+    cpu.cop0[PSX_COP0_CAUSE] = (cpu.cop0[PSX_COP0_CAUSE] & ~0x7C) | ((cause_code & 0x1F) << 2);
 
     /* Push exception mode: shift Status bits left by 2 */
-    u32 sr = cpu.cop0[COP0_SR];
+    u32 sr = cpu.cop0[PSX_COP0_SR];
     u32 mode_bits = sr & 0x3F;
     sr = (sr & ~0x3F) | ((mode_bits << 2) & 0x3F);
     sr |= 0x02; /* Set EXL bit (KUc=0, IEc=0) */
-    cpu.cop0[COP0_SR] = sr;
+    cpu.cop0[PSX_COP0_SR] = sr;
 
     /* Jump to exception vector */
     if (sr & 0x00400000) {

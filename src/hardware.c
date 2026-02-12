@@ -1,5 +1,7 @@
 #include "superpsx.h"
+#include "superpsx.h"
 #include <stdio.h>
+#include <kernel.h>
 
 /*
  * PSX Hardware Register Emulation
@@ -12,8 +14,30 @@ static u32 mem_ctrl[9];    /* 0x1F801000-0x1F801020 */
 static u32 ram_size = 0x00000B88; /* 0x1F801060 */
 
 /* Interrupt Controller */
-static u32 i_stat = 0;
+/* Interrupt Controller */
+static volatile u32 i_stat = 0;
 static u32 i_mask = 0;
+
+static int VBlankHandler(int cause) {
+    SignalInterrupt(0); /* PSX IRQ0 = VBLANK */
+    return -1; /* Call next handler */
+}
+
+void Init_Interrupts(void) {
+    int vblank_irq = INTC_VBLANK_S; 
+    /* Use Start or End VBlank? S is start. */
+    AddIntcHandler(vblank_irq, VBlankHandler, 0);
+    EnableIntc(vblank_irq);
+    printf("Native PS2 VBlank Interrupt enabled.\n");
+}
+
+void SignalInterrupt(u32 irq) {
+    i_stat |= (1 << irq);
+}
+
+int CheckInterrupts(void) {
+    return (i_stat & i_mask);
+}
 
 /* DMA Controller */
 static u32 dma_dpcr = 0x07654321; /* DMA priority control */
@@ -34,7 +58,20 @@ typedef struct {
 static PsxTimer timers[3];
 
 /* GPU */
-static u32 gpu_stat = 0x14802000; /* Ready, DMA off, interlace, etc. */
+/*
+ * GPUSTAT:
+ * Bit 31: Generic interlace bit (toggles)
+ * Bit 28: Ready to receive DMA (1=Ready)
+ * Bit 27: Ready to send Data (1=Ready)
+ * Bit 26: Ready to receive Cmd (1=Ready)
+ * Bit 25: DMA / Data Request (1=Ready)
+ * Bit 24: Interrupt Request (0=Ready)
+ * Bit 23: Display Enable (0=My guess, 0=On?) - No wait, 1=Off
+ * Bit 19: Vertical Resolution (0=240, 1=480)
+ * Bit 17-18: Horizontal Resolution
+ * Bit 29-30: DMA Direction
+ */
+static u32 gpu_stat = 0x14802000;
 static u32 gpu_read = 0;
 static u32 gpu_cmd_count = 0;
 
@@ -96,8 +133,8 @@ u32 ReadHardware(u32 addr) {
     /* GPU */
     if (phys == 0x1F801810) return gpu_read;
     if (phys == 0x1F801814) {
-        /* GPUSTAT: toggle bits to satisfy polling loops */
-        gpu_stat ^= 0x80000000; /* Toggle bit31 (LCF) for interlace */
+        /* GPUSTAT: toggle bit 31 (interlace signal) on read */
+        gpu_stat ^= 0x80000000;
         return gpu_stat;
     }
 

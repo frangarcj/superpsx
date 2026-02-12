@@ -133,7 +133,7 @@ u32 ReadWord(u32 addr) {
 /* ---- Write functions ---- */
 void WriteByte(u32 addr, u8 data) {
     /* Cache Isolation: If SR bit 16 is set, ignore writes to KUSEG/KSEG0 */
-    if (cpu.cop0[COP0_SR] & 0x10000) {
+    if (cpu.cop0[PSX_COP0_SR] & 0x10000) {
         if ((addr & 0xE0000000) != 0xA0000000) {
             return;
         }
@@ -157,7 +157,7 @@ void WriteByte(u32 addr, u8 data) {
 
 void WriteHalf(u32 addr, u16 data) {
     /* Cache Isolation */
-    if (cpu.cop0[COP0_SR] & 0x10000) {
+    if (cpu.cop0[PSX_COP0_SR] & 0x10000) {
         if ((addr & 0xE0000000) != 0xA0000000) {
             return;
         }
@@ -181,7 +181,7 @@ void WriteHalf(u32 addr, u16 data) {
 
 void WriteWord(u32 addr, u32 data) {
     /* Cache Isolation */
-    if (cpu.cop0[COP0_SR] & 0x10000) {
+    if (cpu.cop0[PSX_COP0_SR] & 0x10000) {
         if ((addr & 0xE0000000) != 0xA0000000) {
             return;
         }
