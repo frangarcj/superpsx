@@ -173,6 +173,16 @@ static u32 *compile_block(u32 psx_pc) {
     if (blocks_compiled < 20) {
         printf("DYNAREC: Compiling block at PC=0x%08X\n", (unsigned)psx_pc);
     }
+    
+    // Debug: Inspect hot loop
+    if (psx_pc == 0x800509AC) {
+        printf("DYNAREC: Hot Loop dump at %08X:\n", (unsigned)psx_pc);
+        printf("  -4: %08X\n", psx_code[-1]);
+        printf("   0: %08X (Hit)\n", psx_code[0]);
+        printf("  +4: %08X\n", psx_code[1]);
+        printf("  +8: %08X\n", psx_code[2]);
+        printf(" +12: %08X\n", psx_code[3]);
+    }
 
     emit_block_prologue();
 
@@ -680,9 +690,55 @@ static void emit_instruction(u32 opcode, u32 psx_pc) {
         }
         break;
 
-    /* COP2 (GTE) - stub for now */
+    /* COP2 (GTE) */
     case 0x12:
-        /* Just skip GTE instructions for BIOS init */
+        if (total_instructions < 20000000) { // Log COP2 instructions
+             printf("DYNAREC: Compiling COP2 Op %08X at %08X\n", opcode, (unsigned)psx_pc);
+        }
+        if ((opcode & 0x02000000) == 0) {
+            /* Transfer Instructions (MFC2, CFC2, MTC2, CTC2) */
+            // rs field tells us the op: 00=MFC2, 02=CFC2, 04=MTC2, 06=CTC2
+            // wait, RS is bits 21-25. The instruction encoding is:
+            // COP2(010010) 0(1) rt(5) rd(5) ...
+            // Bit 25 is 0.
+            // RS is bits 21-25.
+            // 00000 -> MFC2
+            // 00010 -> CFC2
+            // 00100 -> MTC2
+            // 00110 -> CTC2
+            // These correspond to rs=0, rs=2, rs=4, rs=6.
+            
+            if (rs == 0x00) { /* MFC2 rt, rd */
+                // printf("MFC2 %d, %d\n", rt, rd);
+                EMIT_LW(REG_T0, CPU_CP2_DATA(rd), REG_S0);
+                emit_store_psx_reg(rt, REG_T0);
+            } else if (rs == 0x02) { /* CFC2 rt, rd */
+                // printf("CFC2 %d, %d\n", rt, rd);
+                EMIT_LW(REG_T0, CPU_CP2_CTRL(rd), REG_S0);
+                emit_store_psx_reg(rt, REG_T0);
+            } else if (rs == 0x04) { /* MTC2 rt, rd */
+                if (total_instructions < 1000) {
+                    /* Emit log call? No, hard to emit printf call here easily without save/restore. 
+                       Just rely on Compile log. */
+                }
+                emit_load_psx_reg(REG_T0, rt);
+                EMIT_SW(REG_T0, CPU_CP2_DATA(rd), REG_S0);
+            } else if (rs == 0x06) { /* CTC2 rt, rd */
+                emit_load_psx_reg(REG_T0, rt);
+                EMIT_SW(REG_T0, CPU_CP2_CTRL(rd), REG_S0);
+            } else {
+                 if (total_instructions < 100) printf("DYNAREC: Unknown COP2 transfer rs=0x%X\n", rs);
+            }
+        } else {
+            /* GTE Command (Bit 25 = 1) */
+            // Call C helper: GTE_Execute(opcode, &cpu)
+            // $a0 = opcode
+            // $a1 = &cpu ($s0)
+            emit_load_imm32(REG_A0, opcode);
+            EMIT_MOVE(REG_A1, REG_S0);
+            EMIT_JAL_ABS((u32)GTE_Execute);
+            EMIT_NOP();
+        }
         break;
 
     /* Load instructions */
@@ -747,9 +803,40 @@ static void emit_instruction(u32 opcode, u32 psx_pc) {
         emit_memory_write(4, rt, rs, imm);
         break;
 
+    /* LWC2 - Load Word to Cop2 */
+    case 0x32:
+        {
+            // LWC2 rt, offset(base)
+            // rt is destination in CP2 Data Registers
+            emit_load_psx_reg(REG_A0, rs);
+            EMIT_ADDIU(REG_A0, REG_A0, imm);
+            EMIT_JAL_ABS((u32)ReadWord);
+            EMIT_NOP();
+            // Store result ($v0) to CP2_DATA[rt]
+            EMIT_SW(REG_V0, CPU_CP2_DATA(rt), REG_S0);
+        }
+        break;
+
+    /* SWC2 - Store Word from Cop2 */
+    case 0x3A:
+        {
+            // SWC2 rt, offset(base)
+            // rt is source from CP2 Data Registers
+            emit_load_psx_reg(REG_A0, rs);
+            EMIT_ADDIU(REG_A0, REG_A0, imm);
+            EMIT_LW(REG_A1, CPU_CP2_DATA(rt), REG_S0);
+            EMIT_JAL_ABS((u32)WriteWord);
+            EMIT_NOP();
+        }
+        break;
+
     default:
-        if (total_instructions < 50)
+        // Always log unknown opcodes to catch missing instructions
+        static int unknown_log_count = 0;
+        if (unknown_log_count < 200) {
             printf("DYNAREC: Unknown opcode 0x%02X at PC=0x%08X\n", op, (unsigned)psx_pc);
+            unknown_log_count++;
+        }
         break;
     }
 }
@@ -872,7 +959,12 @@ void Run_CPU(void) {
         }
 
         /* Execute the block */
+        u32 inst_count_before = total_instructions;
         ((block_func_t)block)(&cpu, psx_ram, psx_bios);
+        u32 cycles = total_instructions - inst_count_before;
+        
+        /* Update Timers (approximate cycles) */
+        UpdateTimers(cycles);
 
         /* Check for interrupts */
         if (CheckInterrupts()) {
