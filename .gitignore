@@ -1,1 +1,19 @@
+# Build artifacts
+*.o
+*.elf
+*.irx
+*.map
+*.bin
+*.a
+
+# Logs and debug files
 run.log
+*.log
+
+# System files
+.DS_Store
+Thumbs.db
+
+# VS Code / IDE settings (optional but common)
+.vscode/
+.history/
