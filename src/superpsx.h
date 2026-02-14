@@ -4,67 +4,83 @@
 #include <tamtypes.h>
 
 /*=== CPU State ===*/
-typedef struct {
-    u32 regs[32];       /* 0x00: GPR */
-    u32 pc;             /* 0x80: Program Counter */
-    u32 hi;             /* 0x84 */
-    u32 lo;             /* 0x88 */
-    u32 cop0[32];       /* 0x8C: COP0 registers */
+typedef struct
+{
+    u32 regs[32];     /* 0x00: GPR */
+    u32 pc;           /* 0x80: Program Counter */
+    u32 hi;           /* 0x84 */
+    u32 lo;           /* 0x88 */
+    u32 cop0[32];     /* 0x8C: COP0 registers */
+    u32 cp2_data[32]; /* 0x10C: GTE Data Registers (V0, V1, V2, etc.) */
+    u32 cp2_ctrl[32]; /* 0x18C: GTE Control Registers (Matrices, etc.) */
 } R3000CPU;
 
 /* Struct offsets for asm code generation */
-#define CPU_REG(n)    ((n) * 4)
-#define CPU_PC        (32 * 4)
-#define CPU_HI        (32 * 4 + 4)
-#define CPU_LO        (32 * 4 + 8)
-#define CPU_COP0(n)   (32 * 4 + 12 + (n) * 4)
+#define CPU_REG(n) ((n) * 4)
+#define CPU_PC (32 * 4)
+#define CPU_HI (32 * 4 + 4)
+#define CPU_LO (32 * 4 + 8)
+#define CPU_COP0(n) (32 * 4 + 12 + (n) * 4)
+#define CPU_CP2_DATA(n) (32 * 4 + 12 + 32 * 4 + (n) * 4)
+#define CPU_CP2_CTRL(n) (32 * 4 + 12 + 32 * 4 + 32 * 4 + (n) * 4)
 
 /* COP0 register indices */
-#define PSX_COP0_SR       12
-#define PSX_COP0_CAUSE    13
-#define PSX_COP0_EPC      14
-#define PSX_COP0_PRID     15
+#define PSX_COP0_SR 12
+#define PSX_COP0_CAUSE 13
+#define PSX_COP0_EPC 14
+#define PSX_COP0_PRID 15
 #define PSX_COP0_BADVADDR 8
 
 extern R3000CPU cpu;
 
 /*=== Memory ===*/
-#define PSX_RAM_SIZE   0x200000   /* 2MB */
-#define PSX_BIOS_SIZE  0x80000    /* 512KB */
+#define PSX_RAM_SIZE 0x200000 /* 2MB */
+#define PSX_BIOS_SIZE 0x80000 /* 512KB */
 
 extern u8 *psx_ram;
 extern u8 *psx_bios;
 
 void Init_Memory(void);
-int  Load_BIOS(const char *filename);
-u32  ReadWord(u32 addr);
-u16  ReadHalf(u32 addr);
-u8   ReadByte(u32 addr);
+int Load_BIOS(const char *filename);
+u32 ReadWord(u32 addr);
+u16 ReadHalf(u32 addr);
+u8 ReadByte(u32 addr);
 void WriteWord(u32 addr, u32 data);
 void WriteHalf(u32 addr, u16 data);
 void WriteByte(u32 addr, u8 data);
 
 /*=== Hardware ===*/
-u32  ReadHardware(u32 addr);
-/*=== Hardware ===*/
-u32  ReadHardware(u32 addr);
+u32 ReadHardware(u32 addr);
 void WriteHardware(u32 addr, u32 data);
 void SignalInterrupt(u32 irq);
-int  CheckInterrupts(void);
+int CheckInterrupts(void);
 void Init_Interrupts(void);
-
+void UpdateTimers(u32 cycles);
 
 /*=== Dynarec ===*/
 void Init_Dynarec(void);
 void Run_CPU(void);
+void GTE_Execute(u32 opcode, R3000CPU *cpu);
 
 /*=== CPU / COP0 ===*/
 void Init_CPU(void);
 void PSX_Exception(u32 cause_code);
 void Handle_Syscall(void);
 
+/*=== CD-ROM ===*/
+void CDROM_Init(void);
+u32 CDROM_Read(u32 addr);
+void CDROM_Write(u32 addr, u32 data);
+
 /*=== Graphics ===*/
 void Init_Graphics(void);
+void GPU_WriteGP0(u32 data);
+void GPU_WriteGP1(u32 data);
+u32 GPU_Read(void);
+u32 GPU_ReadStatus(void);
+void GPU_VBlank(void);
+void GPU_Flush(void);
+void GPU_DMA2(u32 madr, u32 bcr, u32 chcr);
 
 /*=== Main ===*/
 void Init_SuperPSX(void);

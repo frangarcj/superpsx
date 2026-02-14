@@ -21,7 +21,7 @@
 #include "superpsx.h"
 
 /* ---- Code buffer ---- */
-#define CODE_BUFFER_SIZE  (2 * 1024 * 1024)
+#define CODE_BUFFER_SIZE (4 * 1024 * 1024)
 static u32 *code_buffer;
 static u32 *code_ptr;
 
@@ -30,58 +30,61 @@ static u32 *code_ptr;
 #define BLOCK_CACHE_SIZE (1 << BLOCK_CACHE_BITS)
 #define BLOCK_CACHE_MASK (BLOCK_CACHE_SIZE - 1)
 
-typedef struct {
+typedef struct
+{
     u32 psx_pc;
     u32 *native;
+    u32 instr_count; /* Number of PSX instructions in this block */
 } BlockEntry;
 
 static BlockEntry *block_cache;
 
 /* ---- Instruction encoding helpers ---- */
-#define OP(x)     (((x) >> 26) & 0x3F)
-#define RS(x)     (((x) >> 21) & 0x1F)
-#define RT(x)     (((x) >> 16) & 0x1F)
-#define RD(x)     (((x) >> 11) & 0x1F)
-#define SA(x)     (((x) >> 6)  & 0x1F)
-#define FUNC(x)   ((x) & 0x3F)
-#define IMM16(x)  ((x) & 0xFFFF)
+#define OP(x) (((x) >> 26) & 0x3F)
+#define RS(x) (((x) >> 21) & 0x1F)
+#define RT(x) (((x) >> 16) & 0x1F)
+#define RD(x) (((x) >> 11) & 0x1F)
+#define SA(x) (((x) >> 6) & 0x1F)
+#define FUNC(x) ((x) & 0x3F)
+#define IMM16(x) ((x) & 0xFFFF)
 #define SIMM16(x) ((s16)((x) & 0xFFFF))
 #define TARGET(x) ((x) & 0x03FFFFFF)
 
 /* Emit a 32-bit instruction to code buffer */
-static inline void emit(u32 inst) {
+static inline void emit(u32 inst)
+{
     *code_ptr++ = inst;
 }
 
 /* MIPS instruction builders */
-#define MK_R(op,rs,rt,rd,sa,fn) \
-    ((((u32)(op))<<26)|(((u32)(rs))<<21)|(((u32)(rt))<<16)|(((u32)(rd))<<11)|(((u32)(sa))<<6)|((u32)(fn)))
-#define MK_I(op,rs,rt,imm) \
-    ((((u32)(op))<<26)|(((u32)(rs))<<21)|(((u32)(rt))<<16)|((u32)((imm)&0xFFFF)))
-#define MK_J(op,tgt) \
-    ((((u32)(op))<<26)|((u32)((tgt)&0x03FFFFFF)))
+#define MK_R(op, rs, rt, rd, sa, fn) \
+    ((((u32)(op)) << 26) | (((u32)(rs)) << 21) | (((u32)(rt)) << 16) | (((u32)(rd)) << 11) | (((u32)(sa)) << 6) | ((u32)(fn)))
+#define MK_I(op, rs, rt, imm) \
+    ((((u32)(op)) << 26) | (((u32)(rs)) << 21) | (((u32)(rt)) << 16) | ((u32)((imm) & 0xFFFF)))
+#define MK_J(op, tgt) \
+    ((((u32)(op)) << 26) | ((u32)((tgt) & 0x03FFFFFF)))
 
 /* Common emitters using $t0-$t3 as temps */
-#define EMIT_NOP()              emit(0)
-#define EMIT_LW(rt,off,base)    emit(MK_I(0x23,(base),(rt),(off)))
-#define EMIT_SW(rt,off,base)    emit(MK_I(0x2B,(base),(rt),(off)))
-#define EMIT_LH(rt,off,base)    emit(MK_I(0x21,(base),(rt),(off)))
-#define EMIT_LHU(rt,off,base)   emit(MK_I(0x25,(base),(rt),(off)))
-#define EMIT_LB(rt,off,base)    emit(MK_I(0x20,(base),(rt),(off)))
-#define EMIT_LBU(rt,off,base)   emit(MK_I(0x24,(base),(rt),(off)))
-#define EMIT_SH(rt,off,base)    emit(MK_I(0x29,(base),(rt),(off)))
-#define EMIT_SB(rt,off,base)    emit(MK_I(0x28,(base),(rt),(off)))
-#define EMIT_ADDIU(rt,rs,imm)   emit(MK_I(0x09,(rs),(rt),(imm)))
-#define EMIT_ADDU(rd,rs,rt)     emit(MK_R(0,(rs),(rt),(rd),0,0x21))
-#define EMIT_OR(rd,rs,rt)       emit(MK_R(0,(rs),(rt),(rd),0,0x25))
-#define EMIT_LUI(rt,imm)        emit(MK_I(0x0F,0,(rt),(imm)))
-#define EMIT_ORI(rt,rs,imm)     emit(MK_I(0x0D,(rs),(rt),(imm)))
-#define EMIT_MOVE(rd,rs)        EMIT_ADDU(rd,rs,0)
-#define EMIT_JR(rs)             emit(MK_R(0,(rs),0,0,0,0x08))
-#define EMIT_JAL_ABS(addr)      emit(MK_J(3, (u32)(addr) >> 2))
-#define EMIT_J_ABS(addr)        emit(MK_J(2, (u32)(addr) >> 2))
-#define EMIT_BEQ(rs,rt,off)     emit(MK_I(4,(rs),(rt),(off)))
-#define EMIT_BNE(rs,rt,off)     emit(MK_I(5,(rs),(rt),(off)))
+#define EMIT_NOP() emit(0)
+#define EMIT_LW(rt, off, base) emit(MK_I(0x23, (base), (rt), (off)))
+#define EMIT_SW(rt, off, base) emit(MK_I(0x2B, (base), (rt), (off)))
+#define EMIT_LH(rt, off, base) emit(MK_I(0x21, (base), (rt), (off)))
+#define EMIT_LHU(rt, off, base) emit(MK_I(0x25, (base), (rt), (off)))
+#define EMIT_LB(rt, off, base) emit(MK_I(0x20, (base), (rt), (off)))
+#define EMIT_LBU(rt, off, base) emit(MK_I(0x24, (base), (rt), (off)))
+#define EMIT_SH(rt, off, base) emit(MK_I(0x29, (base), (rt), (off)))
+#define EMIT_SB(rt, off, base) emit(MK_I(0x28, (base), (rt), (off)))
+#define EMIT_ADDIU(rt, rs, imm) emit(MK_I(0x09, (rs), (rt), (imm)))
+#define EMIT_ADDU(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x21))
+#define EMIT_OR(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x25))
+#define EMIT_LUI(rt, imm) emit(MK_I(0x0F, 0, (rt), (imm)))
+#define EMIT_ORI(rt, rs, imm) emit(MK_I(0x0D, (rs), (rt), (imm)))
+#define EMIT_MOVE(rd, rs) EMIT_ADDU(rd, rs, 0)
+#define EMIT_JR(rs) emit(MK_R(0, (rs), 0, 0, 0, 0x08))
+#define EMIT_JAL_ABS(addr) emit(MK_J(3, (u32)(addr) >> 2))
+#define EMIT_J_ABS(addr) emit(MK_J(2, (u32)(addr) >> 2))
+#define EMIT_BEQ(rs, rt, off) emit(MK_I(4, (rs), (rt), (off)))
+#define EMIT_BNE(rs, rt, off) emit(MK_I(5, (rs), (rt), (off)))
 
 /* Hardware register IDs used in generated code:
  *   $s0 (16) = cpu struct ptr
@@ -98,47 +101,62 @@ static inline void emit(u32 inst) {
 #define REG_S1 17
 #define REG_S2 18
 #define REG_S3 19
-#define REG_T0  8
-#define REG_T1  9
+#define REG_T0 8
+#define REG_T1 9
 #define REG_T2 10
-#define REG_A0  4
-#define REG_A1  5
-#define REG_V0  2
+#define REG_A0 4
+#define REG_A1 5
+#define REG_V0 2
 #define REG_RA 31
 #define REG_SP 29
 #define REG_ZERO 0
 
 /* Load PSX register 'r' from cpu struct into hw reg 'hwreg' */
-static void emit_load_psx_reg(int hwreg, int r) {
-    if (r == 0) {
+static void emit_load_psx_reg(int hwreg, int r)
+{
+    if (r == 0)
+    {
         EMIT_MOVE(hwreg, REG_ZERO); /* $0 is always 0 */
-    } else {
+    }
+    else
+    {
         EMIT_LW(hwreg, CPU_REG(r), REG_S0);
     }
 }
 
 /* Store hw reg 'hwreg' to PSX register 'r' in cpu struct */
-static void emit_store_psx_reg(int r, int hwreg) {
-    if (r == 0) return; /* never write to $0 */
+static void emit_store_psx_reg(int r, int hwreg)
+{
+    if (r == 0)
+        return; /* never write to $0 */
     EMIT_SW(hwreg, CPU_REG(r), REG_S0);
 }
 
 /* Load 32-bit immediate into hw register */
-static void emit_load_imm32(int hwreg, u32 val) {
-    if (val == 0) {
+static void emit_load_imm32(int hwreg, u32 val)
+{
+    if (val == 0)
+    {
         EMIT_MOVE(hwreg, REG_ZERO);
-    } else if ((val & 0xFFFF0000) == 0) {
+    }
+    else if ((val & 0xFFFF0000) == 0)
+    {
         EMIT_ORI(hwreg, REG_ZERO, val & 0xFFFF);
-    } else if ((val & 0xFFFF) == 0) {
+    }
+    else if ((val & 0xFFFF) == 0)
+    {
         EMIT_LUI(hwreg, val >> 16);
-    } else {
+    }
+    else
+    {
         EMIT_LUI(hwreg, val >> 16);
         EMIT_ORI(hwreg, hwreg, val & 0xFFFF);
     }
 }
 
 /* ---- Get pointer to PSX code in EE memory ---- */
-static u32 *get_psx_code_ptr(u32 psx_pc) {
+static u32 *get_psx_code_ptr(u32 psx_pc)
+{
     u32 phys = psx_pc & 0x1FFFFFFF;
     if (phys < PSX_RAM_SIZE)
         return (u32 *)(psx_ram + phys);
@@ -160,22 +178,37 @@ static u32 blocks_compiled = 0;
 static u32 total_instructions = 0;
 
 /* ---- Compile a basic block ---- */
-static u32 *compile_block(u32 psx_pc) {
+static u32 *compile_block(u32 psx_pc)
+{
     u32 *psx_code = get_psx_code_ptr(psx_pc);
-    if (!psx_code) {
+    if (!psx_code)
+    {
         printf("DYNAREC: Cannot fetch code at PC=0x%08X\n", (unsigned)psx_pc);
         return NULL;
+    }
+
+    /* Check for code buffer overflow: reset if < 64KB remaining */
+    u32 used = (u32)((u8 *)code_ptr - (u8 *)code_buffer);
+    if (used > CODE_BUFFER_SIZE - 65536)
+    {
+        printf("DYNAREC: Code buffer nearly full (%u/%u), flushing cache\n",
+               (unsigned)used, CODE_BUFFER_SIZE);
+        code_ptr = code_buffer;
+        memset(block_cache, 0, BLOCK_CACHE_SIZE * sizeof(BlockEntry));
+        blocks_compiled = 0;
     }
 
     u32 *block_start = code_ptr;
     u32 cur_pc = psx_pc;
 
-    if (blocks_compiled < 20) {
+    if (blocks_compiled < 20)
+    {
         printf("DYNAREC: Compiling block at PC=0x%08X\n", (unsigned)psx_pc);
     }
-    
+
     // Debug: Inspect hot loop
-    if (psx_pc == 0x800509AC) {
+    if (psx_pc == 0x800509AC)
+    {
         printf("DYNAREC: Hot Loop dump at %08X:\n", (unsigned)psx_pc);
         printf("  -4: %08X\n", psx_code[-1]);
         printf("   0: %08X (Hit)\n", psx_code[0]);
@@ -192,20 +225,25 @@ static u32 *compile_block(u32 psx_pc) {
     int branch_type = 0; /* 0=none, 1=unconditional, 2=conditional, 3=register */
     u32 branch_opcode = 0;
 
-    while (!block_ended) {
+    while (!block_ended)
+    {
         u32 opcode = *psx_code++;
 
-        if (in_delay_slot) {
+        if (in_delay_slot)
+        {
             /* Emit the delay slot instruction */
             emit_instruction(opcode, cur_pc);
             cur_pc += 4;
             total_instructions++;
 
             /* Now emit the branch resolution */
-            if (branch_type == 1) {
+            if (branch_type == 1)
+            {
                 /* Unconditional: J, JAL */
                 emit_branch_epilogue(branch_target);
-            } else if (branch_type == 4) {
+            }
+            else if (branch_type == 4)
+            {
                 /* Deferred Conditional Branch (calculated in S3) */
                 /* Emit BNE S3, ZERO, offset */
                 u32 *bp = code_ptr;
@@ -215,7 +253,7 @@ static u32 *compile_block(u32 psx_pc) {
 
                 /* Standard branch patching logic */
                 branch_opcode = (u32)bp;
-                
+
                 /* Not taken: fall through PC */
                 emit_load_imm32(REG_T0, cur_pc);
                 EMIT_SW(REG_T0, CPU_PC, REG_S0);
@@ -227,7 +265,9 @@ static u32 *compile_block(u32 psx_pc) {
                 emit_load_imm32(REG_T0, branch_target);
                 EMIT_SW(REG_T0, CPU_PC, REG_S0);
                 emit_block_epilogue();
-            } else if (branch_type == 3) {
+            }
+            else if (branch_type == 3)
+            {
                 /* Register jump (JR/JALR): target already in cpu.pc */
                 emit_block_epilogue();
             }
@@ -238,9 +278,11 @@ static u32 *compile_block(u32 psx_pc) {
         u32 op = OP(opcode);
 
         /* Check for branch/jump instructions */
-        if (op == 0x02 || op == 0x03) {
+        if (op == 0x02 || op == 0x03)
+        {
             /* J / JAL */
-            if (op == 0x03) {
+            if (op == 0x03)
+            {
                 /* JAL: store return address */
                 emit_load_imm32(REG_T0, cur_pc + 8);
                 emit_store_psx_reg(31, REG_T0);
@@ -253,11 +295,13 @@ static u32 *compile_block(u32 psx_pc) {
             continue;
         }
 
-        if (op == 0x00 && (FUNC(opcode) == 0x08 || FUNC(opcode) == 0x09)) {
+        if (op == 0x00 && (FUNC(opcode) == 0x08 || FUNC(opcode) == 0x09))
+        {
             /* JR / JALR */
             int rs = RS(opcode);
             int rd = (FUNC(opcode) == 0x09) ? RD(opcode) : 0;
-            if (FUNC(opcode) == 0x09 && rd != 0) {
+            if (FUNC(opcode) == 0x09 && rd != 0)
+            {
                 /* JALR: store return address */
                 emit_load_imm32(REG_T0, cur_pc + 8);
                 emit_store_psx_reg(rd, REG_T0);
@@ -272,7 +316,8 @@ static u32 *compile_block(u32 psx_pc) {
             continue;
         }
 
-        if (op == 0x04 || op == 0x05 || op == 0x06 || op == 0x07) {
+        if (op == 0x04 || op == 0x05 || op == 0x06 || op == 0x07)
+        {
             /* BEQ, BNE, BLEZ, BGTZ */
             int rs = RS(opcode);
             int rt = RT(opcode);
@@ -280,24 +325,30 @@ static u32 *compile_block(u32 psx_pc) {
             branch_target = cur_pc + 4 + offset;
 
             emit_load_psx_reg(REG_T0, rs);
-            if (op == 0x04 || op == 0x05) { /* BEQ, BNE */
+            if (op == 0x04 || op == 0x05)
+            { /* BEQ, BNE */
                 emit_load_psx_reg(REG_T1, rt);
                 /* XOR s3, t0, t1 */
                 emit(MK_R(0, REG_T0, REG_T1, REG_S3, 0, 0x26));
-                if (op == 0x04) { /* BEQ: taken if s3 == 0 -> set s3 = (s3 < 1) */
+                if (op == 0x04)
+                { /* BEQ: taken if s3 == 0 -> set s3 = (s3 < 1) */
                     /* SLTIU s3, s3, 1 */
                     emit(MK_I(0x0B, REG_S3, REG_S3, 1));
                 }
                 /* BNE: taken if s3 != 0. Already correct. */
-            } else if (op == 0x06) { /* BLEZ (rs <= 0) */
-               /* Taken if rs <= 0 -> rs < 1 */
-               /* SLTI s3, t0, 1 */
-               emit(MK_I(0x0A, REG_T0, REG_S3, 1));
-            } else if (op == 0x07) { /* BGTZ (rs > 0) */
-               /* Taken if rs > 0 -> 0 < rs. SLT s3, zero, t0 */
-               emit(MK_R(0, REG_ZERO, REG_T0, REG_S3, 0, 0x2A));
             }
-            
+            else if (op == 0x06)
+            { /* BLEZ (rs <= 0) */
+                /* Taken if rs <= 0 -> rs < 1 */
+                /* SLTI s3, t0, 1 */
+                emit(MK_I(0x0A, REG_T0, REG_S3, 1));
+            }
+            else if (op == 0x07)
+            { /* BGTZ (rs > 0) */
+                /* Taken if rs > 0 -> 0 < rs. SLT s3, zero, t0 */
+                emit(MK_R(0, REG_ZERO, REG_T0, REG_S3, 0, 0x2A));
+            }
+
             branch_type = 4; /* Deferred Conditional */
             in_delay_slot = 1;
             cur_pc += 4;
@@ -305,32 +356,37 @@ static u32 *compile_block(u32 psx_pc) {
             continue;
         }
 
-        if (op == 0x01) {
+        if (op == 0x01)
+        {
             /* REGIMM: BLTZ, BGEZ, BLTZAL, BGEZAL */
             int rs = RS(opcode);
             int rt = RT(opcode);
             s32 offset = SIMM16(opcode) << 2;
             branch_target = cur_pc + 4 + offset;
 
-            if (rt == 16 || rt == 17) {
+            if (rt == 16 || rt == 17)
+            {
                 /* BLTZAL/BGEZAL: store return address */
                 emit_load_imm32(REG_T0, cur_pc + 8);
                 emit_store_psx_reg(31, REG_T0);
             }
 
             emit_load_psx_reg(REG_T0, rs);
-            if (rt == 0 || rt == 16) {
+            if (rt == 0 || rt == 16)
+            {
                 /* BLTZ / BLTZAL (rs < 0) */
                 /* SLT s3, t0, zero */
                 emit(MK_R(0, REG_T0, REG_ZERO, REG_S3, 0, 0x2A));
-            } else {
+            }
+            else
+            {
                 /* BGEZ / BGEZAL (rs >= 0) */
                 /* Taken if rs >= 0. -> Not (rs < 0). */
                 /* SLT s3, t0, zero (1 if <0). XORI s3, s3, 1 (1 if >= 0). */
                 emit(MK_R(0, REG_T0, REG_ZERO, REG_S3, 0, 0x2A));
                 emit(MK_I(0x0E, REG_S3, REG_S3, 1));
             }
-            
+
             branch_type = 4; /* Deferred Conditional */
             in_delay_slot = 1;
             cur_pc += 4;
@@ -344,7 +400,8 @@ static u32 *compile_block(u32 psx_pc) {
         total_instructions++;
 
         /* End block after N instructions to avoid huge blocks */
-        if ((cur_pc - psx_pc) >= 256) {
+        if ((cur_pc - psx_pc) >= 256)
+        {
             emit_load_imm32(REG_T0, cur_pc);
             EMIT_SW(REG_T0, CPU_PC, REG_S0);
             emit_block_epilogue();
@@ -352,26 +409,40 @@ static u32 *compile_block(u32 psx_pc) {
         }
     }
 
-    if (blocks_compiled < 5) {
+    if (blocks_compiled < 5)
+    {
         int num_words = (int)(code_ptr - block_start);
         printf("DYNAREC: Block %u at %p, %d words:\n",
                (unsigned)blocks_compiled, block_start, num_words);
         int j;
-        for (j = 0; j < num_words && j < 32; j++) {
+        for (j = 0; j < num_words && j < 32; j++)
+        {
             printf("  [%02d] %p: 0x%08X\n", j, &block_start[j], (unsigned)block_start[j]);
         }
-        if (num_words > 32) printf("  ... (%d more)\n", num_words - 32);
+        if (num_words > 32)
+            printf("  ... (%d more)\n", num_words - 32);
     }
+    /* Calculate instruction count for this block */
+    u32 block_instr_count = (cur_pc - psx_pc) / 4;
+
     /* Flush caches */
     FlushCache(0); /* writeback dcache */
     FlushCache(2); /* invalidate icache */
 
     blocks_compiled++;
+
+    /* Store instruction count in cache entry */
+    {
+        u32 idx = (psx_pc >> 2) & BLOCK_CACHE_MASK;
+        block_cache[idx].instr_count = block_instr_count;
+    }
+
     return block_start;
 }
 
 /* ---- Block prologue: save callee-saved regs, set up $s0-$s2 ---- */
-static void emit_block_prologue(void) {
+static void emit_block_prologue(void)
+{
     /* addiu $sp, $sp, -48 */
     EMIT_ADDIU(REG_SP, REG_SP, -48);
     /* save $ra, $s0-$s3 */
@@ -387,7 +458,8 @@ static void emit_block_prologue(void) {
 }
 
 /* ---- Block epilogue: restore and return ---- */
-static void emit_block_epilogue(void) {
+static void emit_block_epilogue(void)
+{
     EMIT_LW(REG_S3, 28, REG_SP);
     EMIT_LW(REG_S2, 32, REG_SP);
     EMIT_LW(REG_S1, 36, REG_SP);
@@ -398,23 +470,28 @@ static void emit_block_epilogue(void) {
     EMIT_NOP();
 }
 
-static void emit_branch_epilogue(u32 target_pc) {
+static void emit_branch_epilogue(u32 target_pc)
+{
     emit_load_imm32(REG_T0, target_pc);
     EMIT_SW(REG_T0, CPU_PC, REG_S0);
     emit_block_epilogue();
 }
 
 /* ---- Memory access emitters ---- */
-static void emit_memory_read(int size, int rt_psx, int rs_psx, s16 offset) {
+static void emit_memory_read(int size, int rt_psx, int rs_psx, s16 offset)
+{
     /* $a0 = PSX address */
     emit_load_psx_reg(REG_A0, rs_psx);
     EMIT_ADDIU(REG_A0, REG_A0, offset);
 
     /* Call ReadWord/ReadHalf/ReadByte */
     u32 func_addr;
-    if (size == 4) func_addr = (u32)ReadWord;
-    else if (size == 2) func_addr = (u32)ReadHalf;
-    else func_addr = (u32)ReadByte;
+    if (size == 4)
+        func_addr = (u32)ReadWord;
+    else if (size == 2)
+        func_addr = (u32)ReadHalf;
+    else
+        func_addr = (u32)ReadByte;
 
     EMIT_JAL_ABS(func_addr);
     EMIT_NOP();
@@ -423,17 +500,22 @@ static void emit_memory_read(int size, int rt_psx, int rs_psx, s16 offset) {
     emit_store_psx_reg(rt_psx, REG_V0);
 }
 
-static void emit_memory_read_signed(int size, int rt_psx, int rs_psx, s16 offset) {
+static void emit_memory_read_signed(int size, int rt_psx, int rs_psx, s16 offset)
+{
     emit_memory_read(size, rt_psx, rs_psx, offset);
     /* Sign extend for LB/LH */
-    if (rt_psx == 0) return;
-    if (size == 1) {
+    if (rt_psx == 0)
+        return;
+    if (size == 1)
+    {
         /* Sign extend byte: sll 24, sra 24 */
         EMIT_LW(REG_T0, CPU_REG(rt_psx), REG_S0);
         emit(MK_R(0, 0, REG_T0, REG_T0, 24, 0x00)); /* SLL $t0, $t0, 24 */
         emit(MK_R(0, 0, REG_T0, REG_T0, 24, 0x03)); /* SRA $t0, $t0, 24 */
         EMIT_SW(REG_T0, CPU_REG(rt_psx), REG_S0);
-    } else if (size == 2) {
+    }
+    else if (size == 2)
+    {
         EMIT_LW(REG_T0, CPU_REG(rt_psx), REG_S0);
         emit(MK_R(0, 0, REG_T0, REG_T0, 16, 0x00)); /* SLL $t0, $t0, 16 */
         emit(MK_R(0, 0, REG_T0, REG_T0, 16, 0x03)); /* SRA $t0, $t0, 16 */
@@ -441,23 +523,112 @@ static void emit_memory_read_signed(int size, int rt_psx, int rs_psx, s16 offset
     }
 }
 
-static void emit_memory_write(int size, int rt_psx, int rs_psx, s16 offset) {
+static void emit_memory_write(int size, int rt_psx, int rs_psx, s16 offset)
+{
     /* $a0 = PSX address, $a1 = data */
     emit_load_psx_reg(REG_A0, rs_psx);
     EMIT_ADDIU(REG_A0, REG_A0, offset);
     emit_load_psx_reg(REG_A1, rt_psx);
 
     u32 func_addr;
-    if (size == 4) func_addr = (u32)WriteWord;
-    else if (size == 2) func_addr = (u32)WriteHalf;
-    else func_addr = (u32)WriteByte;
+    if (size == 4)
+        func_addr = (u32)WriteWord;
+    else if (size == 2)
+        func_addr = (u32)WriteHalf;
+    else
+        func_addr = (u32)WriteByte;
 
     EMIT_JAL_ABS(func_addr);
     EMIT_NOP();
 }
 
 /* ---- Emit a non-branch instruction ---- */
-static void emit_instruction(u32 opcode, u32 psx_pc) {
+/* Debug helper: log MTC0 writes to SR */
+static int mtc0_sr_log_count = 0;
+static u32 last_sr_logged = 0xDEAD;
+void debug_mtc0_sr(u32 val)
+{
+    /* Log all SR writes that have IM or IEc bits, or first 10,
+     * or when value changes significantly */
+    u32 interesting = val & 0x00000701; /* IEc + IM bits */
+    if (interesting || mtc0_sr_log_count < 10 || val != last_sr_logged)
+    {
+        if (mtc0_sr_log_count < 200)
+        {
+            //            printf("[MTC0] SR = %08X (IEc=%d IM=%02X BEV=%d CU0=%d)\n",
+            //                   (unsigned)val,
+            //                   (int)(val & 1),
+            //                   (int)((val >> 8) & 0xFF),
+            //                   (int)((val >> 22) & 1),
+            //                   (int)((val >> 28) & 1));
+            mtc0_sr_log_count++;
+        }
+        last_sr_logged = val;
+    }
+    cpu.cop0[PSX_COP0_SR] = val;
+}
+
+/*=== BIOS HLE (High Level Emulation) ===*/
+/*
+ * The PSX BIOS uses three function tables called via:
+ *   A-table: jump to 0xA0 with function number in $t1 ($9)
+ *   B-table: jump to 0xB0 with function number in $t1 ($9)
+ *   C-table: jump to 0xC0 with function number in $t1 ($9)
+ *
+ * Some BIOS table entries (especially EnterCriticalSection/ExitCriticalSection)
+ * may be incorrectly initialized to placeholder functions. We intercept these
+ * calls and implement the critical ones in C code.
+ */
+static int hle_log_count = 0;
+
+static int BIOS_HLE_A(void)
+{
+    u32 func = cpu.regs[9]; /* $t1 = function number */
+    static int a_log_count = 0;
+    if (a_log_count < 30)
+    {
+        //        printf("[BIOS] A(%02X) ret=%08X\n", (unsigned)func, (unsigned)cpu.regs[31]);
+        a_log_count++;
+    }
+    return 0; /* Let native code handle it */
+}
+
+static int BIOS_HLE_B(void)
+{
+    u32 func = cpu.regs[9]; /* $t1 = function number */
+    static int b_log_count = 0;
+    if (b_log_count < 30)
+    {
+        //        printf("[BIOS] B(%02X) ret=%08X\n", (unsigned)func, (unsigned)cpu.regs[31]);
+        b_log_count++;
+    }
+
+    /* B(0x3B) putchar - useful for BIOS text output */
+    if (func == 0x3B)
+    {
+        char c = (char)(cpu.regs[4] & 0xFF);
+        printf("%c", c);
+        cpu.regs[2] = cpu.regs[4];
+        cpu.pc = cpu.regs[31];
+        return 1;
+    }
+    return 0; /* Let native code handle everything else */
+}
+
+static int BIOS_HLE_C(void)
+{
+    u32 func = cpu.regs[9];
+    static int c_log_count = 0;
+    if (c_log_count < 20)
+    {
+        //        printf("[BIOS] C(%02X) ret=%08X\n", (unsigned)func, (unsigned)cpu.regs[31]);
+        c_log_count++;
+    }
+    return 0; /* Let native code handle it */
+}
+
+static void emit_instruction(u32 opcode, u32 psx_pc)
+{
     u32 op = OP(opcode);
     int rs = RS(opcode);
     int rt = RT(opcode);
@@ -467,11 +638,14 @@ static void emit_instruction(u32 opcode, u32 psx_pc) {
     s16 imm = SIMM16(opcode);
     u16 uimm = IMM16(opcode);
 
-    if (opcode == 0) return; /* NOP */
+    if (opcode == 0)
+        return; /* NOP */
 
-    switch (op) {
+    switch (op)
+    {
     case 0x00: /* SPECIAL */
-        switch (func) {
+        switch (func)
+        {
         case 0x00: /* SLL */
             emit_load_psx_reg(REG_T0, rt);
             emit(MK_R(0, 0, REG_T0, REG_T0, sa, 0x00));
@@ -535,36 +709,36 @@ static void emit_instruction(u32 opcode, u32 psx_pc) {
             emit_load_psx_reg(REG_T0, rs);
             emit_load_psx_reg(REG_T1, rt);
             emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x18)); /* mult */
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));       /* mflo */
+            emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));      /* mflo */
             EMIT_SW(REG_T0, CPU_LO, REG_S0);
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));       /* mfhi */
+            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10)); /* mfhi */
             EMIT_SW(REG_T0, CPU_HI, REG_S0);
             break;
         case 0x19: /* MULTU */
             emit_load_psx_reg(REG_T0, rs);
             emit_load_psx_reg(REG_T1, rt);
             emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x19)); /* multu */
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));       /* mflo */
+            emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));      /* mflo */
             EMIT_SW(REG_T0, CPU_LO, REG_S0);
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));       /* mfhi */
+            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10)); /* mfhi */
             EMIT_SW(REG_T0, CPU_HI, REG_S0);
             break;
         case 0x1A: /* DIV */
             emit_load_psx_reg(REG_T0, rs);
             emit_load_psx_reg(REG_T1, rt);
             emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x1A)); /* div */
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));       /* mflo */
+            emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));      /* mflo */
             EMIT_SW(REG_T0, CPU_LO, REG_S0);
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));       /* mfhi */
+            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10)); /* mfhi */
             EMIT_SW(REG_T0, CPU_HI, REG_S0);
             break;
         case 0x1B: /* DIVU */
             emit_load_psx_reg(REG_T0, rs);
             emit_load_psx_reg(REG_T1, rt);
             emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x1B)); /* divu */
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));       /* mflo */
+            emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));      /* mflo */
             EMIT_SW(REG_T0, CPU_LO, REG_S0);
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));       /* mfhi */
+            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10)); /* mfhi */
             EMIT_SW(REG_T0, CPU_HI, REG_S0);
             break;
         case 0x20: /* ADD */
@@ -663,39 +837,56 @@ static void emit_instruction(u32 opcode, u32 psx_pc) {
 
     /* COP0 */
     case 0x10:
-        if (rs == 0x00) {
+        if (rs == 0x00)
+        {
             /* MFC0 rt, rd */
             EMIT_LW(REG_T0, CPU_COP0(rd), REG_S0);
             emit_store_psx_reg(rt, REG_T0);
-        } else if (rs == 0x04) {
+        }
+        else if (rs == 0x04)
+        {
             /* MTC0 rt, rd */
             emit_load_psx_reg(REG_T0, rt);
-            EMIT_SW(REG_T0, CPU_COP0(rd), REG_S0);
-        } else if (rs == 0x10 && func == 0x10) {
-            /* RFE - Return from exception */
-            /* Shift Status register mode bits right by 2 */
-            EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
-            emit(MK_I(0x0C, REG_T0, REG_T1, 0x3C)); /* andi $t1, $t0, 0x3C */
-            emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x02)); /* srl $t1, $t1, 2 */
-            emit(MK_I(0x0C, REG_T0, REG_T0, 0xFFFFFFC0 & 0xFFFF)); /* andi $t0, $t0, 0xFFC0 ... */
-            /* Actually simpler: */
-            EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
-            /* sr = (sr & 0xFFFFFFF0) | ((sr >> 2) & 0x0F) */
-            EMIT_MOVE(REG_T1, REG_T0);
-            emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x02)); /* srl $t1, 2 */
-            emit(MK_I(0x0C, REG_T1, REG_T1, 0x0F));     /* andi $t1, 0x0F */
-            emit(MK_I(0x0C, REG_T0, REG_T0, (u16)0xFFF0)); /* andi $t0, 0xFFF0 */
-            EMIT_OR(REG_T0, REG_T0, REG_T1);
-            EMIT_SW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
+            if (rd == PSX_COP0_SR)
+            {
+                /* Call debug_mtc0_sr(val) for SR writes */
+                EMIT_MOVE(REG_A0, REG_T0);
+                EMIT_JAL_ABS((u32)debug_mtc0_sr);
+                EMIT_NOP();
+            }
+            else
+            {
+                EMIT_SW(REG_T0, CPU_COP0(rd), REG_S0);
+            }
+        }
+        else if (rs == 0x10 && func == 0x10)
+        {
+            /* RFE - Return from exception
+             * Pop mode stack: new_sr = (sr & ~0x0F) | ((sr >> 2) & 0x0F)
+             * Bits 0-1 get values from bits 2-3 (IEp→IEc, KUp→KUc)
+             * Bits 2-3 get values from bits 4-5 (IEo→IEp, KUo→KUp)
+             * Bits 4-31 remain UNCHANGED (IM bits, BEV, CU0, etc.)
+             */
+            EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0); /* t0 = SR */
+            EMIT_MOVE(REG_T1, REG_T0);                      /* t1 = SR */
+            emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x02));      /* srl t1, t1, 2 */
+            emit(MK_I(0x0C, REG_T1, REG_T1, 0x0F));         /* andi t1, t1, 0x0F */
+            /* Clear bottom 4 bits of t0 using srl/sll (preserves bits 4-31) */
+            emit(MK_R(0, 0, REG_T0, REG_T0, 4, 0x02));      /* srl t0, t0, 4 */
+            emit(MK_R(0, 0, REG_T0, REG_T0, 4, 0x00));      /* sll t0, t0, 4 */
+            EMIT_OR(REG_T0, REG_T0, REG_T1);                /* t0 = (sr & ~0x0F) | shifted */
+            EMIT_SW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0); /* SR = t0 */
         }
         break;
 
     /* COP2 (GTE) */
     case 0x12:
-        if (total_instructions < 20000000) { // Log COP2 instructions
-             printf("DYNAREC: Compiling COP2 Op %08X at %08X\n", opcode, (unsigned)psx_pc);
+        if (total_instructions < 20000000)
+        { // Log COP2 instructions
+            printf("DYNAREC: Compiling COP2 Op %08X at %08X\n", opcode, (unsigned)psx_pc);
         }
-        if ((opcode & 0x02000000) == 0) {
+        if ((opcode & 0x02000000) == 0)
+        {
             /* Transfer Instructions (MFC2, CFC2, MTC2, CTC2) */
             // rs field tells us the op: 00=MFC2, 02=CFC2, 04=MTC2, 06=CTC2
             // wait, RS is bits 21-25. The instruction encoding is:
@@ -707,29 +898,42 @@ static void emit_instruction(u32 opcode, u32 psx_pc) {
             // 00100 -> MTC2
             // 00110 -> CTC2
             // These correspond to rs=0, rs=2, rs=4, rs=6.
-            
-            if (rs == 0x00) { /* MFC2 rt, rd */
+
+            if (rs == 0x00)
+            { /* MFC2 rt, rd */
                 // printf("MFC2 %d, %d\n", rt, rd);
                 EMIT_LW(REG_T0, CPU_CP2_DATA(rd), REG_S0);
                 emit_store_psx_reg(rt, REG_T0);
-            } else if (rs == 0x02) { /* CFC2 rt, rd */
+            }
+            else if (rs == 0x02)
+            { /* CFC2 rt, rd */
                 // printf("CFC2 %d, %d\n", rt, rd);
                 EMIT_LW(REG_T0, CPU_CP2_CTRL(rd), REG_S0);
                 emit_store_psx_reg(rt, REG_T0);
-            } else if (rs == 0x04) { /* MTC2 rt, rd */
-                if (total_instructions < 1000) {
-                    /* Emit log call? No, hard to emit printf call here easily without save/restore. 
+            }
+            else if (rs == 0x04)
+            { /* MTC2 rt, rd */
+                if (total_instructions < 1000)
+                {
+                    /* Emit log call? No, hard to emit printf call here easily without save/restore.
                        Just rely on Compile log. */
                 }
                 emit_load_psx_reg(REG_T0, rt);
                 EMIT_SW(REG_T0, CPU_CP2_DATA(rd), REG_S0);
-            } else if (rs == 0x06) { /* CTC2 rt, rd */
+            }
+            else if (rs == 0x06)
+            { /* CTC2 rt, rd */
                 emit_load_psx_reg(REG_T0, rt);
                 EMIT_SW(REG_T0, CPU_CP2_CTRL(rd), REG_S0);
-            } else {
-                 if (total_instructions < 100) printf("DYNAREC: Unknown COP2 transfer rs=0x%X\n", rs);
             }
-        } else {
+            else
+            {
+                if (total_instructions < 100)
+                    printf("DYNAREC: Unknown COP2 transfer rs=0x%X\n", rs);
+            }
+        }
+        else
+        {
             /* GTE Command (Bit 25 = 1) */
             // Call C helper: GTE_Execute(opcode, &cpu)
             // $a0 = opcode
@@ -770,25 +974,27 @@ static void emit_instruction(u32 opcode, u32 psx_pc) {
         break;
 
     /* LWL/LWR/SWL/SWR - unaligned access, handle via function calls */
-    case 0x22: /* LWL */ {
+    case 0x22: /* LWL */
+    {
         emit_load_psx_reg(REG_A0, rs);
         EMIT_ADDIU(REG_A0, REG_A0, imm);
         /* Read the word at aligned address */
-        EMIT_MOVE(REG_T2, REG_A0); /* save addr */
+        EMIT_MOVE(REG_T2, REG_A0);                     /* save addr */
         emit(MK_I(0x0C, REG_A0, REG_A0, (u16)0xFFFC)); /* andi $a0, 0xFFFC */
         EMIT_JAL_ABS((u32)ReadWord);
         EMIT_NOP();
         /* $v0 = word at aligned addr, $t2 = original addr */
         emit_load_psx_reg(REG_T0, rt); /* current rt value */
         /* shift = (addr & 3) * 8 */
-        emit(MK_I(0x0C, REG_T2, REG_T1, 3)); /* andi $t1, $t2, 3 */
+        emit(MK_I(0x0C, REG_T2, REG_T1, 3));       /* andi $t1, $t2, 3 */
         emit(MK_R(0, 0, REG_T1, REG_T1, 3, 0x00)); /* sll $t1, 3 */
         /* For LWL: result = (mem << (24-shift)) | (rt & mask) */
         /* Simplified: just do full word read for now */
         emit_store_psx_reg(rt, REG_V0);
         break;
     }
-    case 0x26: /* LWR */ {
+    case 0x26: /* LWR */
+    {
         emit_load_psx_reg(REG_A0, rs);
         EMIT_ADDIU(REG_A0, REG_A0, imm);
         emit(MK_I(0x0C, REG_A0, REG_A0, (u16)0xFFFC));
@@ -805,35 +1011,36 @@ static void emit_instruction(u32 opcode, u32 psx_pc) {
 
     /* LWC2 - Load Word to Cop2 */
     case 0x32:
-        {
-            // LWC2 rt, offset(base)
-            // rt is destination in CP2 Data Registers
-            emit_load_psx_reg(REG_A0, rs);
-            EMIT_ADDIU(REG_A0, REG_A0, imm);
-            EMIT_JAL_ABS((u32)ReadWord);
-            EMIT_NOP();
-            // Store result ($v0) to CP2_DATA[rt]
-            EMIT_SW(REG_V0, CPU_CP2_DATA(rt), REG_S0);
-        }
-        break;
+    {
+        // LWC2 rt, offset(base)
+        // rt is destination in CP2 Data Registers
+        emit_load_psx_reg(REG_A0, rs);
+        EMIT_ADDIU(REG_A0, REG_A0, imm);
+        EMIT_JAL_ABS((u32)ReadWord);
+        EMIT_NOP();
+        // Store result ($v0) to CP2_DATA[rt]
+        EMIT_SW(REG_V0, CPU_CP2_DATA(rt), REG_S0);
+    }
+    break;
 
     /* SWC2 - Store Word from Cop2 */
     case 0x3A:
-        {
-            // SWC2 rt, offset(base)
-            // rt is source from CP2 Data Registers
-            emit_load_psx_reg(REG_A0, rs);
-            EMIT_ADDIU(REG_A0, REG_A0, imm);
-            EMIT_LW(REG_A1, CPU_CP2_DATA(rt), REG_S0);
-            EMIT_JAL_ABS((u32)WriteWord);
-            EMIT_NOP();
-        }
-        break;
+    {
+        // SWC2 rt, offset(base)
+        // rt is source from CP2 Data Registers
+        emit_load_psx_reg(REG_A0, rs);
+        EMIT_ADDIU(REG_A0, REG_A0, imm);
+        EMIT_LW(REG_A1, CPU_CP2_DATA(rt), REG_S0);
+        EMIT_JAL_ABS((u32)WriteWord);
+        EMIT_NOP();
+    }
+    break;
 
     default:
         // Always log unknown opcodes to catch missing instructions
         static int unknown_log_count = 0;
-        if (unknown_log_count < 200) {
+        if (unknown_log_count < 200)
+        {
             printf("DYNAREC: Unknown opcode 0x%02X at PC=0x%08X\n", op, (unsigned)psx_pc);
             unknown_log_count++;
         }
@@ -842,14 +1049,16 @@ static void emit_instruction(u32 opcode, u32 psx_pc) {
 }
 
 /* ---- Block lookup ---- */
-static u32 *lookup_block(u32 psx_pc) {
+static u32 *lookup_block(u32 psx_pc)
+{
     u32 idx = (psx_pc >> 2) & BLOCK_CACHE_MASK;
     if (block_cache[idx].psx_pc == psx_pc)
         return block_cache[idx].native;
     return NULL;
 }
 
-static void cache_block(u32 psx_pc, u32 *native) {
+static void cache_block(u32 psx_pc, u32 *native)
+{
     u32 idx = (psx_pc >> 2) & BLOCK_CACHE_MASK;
     block_cache[idx].psx_pc = psx_pc;
     block_cache[idx].native = native;
@@ -858,18 +1067,21 @@ static void cache_block(u32 psx_pc, u32 *native) {
 /* ---- Public API ---- */
 typedef void (*block_func_t)(R3000CPU *cpu, u8 *ram, u8 *bios);
 
-void Init_Dynarec(void) {
+void Init_Dynarec(void)
+{
     printf("Initializing Dynarec...\n");
 
     /* Allocate code buffer dynamically (BSS is unmapped in PCSX2 TLB) */
     code_buffer = (u32 *)memalign(64, CODE_BUFFER_SIZE);
-    if (!code_buffer) {
+    if (!code_buffer)
+    {
         printf("  ERROR: Failed to allocate code buffer!\n");
         return;
     }
 
     block_cache = (BlockEntry *)memalign(64, BLOCK_CACHE_SIZE * sizeof(BlockEntry));
-    if (!block_cache) {
+    if (!block_cache)
+    {
         printf("  ERROR: Failed to allocate block cache!\n");
         return;
     }
@@ -883,7 +1095,8 @@ void Init_Dynarec(void) {
     printf("  Block cache at %p, %d entries\n", block_cache, BLOCK_CACHE_SIZE);
 }
 
-void Run_CPU(void) {
+void Run_CPU(void)
+{
     printf("Starting CPU Execution (Dynarec)...\n");
 
     /* ----- JIT sanity test ----- */
@@ -914,7 +1127,8 @@ void Run_CPU(void) {
 
     printf("JIT test: block at %p, %d words\n", test_start, (int)(code_ptr - test_start));
     int j;
-    for (j = 0; j < (int)(code_ptr - test_start); j++) {
+    for (j = 0; j < (int)(code_ptr - test_start); j++)
+    {
         printf("  [%d] 0x%08X\n", j, (unsigned)test_start[j]);
     }
 
@@ -924,7 +1138,8 @@ void Run_CPU(void) {
     ((block_func_t)test_start)(&cpu, psx_ram, psx_bios);
     printf("JIT test: returned! cpu.pc = 0x%08X (expect 0xDEADBEEF)\n", (unsigned)cpu.pc);
 
-    if (cpu.pc != 0xDEADBEEF) {
+    if (cpu.pc != 0xDEADBEEF)
+    {
         printf("JIT TEST FAILED! FlushCache may not be working.\n");
         return;
     }
@@ -938,20 +1153,48 @@ void Run_CPU(void) {
 
     /* ----- Real execution ----- */
     cpu.pc = 0xBFC00000;
-    cpu.cop0[PSX_COP0_SR] = 0x10900000; /* Initial status: BEV=1, ISC=0 */
+    cpu.cop0[PSX_COP0_SR] = 0x10400000;   /* Initial status: CU0=1, BEV=1 */
     cpu.cop0[PSX_COP0_PRID] = 0x00000002; /* R3000A */
 
     u32 iterations = 0;
-    u32 max_iterations = 20000000; /* Increased limit */
+    u32 max_iterations = 200000000; /* 200M iterations for full BIOS boot */
+    static u32 stuck_pc = 0;
+    static u32 stuck_count = 0;
 
-    while (iterations < max_iterations) {
+    while (iterations < max_iterations)
+    {
         u32 pc = cpu.pc;
+
+        /* === BIOS HLE Intercepts === */
+        /* PSX BIOS uses calls to addresses 0xA0, 0xB0, 0xC0 for function dispatch.
+         * Some function table entries may be incorrectly initialized. We intercept
+         * key functions (especially EnterCriticalSection/ExitCriticalSection) here. */
+        {
+            u32 phys_pc = pc & 0x1FFFFFFF;
+            if (phys_pc == 0xA0)
+            {
+                if (BIOS_HLE_A())
+                    continue;
+            }
+            else if (phys_pc == 0xB0)
+            {
+                if (BIOS_HLE_B())
+                    continue;
+            }
+            else if (phys_pc == 0xC0)
+            {
+                if (BIOS_HLE_C())
+                    continue;
+            }
+        }
 
         /* Look up compiled block */
         u32 *block = lookup_block(pc);
-        if (!block) {
+        if (!block)
+        {
             block = compile_block(pc);
-            if (!block) {
+            if (!block)
+            {
                 printf("DYNAREC: Failed to compile at PC=0x%08X, stopping.\n", (unsigned)pc);
                 break;
             }
@@ -959,29 +1202,100 @@ void Run_CPU(void) {
         }
 
         /* Execute the block */
-        u32 inst_count_before = total_instructions;
         ((block_func_t)block)(&cpu, psx_ram, psx_bios);
-        u32 cycles = total_instructions - inst_count_before;
-        
+
+        /* Get instruction count from cache for this block */
+        u32 cache_idx = (pc >> 2) & BLOCK_CACHE_MASK;
+        u32 cycles = block_cache[cache_idx].instr_count;
+        if (cycles == 0)
+            cycles = 8; /* fallback estimate */
+
         /* Update Timers (approximate cycles) */
         UpdateTimers(cycles);
 
         /* Check for interrupts */
-        if (CheckInterrupts()) {
-            /* If interrupts are enabled in Status register (IEc=1, IM=something?)
-             * For now, just assume widespread enable bit (IEc) is relevant
-             */
-             if (cpu.cop0[PSX_COP0_SR] & 1) {
-                 PSX_Exception(0); /* Interrupt */
-             }
+        if (CheckInterrupts())
+        {
+            /* Update Cause.IP2 to reflect pending interrupt */
+            cpu.cop0[PSX_COP0_CAUSE] |= (1 << 10);
+
+            u32 sr = cpu.cop0[PSX_COP0_SR];
+            if ((sr & 1) && (sr & (1 << 10)))
+            {
+                PSX_Exception(0); /* Interrupt */
+            }
+            else if (iterations % 5000000 == 0)
+            {
+                printf("DYNAREC: INT pending but blocked: SR=%08X IEc=%d IM2=%d PC=%08X\n",
+                       (unsigned)sr, (int)(sr & 1), (int)((sr >> 10) & 1),
+                       (unsigned)cpu.pc);
+            }
+        }
+        else
+        {
+            /* Clear Cause.IP2 when no pending interrupts */
+            cpu.cop0[PSX_COP0_CAUSE] &= ~(1 << 10);
         }
 
         iterations++;
 
+        /* Stuck loop detection */
+        if (pc == stuck_pc)
+        {
+            stuck_count++;
+            if (stuck_count == 50000)
+            {
+                printf("[STUCK] Block at %08X ran 50000 times (SR=%08X I_STAT=%08X Cause=%08X)\n",
+                       (unsigned)pc, (unsigned)cpu.cop0[PSX_COP0_SR],
+                       (unsigned)CheckInterrupts(),
+                       (unsigned)cpu.cop0[PSX_COP0_CAUSE]);
+                /* Dump instructions at stuck address */
+                u32 phys = pc & 0x1FFFFF;
+                if (phys < PSX_RAM_SIZE - 32)
+                {
+                    int di;
+                    printf("[STUCK] Instructions at %08X:\n", (unsigned)pc);
+                    for (di = 0; di < 8; di++)
+                    {
+                        printf("  %08X: %08X\n", (unsigned)(pc + di * 4),
+                               (unsigned)(*(u32 *)(psx_ram + phys + di * 4)));
+                    }
+                }
+                printf("[STUCK] Regs: v0=%08X a0=%08X a1=%08X t0=%08X t1=%08X ra=%08X sp=%08X\n",
+                       (unsigned)cpu.regs[2], (unsigned)cpu.regs[4],
+                       (unsigned)cpu.regs[5], (unsigned)cpu.regs[8],
+                       (unsigned)cpu.regs[9], (unsigned)cpu.regs[31],
+                       (unsigned)cpu.regs[29]);
+                printf("[STUCK] s0=%08X s1=%08X s2=%08X s3=%08X s4=%08X s5=%08X\n",
+                       (unsigned)cpu.regs[16], (unsigned)cpu.regs[17],
+                       (unsigned)cpu.regs[18], (unsigned)cpu.regs[19],
+                       (unsigned)cpu.regs[20], (unsigned)cpu.regs[21]);
+                /* Show what s1+4 contains */
+                if (cpu.regs[17] != 0)
+                {
+                    u32 s1_phys = cpu.regs[17] & 0x1FFFFF;
+                    if (s1_phys + 12 < PSX_RAM_SIZE)
+                    {
+                        printf("[STUCK] *s1: [0]=%08X [4]=%08X [8]=%08X\n",
+                               (unsigned)(*(u32 *)(psx_ram + s1_phys)),
+                               (unsigned)(*(u32 *)(psx_ram + s1_phys + 4)),
+                               (unsigned)(*(u32 *)(psx_ram + s1_phys + 8)));
+                    }
+                }
+            }
+        }
+        else
+        {
+            stuck_pc = pc;
+            stuck_count = 0;
+        }
+
         /* Periodic status */
-        if (iterations % 1000000 == 0) {
-            printf("DYNAREC: %u iterations, PC=0x%08X, blocks=%u\n",
-                   (unsigned)iterations, (unsigned)cpu.pc, (unsigned)blocks_compiled);
+        if (iterations % 1000000 == 0)
+        {
+            //            printf("DYNAREC: %u iterations, PC=0x%08X, blocks=%u SR=%08X\n",
+            //                   (unsigned)iterations, (unsigned)cpu.pc, (unsigned)blocks_compiled,
+            //                   (unsigned)cpu.cop0[PSX_COP0_SR]);
         }
     }
 
