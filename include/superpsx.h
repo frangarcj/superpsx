@@ -2,17 +2,21 @@
 #define SUPERPSX_H
 
 #include <tamtypes.h>
+#include <setjmp.h>
 
 /*=== CPU State ===*/
 typedef struct
 {
-    u32 regs[32];     /* 0x00: GPR */
-    u32 pc;           /* 0x80: Program Counter */
-    u32 hi;           /* 0x84 */
-    u32 lo;           /* 0x88 */
-    u32 cop0[32];     /* 0x8C: COP0 registers */
-    u32 cp2_data[32]; /* 0x10C: GTE Data Registers (V0, V1, V2, etc.) */
-    u32 cp2_ctrl[32]; /* 0x18C: GTE Control Registers (Matrices, etc.) */
+    u32 regs[32];       /* 0x00: GPR */
+    u32 pc;             /* 0x80: Program Counter */
+    u32 hi;             /* 0x84 */
+    u32 lo;             /* 0x88 */
+    u32 cop0[32];       /* 0x8C: COP0 registers */
+    u32 cp2_data[32];   /* 0x10C: GTE Data Registers (V0, V1, V2, etc.) */
+    u32 cp2_ctrl[32];   /* 0x18C: GTE Control Registers (Matrices, etc.) */
+    u32 current_pc;     /* PC of the currently executing instruction (for exceptions) */
+    u32 load_delay_reg; /* Load delay slot: target register index (0=none) */
+    u32 load_delay_val; /* Load delay slot: pending value */
 } R3000CPU;
 
 /* Struct offsets for asm code generation */
@@ -23,6 +27,9 @@ typedef struct
 #define CPU_COP0(n) (32 * 4 + 12 + (n) * 4)
 #define CPU_CP2_DATA(n) (32 * 4 + 12 + 32 * 4 + (n) * 4)
 #define CPU_CP2_CTRL(n) (32 * 4 + 12 + 32 * 4 + 32 * 4 + (n) * 4)
+#define CPU_CURRENT_PC (32 * 4 + 12 + 32 * 4 + 32 * 4 + 32 * 4)
+#define CPU_LOAD_DELAY_REG (CPU_CURRENT_PC + 4)
+#define CPU_LOAD_DELAY_VAL (CPU_CURRENT_PC + 8)
 
 /* COP0 register indices */
 #define PSX_COP0_SR 12
@@ -62,10 +69,22 @@ void Init_Dynarec(void);
 void Run_CPU(void);
 void GTE_Execute(u32 opcode, R3000CPU *cpu);
 
+/*=== CPU Helper Functions (called from dynarec) ===*/
+u32 Helper_LWL(u32 addr, u32 cur_rt);
+u32 Helper_LWR(u32 addr, u32 cur_rt);
+void Helper_SWL(u32 addr, u32 rt_val);
+void Helper_SWR(u32 addr, u32 rt_val);
+void Helper_DIV(s32 rs, s32 rt, u32 *lo_out, u32 *hi_out);
+void Helper_DIVU(u32 rs, u32 rt, u32 *lo_out, u32 *hi_out);
+
 /*=== CPU / COP0 ===*/
 void Init_CPU(void);
 void PSX_Exception(u32 cause_code);
 void Handle_Syscall(void);
+
+/*=== Exception support for dynarec ===*/
+extern jmp_buf psx_block_jmp;
+extern volatile int psx_block_exception;
 
 /*=== CD-ROM ===*/
 void CDROM_Init(void);
