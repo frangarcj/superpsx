@@ -5,6 +5,10 @@
 
 R3000CPU cpu;
 
+/* Exception support for dynarec mid-block exceptions */
+jmp_buf psx_block_jmp;
+volatile int psx_block_exception = 0;
+
 /* ---- PSX Exception Handling ---- */
 static int cdrom_irq_logged = 0;
 void PSX_Exception(u32 cause_code)
@@ -72,6 +76,12 @@ void PSX_Exception(u32 cause_code)
             return;
         }
         cpu.pc = 0x80000080;
+    }
+
+    /* If we're inside a dynarec block, longjmp out to abort the block */
+    if (psx_block_exception)
+    {
+        longjmp(psx_block_jmp, 1);
     }
 }
 

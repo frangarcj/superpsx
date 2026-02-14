@@ -182,6 +182,119 @@ static void emit_memory_write(int size, int rt_psx, int rs_psx, s16 offset);
 static u32 blocks_compiled = 0;
 static u32 total_instructions = 0;
 
+/* Current PSX PC being emitted (used by memory emitters for exception EPC) */
+static u32 emit_current_psx_pc = 0;
+
+/* Load delay slot support:
+ * On R3000A, loads have a 1-instruction delay - the loaded value isn't
+ * available until 2 instructions after the load. The instruction immediately
+ * following a load still sees the OLD register value.
+ * dynarec_load_defer: set by compile_block before emit_instruction to tell
+ * load emitters to leave the value in REG_V0 instead of storing to PSX reg.
+ */
+static int dynarec_load_defer = 0;
+
+/* Check if instruction reads a given GPR as source operand */
+static int instruction_reads_gpr(u32 opcode, int reg)
+{
+    if (reg == 0)
+        return 0; /* r0 is always 0, never "read" in a delay-relevant way */
+    int op = OP(opcode);
+    int rs = RS(opcode);
+    int rt = RT(opcode);
+
+    /* RS is read by almost all instructions */
+    if (rs == reg)
+    {
+        /* Exceptions where RS is NOT read */
+        if (op == 0x00)
+        {
+            int func = FUNC(opcode);
+            /* SLL, SRL, SRA use shamt, not RS */
+            if (func == 0x00 || func == 0x02 || func == 0x03)
+                return 0;
+            /* MFHI, MFLO don't read any GPR */
+            if (func == 0x10 || func == 0x12)
+                return 0;
+            /* SYSCALL, BREAK don't read GPRs */
+            if (func == 0x0C || func == 0x0D)
+                return 0;
+        }
+        if (op == 0x02 || op == 0x03)
+            return 0; /* J, JAL don't read RS */
+        if (op == 0x0F)
+            return 0; /* LUI doesn't read RS */
+        return 1;
+    }
+
+    /* RT is read by some instructions */
+    if (rt == reg)
+    {
+        if (op == 0x00)
+        {
+            /* R-type: most ALU instructions read RT */
+            int func = FUNC(opcode);
+            if (func == 0x08 || func == 0x09)
+                return 0; /* JR/JALR don't read RT */
+            if (func == 0x10 || func == 0x12)
+                return 0; /* MFHI/MFLO */
+            if (func == 0x11 || func == 0x13)
+                return 0; /* MTHI/MTLO read RS, not RT */
+            if (func == 0x0C || func == 0x0D)
+                return 0; /* SYSCALL/BREAK */
+            return 1;     /* Most R-type read RT */
+        }
+        if (op == 0x04 || op == 0x05)
+            return 1; /* BEQ/BNE read RT */
+        if (op == 0x22 || op == 0x26)
+            return 1; /* LWL/LWR read RT (merge) */
+        if (op >= 0x28 && op <= 0x2E)
+            return 1; /* Stores read RT */
+        return 0;     /* I-type ALU/loads don't read RT */
+    }
+
+    return 0;
+}
+
+/* Check if instruction writes a given GPR as destination operand */
+static int instruction_writes_gpr(u32 opcode, int reg)
+{
+    if (reg == 0)
+        return 0; /* r0 is hardwired to 0 */
+    int op = OP(opcode);
+    if (op == 0x00)
+    {
+        /* R-type: writes to RD */
+        int func = FUNC(opcode);
+        /* MULT/MULTU/DIV/DIVU write HI/LO, not GPR */
+        if (func >= 0x18 && func <= 0x1B)
+            return 0;
+        /* JR doesn't write GPR */
+        if (func == 0x08)
+            return 0;
+        /* MTHI/MTLO don't write GPR (they write HI/LO) */
+        if (func == 0x11 || func == 0x13)
+            return 0;
+        /* SYSCALL/BREAK don't write GPR */
+        if (func == 0x0C || func == 0x0D)
+            return 0;
+        return (RD(opcode) == reg);
+    }
+    /* I-type ALU: writes to RT */
+    if (op >= 0x08 && op <= 0x0F)
+        return (RT(opcode) == reg);
+    /* Loads: write to RT */
+    if (op >= 0x20 && op <= 0x26)
+        return (RT(opcode) == reg);
+    /* JAL writes to r31 */
+    if (op == 0x03)
+        return (reg == 31);
+    /* JALR: writes to RD */
+    if (op == 0x00 && FUNC(opcode) == 0x09)
+        return (RD(opcode) == reg);
+    return 0;
+}
+
 /* ---- Compile a basic block ---- */
 static u32 *compile_block(u32 psx_pc)
 {
@@ -230,16 +343,40 @@ static u32 *compile_block(u32 psx_pc)
     int branch_type = 0; /* 0=none, 1=unconditional, 2=conditional, 3=register */
     u32 branch_opcode = 0;
 
+    /* Load delay slot tracking */
+    int pending_load_reg = 0;       /* PSX register with pending load (0=none) */
+    int pending_load_apply_now = 0; /* 1 = apply before this instruction */
+
     while (!block_ended)
     {
         u32 opcode = *psx_code++;
 
         if (in_delay_slot)
         {
-            /* Emit the delay slot instruction */
+            /* Apply any pending load delay before the delay slot instruction */
+            if (pending_load_reg != 0 && pending_load_apply_now)
+            {
+                EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
+                emit_store_psx_reg(pending_load_reg, REG_T0);
+                pending_load_reg = 0;
+                pending_load_apply_now = 0;
+            }
+            if (pending_load_reg != 0 && !pending_load_apply_now)
+                pending_load_apply_now = 1;
+
+            /* Emit the delay slot instruction (no load deferral in branch delay slots) */
+            dynarec_load_defer = 0;
             emit_instruction(opcode, cur_pc);
             cur_pc += 4;
             total_instructions++;
+
+            /* Apply any remaining pending load before leaving block */
+            if (pending_load_reg != 0)
+            {
+                EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
+                emit_store_psx_reg(pending_load_reg, REG_T0);
+                pending_load_reg = 0;
+            }
 
             /* Now emit the branch resolution */
             if (branch_type == 1)
@@ -295,6 +432,21 @@ static u32 *compile_block(u32 psx_pc)
             branch_target = ((cur_pc + 4) & 0xF0000000) | (TARGET(opcode) << 2);
             branch_type = 1;
             in_delay_slot = 1;
+            /* Advance load delay state (branch counts as one instruction) */
+            if (pending_load_reg != 0)
+            {
+                if (pending_load_apply_now)
+                {
+                    EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
+                    emit_store_psx_reg(pending_load_reg, REG_T0);
+                    pending_load_reg = 0;
+                    pending_load_apply_now = 0;
+                }
+                else
+                {
+                    pending_load_apply_now = 1;
+                }
+            }
             cur_pc += 4;
             total_instructions++;
             continue;
@@ -305,17 +457,32 @@ static u32 *compile_block(u32 psx_pc)
             /* JR / JALR */
             int rs = RS(opcode);
             int rd = (FUNC(opcode) == 0x09) ? RD(opcode) : 0;
-            if (FUNC(opcode) == 0x09 && rd != 0)
-            {
-                /* JALR: store return address */
-                emit_load_imm32(REG_T0, cur_pc + 8);
-                emit_store_psx_reg(rd, REG_T0);
-            }
-            /* Store target from register to cpu.pc */
+            /* Read rs FIRST (before link write that could clobber rd==rs) */
             emit_load_psx_reg(REG_T0, rs);
             EMIT_SW(REG_T0, CPU_PC, REG_S0);
+            if (FUNC(opcode) == 0x09 && rd != 0)
+            {
+                /* JALR: store return address in rd */
+                emit_load_imm32(REG_T1, cur_pc + 8);
+                emit_store_psx_reg(rd, REG_T1);
+            }
             branch_type = 3;
             in_delay_slot = 1;
+            /* Advance load delay state (branch counts as one instruction) */
+            if (pending_load_reg != 0)
+            {
+                if (pending_load_apply_now)
+                {
+                    EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
+                    emit_store_psx_reg(pending_load_reg, REG_T0);
+                    pending_load_reg = 0;
+                    pending_load_apply_now = 0;
+                }
+                else
+                {
+                    pending_load_apply_now = 1;
+                }
+            }
             cur_pc += 4;
             total_instructions++;
             continue;
@@ -356,6 +523,21 @@ static u32 *compile_block(u32 psx_pc)
 
             branch_type = 4; /* Deferred Conditional */
             in_delay_slot = 1;
+            /* Advance load delay state (branch counts as one instruction) */
+            if (pending_load_reg != 0)
+            {
+                if (pending_load_apply_now)
+                {
+                    EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
+                    emit_store_psx_reg(pending_load_reg, REG_T0);
+                    pending_load_reg = 0;
+                    pending_load_apply_now = 0;
+                }
+                else
+                {
+                    pending_load_apply_now = 1;
+                }
+            }
             cur_pc += 4;
             total_instructions++;
             continue;
@@ -363,30 +545,34 @@ static u32 *compile_block(u32 psx_pc)
 
         if (op == 0x01)
         {
-            /* REGIMM: BLTZ, BGEZ, BLTZAL, BGEZAL */
+            /* REGIMM: BLTZ, BGEZ, BLTZAL, BGEZAL and unofficial variants.
+             * R3000A only decodes bit 0 of rt (BLTZ vs BGEZ) and bit 4 (link).
+             * All other rt values map to these 4 operations. */
             int rs = RS(opcode);
             int rt = RT(opcode);
             s32 offset = SIMM16(opcode) << 2;
             branch_target = cur_pc + 4 + offset;
 
-            if (rt == 16 || rt == 17)
+            /* Read rs FIRST (before any link write that could clobber r31) */
+            emit_load_psx_reg(REG_T0, rs);
+
+            if (rt == 0x10 || rt == 0x11)
             {
-                /* BLTZAL/BGEZAL: store return address */
-                emit_load_imm32(REG_T0, cur_pc + 8);
-                emit_store_psx_reg(31, REG_T0);
+                /* BLTZAL/BGEZAL only: store return address (always, even if not taken) */
+                emit_load_imm32(REG_T1, cur_pc + 8);
+                emit_store_psx_reg(31, REG_T1);
             }
 
-            emit_load_psx_reg(REG_T0, rs);
-            if (rt == 0 || rt == 16)
+            /* Compute branch condition using T0 (original rs value) */
+            if ((rt & 1) == 0)
             {
-                /* BLTZ / BLTZAL (rs < 0) */
+                /* BLTZ / BLTZAL and unofficial even variants (rs < 0) */
                 /* SLT s3, t0, zero */
                 emit(MK_R(0, REG_T0, REG_ZERO, REG_S3, 0, 0x2A));
             }
             else
             {
-                /* BGEZ / BGEZAL (rs >= 0) */
-                /* Taken if rs >= 0. -> Not (rs < 0). */
+                /* BGEZ / BGEZAL and unofficial odd variants (rs >= 0) */
                 /* SLT s3, t0, zero (1 if <0). XORI s3, s3, 1 (1 if >= 0). */
                 emit(MK_R(0, REG_T0, REG_ZERO, REG_S3, 0, 0x2A));
                 emit(MK_I(0x0E, REG_S3, REG_S3, 1));
@@ -394,19 +580,127 @@ static u32 *compile_block(u32 psx_pc)
 
             branch_type = 4; /* Deferred Conditional */
             in_delay_slot = 1;
+            /* Advance load delay state (branch counts as one instruction) */
+            if (pending_load_reg != 0)
+            {
+                if (pending_load_apply_now)
+                {
+                    EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
+                    emit_store_psx_reg(pending_load_reg, REG_T0);
+                    pending_load_reg = 0;
+                    pending_load_apply_now = 0;
+                }
+                else
+                {
+                    pending_load_apply_now = 1;
+                }
+            }
             cur_pc += 4;
             total_instructions++;
             continue;
         }
 
-        /* Not a branch - emit normally */
-        emit_instruction(opcode, cur_pc);
+        /* Not a branch - emit with load delay slot handling */
+        {
+            int this_is_load = 0;
+            int load_target = 0;
+            u32 op_check = OP(opcode);
+
+            /* Check if this instruction is a load */
+            if (op_check == 0x20 || op_check == 0x21 || op_check == 0x22 ||
+                op_check == 0x23 || op_check == 0x24 || op_check == 0x25 ||
+                op_check == 0x26)
+            {
+                load_target = RT(opcode);
+                if (load_target != 0)
+                {
+                    /* Peek at next instruction */
+                    u32 next_instr = *psx_code;
+                    u32 next_op = OP(next_instr);
+                    int next_rt = RT(next_instr);
+
+                    /* Defer if: (a) next instruction reads our loaded register, OR
+                     * (b) next instruction is ALSO a load to the same register
+                     * Case (b) handles R3000A load cancellation:
+                     * LB R,X; LB R,Y; READ R → READ gets original (neither X nor Y) */
+                    if (instruction_reads_gpr(next_instr, load_target))
+                    {
+                        this_is_load = 1;
+                    }
+                    else if ((next_op >= 0x20 && next_op <= 0x26) &&
+                             next_rt == load_target)
+                    {
+                        /* Next is another load to same register → defer to allow cancel */
+                        this_is_load = 1;
+                    }
+                }
+            }
+
+            /* STEP 1: Apply old pending load if ready (1 instruction has passed) */
+            if (pending_load_reg != 0 && pending_load_apply_now)
+            {
+                /* If this is a load to the SAME register, CANCEL the old pending */
+                if (this_is_load && load_target == pending_load_reg)
+                {
+                    pending_load_reg = 0;
+                    pending_load_apply_now = 0;
+                }
+                else
+                {
+                    /* Apply the old pending load */
+                    EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
+                    emit_store_psx_reg(pending_load_reg, REG_T0);
+                    pending_load_reg = 0;
+                    pending_load_apply_now = 0;
+                }
+            }
+
+            /* STEP 2: Advance delay state */
+            if (pending_load_reg != 0 && !pending_load_apply_now)
+                pending_load_apply_now = 1;
+
+            /* STEP 3: Emit the instruction (deferred loads leave value in REG_V0) */
+            dynarec_load_defer = this_is_load;
+            emit_instruction(opcode, cur_pc);
+            dynarec_load_defer = 0;
+
+            /* STEP 3.5: If the instruction just emitted WRITES to the pending
+             * register, cancel the pending load (the write takes precedence). */
+            if (pending_load_reg != 0 && !this_is_load &&
+                instruction_writes_gpr(opcode, pending_load_reg))
+            {
+                pending_load_reg = 0;
+                pending_load_apply_now = 0;
+            }
+
+            /* STEP 4: If this was a deferred load, save value to delay field */
+            if (this_is_load)
+            {
+                /* If there's an old pending for a DIFFERENT register, apply it first */
+                if (pending_load_reg != 0 && pending_load_reg != load_target)
+                {
+                    EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
+                    emit_store_psx_reg(pending_load_reg, REG_T0);
+                }
+                /* Save new deferred value to delay field */
+                EMIT_SW(REG_V0, CPU_LOAD_DELAY_VAL, REG_S0);
+                pending_load_reg = load_target;
+                pending_load_apply_now = 0;
+            }
+        }
         cur_pc += 4;
         total_instructions++;
 
         /* End block after N instructions to avoid huge blocks */
         if ((cur_pc - psx_pc) >= 256)
         {
+            /* Apply any remaining pending load before leaving block */
+            if (pending_load_reg != 0)
+            {
+                EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
+                emit_store_psx_reg(pending_load_reg, REG_T0);
+                pending_load_reg = 0;
+            }
             emit_load_imm32(REG_T0, cur_pc);
             EMIT_SW(REG_T0, CPU_PC, REG_S0);
             emit_block_epilogue();
@@ -485,6 +779,10 @@ static void emit_branch_epilogue(u32 target_pc)
 /* ---- Memory access emitters ---- */
 static void emit_memory_read(int size, int rt_psx, int rs_psx, s16 offset)
 {
+    /* Store current PSX PC for exception handling */
+    emit_load_imm32(REG_T2, emit_current_psx_pc);
+    EMIT_SW(REG_T2, CPU_CURRENT_PC, REG_S0);
+
     /* $a0 = PSX address */
     emit_load_psx_reg(REG_A0, rs_psx);
     EMIT_ADDIU(REG_A0, REG_A0, offset);
@@ -501,8 +799,10 @@ static void emit_memory_read(int size, int rt_psx, int rs_psx, s16 offset)
     EMIT_JAL_ABS(func_addr);
     EMIT_NOP();
 
-    /* Store result ($v0) to PSX reg */
-    emit_store_psx_reg(rt_psx, REG_V0);
+    /* Store result ($v0) to PSX reg - unless deferred for load delay */
+    if (!dynarec_load_defer)
+        emit_store_psx_reg(rt_psx, REG_V0);
+    /* If deferred, result stays in REG_V0 for the caller to save */
 }
 
 static void emit_memory_read_signed(int size, int rt_psx, int rs_psx, s16 offset)
@@ -511,25 +811,46 @@ static void emit_memory_read_signed(int size, int rt_psx, int rs_psx, s16 offset
     /* Sign extend for LB/LH */
     if (rt_psx == 0)
         return;
-    if (size == 1)
+    if (dynarec_load_defer)
     {
-        /* Sign extend byte: sll 24, sra 24 */
-        EMIT_LW(REG_T0, CPU_REG(rt_psx), REG_S0);
-        emit(MK_R(0, 0, REG_T0, REG_T0, 24, 0x00)); /* SLL $t0, $t0, 24 */
-        emit(MK_R(0, 0, REG_T0, REG_T0, 24, 0x03)); /* SRA $t0, $t0, 24 */
-        EMIT_SW(REG_T0, CPU_REG(rt_psx), REG_S0);
+        /* Sign extend REG_V0 directly (value not stored to PSX reg yet) */
+        if (size == 1)
+        {
+            emit(MK_R(0, 0, REG_V0, REG_V0, 24, 0x00)); /* SLL $v0, $v0, 24 */
+            emit(MK_R(0, 0, REG_V0, REG_V0, 24, 0x03)); /* SRA $v0, $v0, 24 */
+        }
+        else if (size == 2)
+        {
+            emit(MK_R(0, 0, REG_V0, REG_V0, 16, 0x00)); /* SLL $v0, $v0, 16 */
+            emit(MK_R(0, 0, REG_V0, REG_V0, 16, 0x03)); /* SRA $v0, $v0, 16 */
+        }
     }
-    else if (size == 2)
+    else
     {
-        EMIT_LW(REG_T0, CPU_REG(rt_psx), REG_S0);
-        emit(MK_R(0, 0, REG_T0, REG_T0, 16, 0x00)); /* SLL $t0, $t0, 16 */
-        emit(MK_R(0, 0, REG_T0, REG_T0, 16, 0x03)); /* SRA $t0, $t0, 16 */
-        EMIT_SW(REG_T0, CPU_REG(rt_psx), REG_S0);
+        if (size == 1)
+        {
+            /* Sign extend byte: sll 24, sra 24 */
+            EMIT_LW(REG_T0, CPU_REG(rt_psx), REG_S0);
+            emit(MK_R(0, 0, REG_T0, REG_T0, 24, 0x00)); /* SLL $t0, $t0, 24 */
+            emit(MK_R(0, 0, REG_T0, REG_T0, 24, 0x03)); /* SRA $t0, $t0, 24 */
+            EMIT_SW(REG_T0, CPU_REG(rt_psx), REG_S0);
+        }
+        else if (size == 2)
+        {
+            EMIT_LW(REG_T0, CPU_REG(rt_psx), REG_S0);
+            emit(MK_R(0, 0, REG_T0, REG_T0, 16, 0x00)); /* SLL $t0, $t0, 16 */
+            emit(MK_R(0, 0, REG_T0, REG_T0, 16, 0x03)); /* SRA $t0, $t0, 16 */
+            EMIT_SW(REG_T0, CPU_REG(rt_psx), REG_S0);
+        }
     }
 }
 
 static void emit_memory_write(int size, int rt_psx, int rs_psx, s16 offset)
 {
+    /* Store current PSX PC for exception handling */
+    emit_load_imm32(REG_T2, emit_current_psx_pc);
+    EMIT_SW(REG_T2, CPU_CURRENT_PC, REG_S0);
+
     /* $a0 = PSX address, $a1 = data */
     emit_load_psx_reg(REG_A0, rs_psx);
     EMIT_ADDIU(REG_A0, REG_A0, offset);
@@ -602,7 +923,8 @@ static int BIOS_HLE_A(void)
         char c = (char)(cpu.regs[4] & 0xFF);
         printf("%c", c);
 #ifdef ENABLE_HOST_LOG
-        if (host_log_file) {
+        if (host_log_file)
+        {
             fputc(c, host_log_file);
             fflush(host_log_file);
         }
@@ -630,7 +952,8 @@ static int BIOS_HLE_B(void)
         char c = (char)(cpu.regs[4] & 0xFF);
         printf("%c", c);
 #ifdef ENABLE_HOST_LOG
-        if (host_log_file) {
+        if (host_log_file)
+        {
             fputc(c, host_log_file);
             fflush(host_log_file);
         }
@@ -645,7 +968,8 @@ static int BIOS_HLE_B(void)
         char c = (char)(cpu.regs[4] & 0xFF);
         printf("%c", c);
 #ifdef ENABLE_HOST_LOG
-        if (host_log_file) {
+        if (host_log_file)
+        {
             fputc(c, host_log_file);
             fflush(host_log_file);
         }
@@ -679,6 +1003,9 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
     int func = FUNC(opcode);
     s16 imm = SIMM16(opcode);
     u16 uimm = IMM16(opcode);
+
+    /* Track current PC for exception handling in memory accesses */
+    emit_current_psx_pc = psx_pc;
 
     if (opcode == 0)
         return; /* NOP */
@@ -722,8 +1049,9 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
             emit_store_psx_reg(rd, REG_T0);
             break;
         case 0x0C: /* SYSCALL */
-            emit_load_imm32(REG_A0, psx_pc);
-            EMIT_SW(REG_A0, CPU_PC, REG_S0);
+            /* Use HLE handler for BIOS compatibility */
+            emit_load_imm32(REG_T0, psx_pc);
+            EMIT_SW(REG_T0, CPU_PC, REG_S0);
             emit_load_imm32(REG_A0, 0);
             EMIT_JAL_ABS((u32)Handle_Syscall);
             EMIT_NOP();
@@ -766,23 +1094,28 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
             EMIT_SW(REG_T0, CPU_HI, REG_S0);
             break;
         case 0x1A: /* DIV */
-            emit_load_psx_reg(REG_T0, rs);
-            emit_load_psx_reg(REG_T1, rt);
-            emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x1A)); /* div */
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));      /* mflo */
-            EMIT_SW(REG_T0, CPU_LO, REG_S0);
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10)); /* mfhi */
-            EMIT_SW(REG_T0, CPU_HI, REG_S0);
+        {
+            /* Call Helper_DIV(rs_val, rt_val, &cpu.lo, &cpu.hi) */
+            emit_load_psx_reg(REG_A0, rs);
+            emit_load_psx_reg(REG_A1, rt);
+            /* $a2 = &cpu.lo, $a3 = &cpu.hi */
+            EMIT_ADDIU(6, REG_S0, CPU_LO); /* a2 = s0 + CPU_LO */
+            EMIT_ADDIU(7, REG_S0, CPU_HI); /* a3 = s0 + CPU_HI */
+            EMIT_JAL_ABS((u32)Helper_DIV);
+            EMIT_NOP();
             break;
+        }
         case 0x1B: /* DIVU */
-            emit_load_psx_reg(REG_T0, rs);
-            emit_load_psx_reg(REG_T1, rt);
-            emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x1B)); /* divu */
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));      /* mflo */
-            EMIT_SW(REG_T0, CPU_LO, REG_S0);
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10)); /* mfhi */
-            EMIT_SW(REG_T0, CPU_HI, REG_S0);
+        {
+            /* Call Helper_DIVU(rs_val, rt_val, &cpu.lo, &cpu.hi) */
+            emit_load_psx_reg(REG_A0, rs);
+            emit_load_psx_reg(REG_A1, rt);
+            EMIT_ADDIU(6, REG_S0, CPU_LO); /* a2 = s0 + CPU_LO */
+            EMIT_ADDIU(7, REG_S0, CPU_HI); /* a3 = s0 + CPU_HI */
+            EMIT_JAL_ABS((u32)Helper_DIVU);
+            EMIT_NOP();
             break;
+        }
         case 0x20: /* ADD */
         case 0x21: /* ADDU */
             emit_load_psx_reg(REG_T0, rs);
@@ -1015,41 +1348,51 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
         emit_memory_write(4, rt, rs, imm);
         break;
 
-    /* LWL/LWR/SWL/SWR - unaligned access, handle via function calls */
+    /* LWL/LWR/SWL/SWR - unaligned access via C helpers */
     case 0x22: /* LWL */
     {
+        /* $a0 = address, $a1 = current rt value */
         emit_load_psx_reg(REG_A0, rs);
         EMIT_ADDIU(REG_A0, REG_A0, imm);
-        /* Read the word at aligned address */
-        EMIT_MOVE(REG_T2, REG_A0);                     /* save addr */
-        emit(MK_I(0x0C, REG_A0, REG_A0, (u16)0xFFFC)); /* andi $a0, 0xFFFC */
-        EMIT_JAL_ABS((u32)ReadWord);
+        emit_load_psx_reg(REG_A1, rt);
+        EMIT_JAL_ABS((u32)Helper_LWL);
         EMIT_NOP();
-        /* $v0 = word at aligned addr, $t2 = original addr */
-        emit_load_psx_reg(REG_T0, rt); /* current rt value */
-        /* shift = (addr & 3) * 8 */
-        emit(MK_I(0x0C, REG_T2, REG_T1, 3));       /* andi $t1, $t2, 3 */
-        emit(MK_R(0, 0, REG_T1, REG_T1, 3, 0x00)); /* sll $t1, 3 */
-        /* For LWL: result = (mem << (24-shift)) | (rt & mask) */
-        /* Simplified: just do full word read for now */
-        emit_store_psx_reg(rt, REG_V0);
+        if (!dynarec_load_defer)
+            emit_store_psx_reg(rt, REG_V0);
         break;
     }
     case 0x26: /* LWR */
     {
+        /* $a0 = address, $a1 = current rt value */
         emit_load_psx_reg(REG_A0, rs);
         EMIT_ADDIU(REG_A0, REG_A0, imm);
-        emit(MK_I(0x0C, REG_A0, REG_A0, (u16)0xFFFC));
-        EMIT_JAL_ABS((u32)ReadWord);
+        emit_load_psx_reg(REG_A1, rt);
+        EMIT_JAL_ABS((u32)Helper_LWR);
         EMIT_NOP();
-        emit_store_psx_reg(rt, REG_V0);
+        if (!dynarec_load_defer)
+            emit_store_psx_reg(rt, REG_V0);
         break;
     }
     case 0x2A: /* SWL */
-    case 0x2E: /* SWR */
-        /* Simplified: write full word */
-        emit_memory_write(4, rt, rs, imm);
+    {
+        /* $a0 = address, $a1 = rt value */
+        emit_load_psx_reg(REG_A0, rs);
+        EMIT_ADDIU(REG_A0, REG_A0, imm);
+        emit_load_psx_reg(REG_A1, rt);
+        EMIT_JAL_ABS((u32)Helper_SWL);
+        EMIT_NOP();
         break;
+    }
+    case 0x2E: /* SWR */
+    {
+        /* $a0 = address, $a1 = rt value */
+        emit_load_psx_reg(REG_A0, rs);
+        EMIT_ADDIU(REG_A0, REG_A0, imm);
+        emit_load_psx_reg(REG_A1, rt);
+        EMIT_JAL_ABS((u32)Helper_SWR);
+        EMIT_NOP();
+        break;
+    }
 
     /* LWC2 - Load Word to Cop2 */
     case 0x32:
@@ -1235,27 +1578,41 @@ void Run_CPU(void)
          * Tentative address: 0xBFC06FF0 (SCPH1001) */
         if (pc == 0xBFC06FF0)
         {
-             static int binary_loaded = 0;
-             if (!binary_loaded) {
-                 printf("DYNAREC: Reached BIOS Shell Entry (0xBFC06FF0). Loading binary...\n");
-                 if (Load_PSX_EXE("host:test.exe", &cpu) == 0) {
-                     printf("DYNAREC: Binary loaded successfully. Jump to PC=0x%08X\n", (unsigned)cpu.pc);
+            static int binary_loaded = 0;
+            if (!binary_loaded)
+            {
+                printf("DYNAREC: Reached BIOS Shell Entry (0xBFC06FF0). Loading binary...\n");
+                if (Load_PSX_EXE("host:test.exe", &cpu) == 0)
+                {
+                    printf("DYNAREC: Binary loaded successfully. Jump to PC=0x%08X\n", (unsigned)cpu.pc);
 #ifdef ENABLE_HOST_LOG
-                     host_log_file = fopen("host:output.log", "w");
+                    host_log_file = fopen("host:output.log", "w");
 #endif
-                     binary_loaded = 1;
-                     /* Flush cache for new code */
-                     FlushCache(0);
-                     FlushCache(2);
-                     /* Reset stuck count as we changed PC */
-                     stuck_pc = cpu.pc;
-                     stuck_count = 0;
-                     continue; /* Resume execution at new PC */
-                 } else {
-                     printf("DYNAREC: Failed to load binary. Continuing BIOS.\n");
-                 }
-                 binary_loaded = 1; /* Don't try again */
-             }
+                    binary_loaded = 1;
+                    /* Flush cache for new code */
+                    FlushCache(0);
+                    FlushCache(2);
+                    /* Reset stuck count as we changed PC */
+                    stuck_pc = cpu.pc;
+                    stuck_count = 0;
+                    continue; /* Resume execution at new PC */
+                }
+                else
+                {
+                    printf("DYNAREC: Failed to load binary. Continuing BIOS.\n");
+                }
+                binary_loaded = 1; /* Don't try again */
+            }
+        }
+
+        /* === PC Alignment Check === */
+        /* On R3000A, jumping to an unaligned address fires AdEL (cause 4) */
+        if (pc & 3)
+        {
+            cpu.cop0[PSX_COP0_BADVADDR] = pc;
+            cpu.pc = pc;      /* Ensure PC is set for the exception handler */
+            PSX_Exception(4); /* AdEL - Address Error on instruction fetch */
+            continue;
         }
 
         /* Look up compiled block */
@@ -1271,8 +1628,15 @@ void Run_CPU(void)
             cache_block(pc, block);
         }
 
-        /* Execute the block */
-        ((block_func_t)block)(&cpu, psx_ram, psx_bios);
+        /* Execute the block with exception support */
+        /* setjmp returns 0 on first call, non-zero if longjmp fired from PSX_Exception */
+        psx_block_exception = 1; /* Enable longjmp path in PSX_Exception */
+        if (setjmp(psx_block_jmp) == 0)
+        {
+            ((block_func_t)block)(&cpu, psx_ram, psx_bios);
+        }
+        /* else: exception fired during block, cpu.pc already set by PSX_Exception */
+        psx_block_exception = 0; /* Disable longjmp */
 
         /* Get instruction count from cache for this block */
         u32 cache_idx = (pc >> 2) & BLOCK_CACHE_MASK;
