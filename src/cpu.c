@@ -6,24 +6,71 @@
 R3000CPU cpu;
 
 /* ---- PSX Exception Handling ---- */
-void PSX_Exception(u32 cause_code) {
+static int cdrom_irq_logged = 0;
+void PSX_Exception(u32 cause_code)
+{
+    /* Debug: log CD-ROM interrupt delivery */
+    if (cause_code == 0 && !cdrom_irq_logged)
+    {
+        u32 istat = CheckInterrupts();
+        if (istat & 0x04)
+        {
+            printf("[EXC] Delivering CD-ROM interrupt! PC=%08X SR=%08X\n",
+                   (unsigned)cpu.pc, (unsigned)cpu.cop0[PSX_COP0_SR]);
+            cdrom_irq_logged = 1;
+        }
+    }
+
     /* Save EPC and set Cause */
     cpu.cop0[PSX_COP0_EPC] = cpu.pc;
-    cpu.cop0[PSX_COP0_CAUSE] = (cpu.cop0[PSX_COP0_CAUSE] & ~0x7C) | ((cause_code & 0x1F) << 2);
 
-    /* Push exception mode: shift Status bits left by 2 */
+    /* Set ExcCode in Cause register bits [6:2] */
+    u32 cause = cpu.cop0[PSX_COP0_CAUSE] & ~0x7C;
+    cause |= ((cause_code & 0x1F) << 2);
+
+    /* For hardware interrupts (cause_code == 0), set IP2 (bit 10)
+     * to indicate a pending hardware interrupt on the R3000A's
+     * single external interrupt line. The BIOS checks this bit. */
+    if (cause_code == 0)
+    {
+        cause |= (1 << 10); /* IP2 = hardware interrupt pending */
+    }
+    cpu.cop0[PSX_COP0_CAUSE] = cause;
+
+    /* Push exception mode: shift Status bits [5:0] left by 2
+     * This pushes IEc→IEp→IEo, KUc→KUp→KUo
+     * New IEc=0, KUc=0 (kernel mode, interrupts disabled) */
     u32 sr = cpu.cop0[PSX_COP0_SR];
     u32 mode_bits = sr & 0x3F;
     sr = (sr & ~0x3F) | ((mode_bits << 2) & 0x3F);
-    sr |= 0x02; /* Set EXL bit (KUc=0, IEc=0) */
+    /* IEc=0, KUc=0 already from the shift (bits 0,1 are 0) */
     cpu.cop0[PSX_COP0_SR] = sr;
 
     /* Jump to exception vector */
-    if (sr & 0x00400000) {
+    if (sr & 0x00400000)
+    {
         /* BEV=1: vector in BIOS */
         cpu.pc = 0xBFC00180;
-    } else {
+    }
+    else
+    {
         /* BEV=0: vector in RAM */
+        /* Verify exception handler is installed */
+        u32 handler_word = *(u32 *)(psx_ram + 0x80);
+        if (handler_word == 0 && cause_code == 0)
+        {
+            static int exc_warn = 0;
+            if (exc_warn < 5)
+            {
+                printf("[EXC] WARNING: No exception handler at 0x80000080! (word=0x%08X) Ignoring IRQ.\n",
+                       (unsigned)handler_word);
+                exc_warn++;
+            }
+            /* Undo the mode push since we can't handle it */
+            cpu.cop0[PSX_COP0_SR] = sr;      /* Restore original SR */
+            cpu.pc = cpu.cop0[PSX_COP0_EPC]; /* Restore PC */
+            return;
+        }
         cpu.pc = 0x80000080;
     }
 }
@@ -35,16 +82,77 @@ void PSX_Exception(u32 cause_code) {
  * The BIOS uses three tables: A(0xA0), B(0xB0), C(0xC0)
  * with the function number in $t1.
  */
-void Handle_Syscall(void) {
-    u32 pc = cpu.pc;
-    u32 code = (cpu.regs[4] >> 6) & 0xFFFFF; /* Extract code from $a0 if available */
+void Handle_Syscall(void)
+{
+    /* PSX BIOS syscalls:
+     * The function number is in $a0 (register 4).
+     * Syscall 0 = NoFunction
+     * Syscall 1 = EnterCriticalSection (returns old IEc, disables interrupts)
+     * Syscall 2 = ExitCriticalSection (enables interrupts)
+     * Syscall 3 = ChangeThreadSubFunction
+     * Others are handled by the BIOS exception handler.
+     */
+    u32 func = cpu.regs[4]; /* $a0 = function number */
+    static int syscall_log_count = 0;
 
-    /* Let the PSX BIOS handle it via exception vector */
-    PSX_Exception(0x08); /* Syscall exception code */
+    if (syscall_log_count < 50)
+    {
+        //        printf("[SYSCALL] func=%u PC=%08X SR=%08X\n",
+        //               (unsigned)func, (unsigned)cpu.pc,
+        //               (unsigned)cpu.cop0[PSX_COP0_SR]);
+        syscall_log_count++;
+    }
+
+    switch (func)
+    {
+    case 0: /* NoFunction */
+        /* Just return, advance PC past SYSCALL */
+        cpu.pc += 4; /* Skip SYSCALL instruction */
+        return;
+
+    case 1: /* EnterCriticalSection */
+    {
+        u32 sr = cpu.cop0[PSX_COP0_SR];
+        cpu.regs[2] = sr & 1;            /* $v0 = old IEc bit */
+        cpu.cop0[PSX_COP0_SR] = sr & ~1; /* Clear IEc */
+        cpu.pc += 4;
+        if (syscall_log_count < 100)
+        {
+            //                printf("[SYSCALL] EnterCriticalSection: SR %08X -> %08X, old_IEc=%d\n",
+            //                       (unsigned)sr, (unsigned)cpu.cop0[PSX_COP0_SR],
+            //                       (int)cpu.regs[2]);
+        }
+    }
+        return;
+
+    case 2: /* ExitCriticalSection */
+    {
+        u32 sr = cpu.cop0[PSX_COP0_SR];
+        sr |= 0x00000401; /* IEc=1 (bit 0) + IM2=1 (bit 10) for HW interrupts */
+        cpu.cop0[PSX_COP0_SR] = sr;
+        cpu.pc += 4;
+        if (syscall_log_count < 100)
+        {
+            //                printf("[SYSCALL] ExitCriticalSection: SR -> %08X (IEc=%d IM2=%d)\n",
+            //                       (unsigned)sr, (int)(sr & 1), (int)((sr >> 10) & 1));
+        }
+    }
+        return;
+
+    case 3: /* ChangeThreadSubFunction */
+        cpu.pc += 4;
+        return;
+
+    default:
+        /* Unknown syscall - delegate to BIOS exception handler */
+        PSX_Exception(0x08); /* Syscall exception code */
+        return;
+    }
 }
 
 /* ---- EE Exception Handler (for catching native faults) ---- */
-static void EE_ExceptionHandler(int cause) {
+static void EE_ExceptionHandler(int cause)
+{
     u32 epc;
     asm volatile("mfc0 %0, $14" : "=r"(epc));
     u32 badvaddr;
@@ -63,16 +171,19 @@ static void EE_ExceptionHandler(int cause) {
            (unsigned)cpu.regs[29], (unsigned)cpu.regs[31]);
 
     printf("Halting.\n");
-    while (1);
+    while (1)
+        ;
 }
 
 /* ---- Init ---- */
-void Init_CPU(void) {
+void Init_CPU(void)
+{
     printf("Initializing CPU...\n");
 
     /* Clear CPU state */
     int i;
-    for (i = 0; i < 32; i++) {
+    for (i = 0; i < 32; i++)
+    {
         cpu.regs[i] = 0;
         cpu.cop0[i] = 0;
     }
