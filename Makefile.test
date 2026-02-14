@@ -1,0 +1,17 @@
+EE_BIN = test_packet.elf
+EE_OBJS = test_packet.o
+EE_CFLAGS = -O2 -G0 -Wall
+EE_LIBS = -ldebug -lkernel -lgraph -ldma -ldraw -lmath3d
+
+all: $(EE_BIN)
+	@echo "Built: $(EE_BIN)"
+
+clean:
+	rm -f $(EE_BIN) $(EE_OBJS)
+
+run: $(EE_BIN)
+	/Applications/PCSX2.app/Contents/MacOS/PCSX2 -batch -earlyconsolelog -elf "$(shell pwd)/$(EE_BIN)"
+
+include $(PS2SDK)/Defs.make
+include $(PS2SDK)/samples/Makefile.pref
+include $(PS2SDK)/samples/Makefile.eeglobal
