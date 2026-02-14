@@ -1,5 +1,5 @@
 EE_BIN = superpsx.elf
-EE_OBJS = src/main.o src/memory.o src/cpu.o src/hardware.o src/graphics.o src/dynarec.o
+EE_OBJS = src/main.o src/memory.o src/cpu.o src/hardware.o src/graphics.o src/dynarec.o src/gte.o src/cdrom.o
 EE_LIBS = -ldebug -lkernel -lgraph -ldma -ldraw -lmath3d
 
 EE_CFLAGS = -I$(PS2SDK)/ee/include -I$(PS2SDK)/common/include -I. -O2 -G0 -Wall
