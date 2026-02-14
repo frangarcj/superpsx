@@ -529,7 +529,11 @@ void WriteHardware(u32 addr, u32 data)
 
     /* Expansion 2 */
     if (phys >= 0x1F802000 && phys < 0x1F803000)
+    {
+        if (phys == 0x1F802002)
+            printf("%c", (char)data);
         return;
+    }
 
     /* Cache control */
     if (phys == 0x1FFE0130 || addr == 0xFFFE0130)

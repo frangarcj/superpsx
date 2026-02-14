@@ -17,3 +17,7 @@ Thumbs.db
 # VS Code / IDE settings (optional but common)
 .vscode/
 .history/
+
+# Test binaries and data
+test.exe
+tests/
