@@ -19,6 +19,11 @@
 #include <malloc.h>
 #include <kernel.h>
 #include "superpsx.h"
+#include "loader.h"
+
+#ifdef ENABLE_HOST_LOG
+static FILE *host_log_file = NULL;
+#endif
 
 /* ---- Code buffer ---- */
 #define CODE_BUFFER_SIZE (4 * 1024 * 1024)
@@ -587,8 +592,24 @@ static int BIOS_HLE_A(void)
     static int a_log_count = 0;
     if (a_log_count < 30)
     {
-        //        printf("[BIOS] A(%02X) ret=%08X\n", (unsigned)func, (unsigned)cpu.regs[31]);
+        // printf("[BIOS] A(%02X) ret=%08X\n", (unsigned)func, (unsigned)cpu.regs[31]);
         a_log_count++;
+    }
+
+    /* A(0x3C) std_out_putchar */
+    if (func == 0x3C)
+    {
+        char c = (char)(cpu.regs[4] & 0xFF);
+        printf("%c", c);
+#ifdef ENABLE_HOST_LOG
+        if (host_log_file) {
+            fputc(c, host_log_file);
+            fflush(host_log_file);
+        }
+#endif
+        cpu.regs[2] = cpu.regs[4]; /* Return char */
+        cpu.pc = cpu.regs[31];
+        return 1;
     }
     return 0; /* Let native code handle it */
 }
@@ -599,7 +620,7 @@ static int BIOS_HLE_B(void)
     static int b_log_count = 0;
     if (b_log_count < 30)
     {
-        //        printf("[BIOS] B(%02X) ret=%08X\n", (unsigned)func, (unsigned)cpu.regs[31]);
+        // printf("[BIOS] B(%02X) ret=%08X\n", (unsigned)func, (unsigned)cpu.regs[31]);
         b_log_count++;
     }
 
@@ -608,7 +629,28 @@ static int BIOS_HLE_B(void)
     {
         char c = (char)(cpu.regs[4] & 0xFF);
         printf("%c", c);
+#ifdef ENABLE_HOST_LOG
+        if (host_log_file) {
+            fputc(c, host_log_file);
+            fflush(host_log_file);
+        }
+#endif
         cpu.regs[2] = cpu.regs[4];
+        cpu.pc = cpu.regs[31];
+        return 1;
+    }
+    /* B(0x3D) std_out_putchar */
+    if (func == 0x3D)
+    {
+        char c = (char)(cpu.regs[4] & 0xFF);
+        printf("%c", c);
+#ifdef ENABLE_HOST_LOG
+        if (host_log_file) {
+            fputc(c, host_log_file);
+            fflush(host_log_file);
+        }
+#endif
+        cpu.regs[2] = 1; /* Return success/char */
         cpu.pc = cpu.regs[31];
         return 1;
     }
@@ -1186,6 +1228,34 @@ void Run_CPU(void)
                 if (BIOS_HLE_C())
                     continue;
             }
+        }
+
+        /* === BIOS Shell Hook === */
+        /* Hook the BIOS execution just before it enters the shell/logo sequence.
+         * Tentative address: 0xBFC06FF0 (SCPH1001) */
+        if (pc == 0xBFC06FF0)
+        {
+             static int binary_loaded = 0;
+             if (!binary_loaded) {
+                 printf("DYNAREC: Reached BIOS Shell Entry (0xBFC06FF0). Loading binary...\n");
+                 if (Load_PSX_EXE("host:test.exe", &cpu) == 0) {
+                     printf("DYNAREC: Binary loaded successfully. Jump to PC=0x%08X\n", (unsigned)cpu.pc);
+#ifdef ENABLE_HOST_LOG
+                     host_log_file = fopen("host:output.log", "w");
+#endif
+                     binary_loaded = 1;
+                     /* Flush cache for new code */
+                     FlushCache(0);
+                     FlushCache(2);
+                     /* Reset stuck count as we changed PC */
+                     stuck_pc = cpu.pc;
+                     stuck_count = 0;
+                     continue; /* Resume execution at new PC */
+                 } else {
+                     printf("DYNAREC: Failed to load binary. Continuing BIOS.\n");
+                 }
+                 binary_loaded = 1; /* Don't try again */
+             }
         }
 
         /* Look up compiled block */
