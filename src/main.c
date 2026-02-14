@@ -71,7 +71,7 @@ void Init_SuperPSX(void)
     Init_Interrupts();
     CDROM_Init();
 
-    if (Load_BIOS("host:SCPH1001.BIN") < 0)
+    if (Load_BIOS("host:bios/SCPH1001.BIN") < 0)
     {
         printf("ERROR: Failed to load BIOS!\n");
         scr_printf("Failed to load BIOS. Halting.\n");
