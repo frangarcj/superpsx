@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: 
+      - '*'
+    tags:
+      - v*
+  pull_request:
+  repository_dispatch:
+    types: [run_build]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    container: ps2dev/ps2dev:latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        apk add build-base git bash
+    
+    - name: Compile project
+      run: |
+        make -j$(nproc) clean
+        make -j$(nproc) all
+
+    - name: Get short SHA
+      id: slug
+      run: echo "sha8=$(echo ${GITHUB_SHA} | cut -c1-8)" >> $GITHUB_OUTPUT
+
+    - name: Upload artifacts
+      if: ${{ success() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: superpsx-${{ steps.slug.outputs.sha8 }}
+        path: |
+          superpsx.elf
