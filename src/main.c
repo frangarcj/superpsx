@@ -66,47 +66,22 @@ int main(int argc, char *argv[])
 
     init_scr();
     scr_printf("SuperPSX v0.2 - Native Dynarec\n");
-    printf("SuperPSX v0.2 - Native Dynarec\n");
-    printf("Initializing SuperPSX... with %d arguments\n", argc);
+
+    // Print all the arguments for debugging
+    printf("Arguments:\n");
     for (int i = 0; i < argc; i++)
     {
         printf("  argv[%d]: %s\n", i, argv[i]);
     }
-    if (argc > 1)
+
+    // Second argument is the PSX executable to load (optional)
+    if (argc >= 2 && argv[1] != NULL)
     {
-        /* argv[1] = host PWD, argv[2] = PSX exe filename */
-        /* chdir to the provided PWD if possible */
-
-        if (strcasecmp(argv[0], "host") && chdir(argv[1]) != 0)
-        {
-            printf("WARNING: Failed to chdir to %s\n", argv[1]);
-        }
-
-        /* Copy and sanitize filename into internal buffer */
-        size_t len = strnlen(argv[1], PSX_EXE_PATH_MAX - 1);
-        if (len == PSX_EXE_PATH_MAX - 1)
-        {
-            /* truncated */
-            printf("WARNING: PSX exe filename too long, truncated.\n");
-        }
-        strncpy(psx_exe_filename_buf, argv[1], PSX_EXE_PATH_MAX - 1);
-        psx_exe_filename_buf[PSX_EXE_PATH_MAX - 1] = '\0';
-
-        /* Remove surrounding quotes if present */
-        if (psx_exe_filename_buf[0] == '"')
-        {
-            size_t i;
-            for (i = 0; i + 1 < PSX_EXE_PATH_MAX && psx_exe_filename_buf[i + 1] != '\0'; ++i)
-                psx_exe_filename_buf[i] = psx_exe_filename_buf[i + 1];
-            psx_exe_filename_buf[i] = '\0';
-            /* remove trailing quote if left */
-            len = strlen(psx_exe_filename_buf);
-            if (len > 0 && psx_exe_filename_buf[len - 1] == '"')
-                psx_exe_filename_buf[len - 1] = '\0';
-        }
-
-        psx_exe_filename = psx_exe_filename_buf;
-        printf("Using PSX exe: %s (cwd set to %s)\n", psx_exe_filename, argv[0]);
+        size_t len = strlen(argv[1]);
+        if (len >= PSX_EXE_PATH_MAX)
+            len = PSX_EXE_PATH_MAX - 1;
+        memcpy(psx_exe_filename_buf, argv[1], len);
+        psx_exe_filename_buf[len] = '\0';
     }
 
     Init_SuperPSX();

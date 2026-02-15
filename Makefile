@@ -13,7 +13,7 @@ EE_LDFLAGS = -L$(PS2SDK)/ee/lib -L$(PS2SDK)/ports/lib
 GAMEARGS ?=
 ifneq ($(strip $(GAMEARGS)),)
 	# Prefix the current working directory so the guest sees PWD as argv[1]
-	PCSX2_GAMEARGS = -gameargs "host $(GAMEARGS)"
+	PCSX2_GAMEARGS = -gameargs "host: $(GAMEARGS)"
 else
 	PCSX2_GAMEARGS =
 endif
