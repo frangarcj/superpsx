@@ -23,7 +23,7 @@
 #include "loader.h"
 
 #ifdef ENABLE_HOST_LOG
-static FILE *host_log_file = NULL;
+FILE *host_log_file = NULL;
 #endif
 
 /* ---- Code buffer ---- */
@@ -1360,10 +1360,15 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
         else
         {
             /* GTE Command (Bit 25 = 1) */
-            // Call C helper: GTE_Execute(opcode, &cpu)
-            // $a0 = opcode
-            // $a1 = &cpu ($s0)
-            emit_load_imm32(REG_A0, opcode);
+            /* Read opcode from PSX RAM at runtime to handle self-modifying code.
+             * The COP2 opcode may change between calls (e.g. ps1-tests GTE suite
+             * uses self-modifying code to patch COP2 instructions at runtime). */
+            {
+                u32 phys = psx_pc & 0x1FFFFFFF;
+                emit_load_imm32(REG_T0, phys);      /* t0 = physical PSX address */
+                EMIT_ADDU(REG_T0, REG_T0, REG_S1);  /* t0 = psx_ram + phys */
+                EMIT_LW(REG_A0, 0, REG_T0);         /* a0 = *(psx_ram + phys) = current opcode */
+            }
             EMIT_MOVE(REG_A1, REG_S0);
             EMIT_JAL_ABS((u32)GTE_Execute);
             EMIT_NOP();

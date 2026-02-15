@@ -1,0 +1,597 @@
+===TEST: clipping ===
+File size: 1048576 bytes
+Detected 16-bit CT16S dump
+
+=== VRAM Dump Pixel Samples ===
+  BG(5,5): RGB=(248, 248, 248)
+  Center(160,120): RGB=(48, 88, 104)
+  V0-Red(45,220): RGB=(248, 248, 248)
+  V1-Green(275,220): RGB=(248, 248, 248)
+  V2-Blue(160,20): RGB=(248, 248, 248)
+  BigTri(768,256): RGB=(0, 0, 0)
+  BottomTri(160,360): RGB=(0, 0, 0)
+
+Saved vram_current.png
+Reference size: (1024, 512)
+
+=== Reference Pixel Samples ===
+  BG(5,5): RGB=(248, 248, 248)
+  Center(160,120): RGB=(48, 88, 104)
+  V0-Red(45,220): RGB=(248, 248, 248)
+  V1-Green(275,220): RGB=(248, 248, 248)
+  V2-Blue(160,20): RGB=(248, 248, 248)
+  BigTri(768,256): RGB=(0, 0, 0)
+  BottomTri(160,360): RGB=(0, 0, 0)
+
+=== Comparison Results ===
+  Max pixel channel diff: 8
+  Mean pixel channel diff: 0.02
+  Differing pixels: 3120/524288 (0.6%)
+  Main display (0-320, 0-240): 3120/76800 diff (4.1%)
+  Right region (518-1023): 0/259072 diff (0.0%)
+  Bottom display (0-320, 240-480): 0/76800 diff (0.0%)
+
+Saved vram_diff.png
+
+=== Detailed Diff Analysis ===
+  Unique max-channel diffs: [np.int64(8)]
+  Pixels with max diff = 8: 3120
+  Pixels with max diff = 16: 0
+  Pixels with max diff = 248: 0
+
+  Diff=8 in top triangle (0-320, 0-240): 3120
+  Diff=8 in bottom triangle (0-320, 240-480): 0
+  Diff=8 in big triangle (518-1023): 0
+
+RESULT: clipping MATCH=99.4% (diff=0.6%)
+
+===TEST: clut-cache ===
+File size: 1048576 bytes
+Detected 16-bit CT16S dump
+
+=== VRAM Dump Pixel Samples ===
+  BG(5,5): RGB=(0, 0, 0)
+  Center(160,120): RGB=(0, 0, 0)
+  V0-Red(45,220): RGB=(0, 0, 0)
+  V1-Green(275,220): RGB=(0, 0, 0)
+  V2-Blue(160,20): RGB=(0, 40, 0)
+  BigTri(768,256): RGB=(0, 0, 0)
+  BottomTri(160,360): RGB=(0, 0, 0)
+
+Saved vram_current.png
+Reference size: (1024, 512)
+
+=== Reference Pixel Samples ===
+  BG(5,5): RGB=(0, 0, 0)
+  Center(160,120): RGB=(248, 248, 248)
+  V0-Red(45,220): RGB=(0, 0, 0)
+  V1-Green(275,220): RGB=(0, 0, 0)
+  V2-Blue(160,20): RGB=(0, 40, 0)
+  BigTri(768,256): RGB=(0, 0, 0)
+  BottomTri(160,360): RGB=(0, 0, 0)
+
+=== Comparison Results ===
+  Max pixel channel diff: 248
+  Mean pixel channel diff: 0.96
+  Differing pixels: 4961/524288 (0.9%)
+  Main display (0-320, 0-240): 4321/76800 diff (5.6%)
+  Right region (518-1023): 0/259072 diff (0.0%)
+  Bottom display (0-320, 240-480): 640/76800 diff (0.8%)
+
+Saved vram_diff.png
+
+=== Detailed Diff Analysis ===
+  Unique max-channel diffs: [np.int64(8), np.int64(16), np.int64(24), np.int64(32), np.int64(40), np.int64(48), np.int64(56), np.int64(64), np.int64(72), np.int64(80), np.int64(88), np.int64(96), np.int64(104), np.int64(112), np.int64(120), np.int64(128), np.int64(136), np.int64(144), np.int64(152), np.int64(160)]
+  Pixels with max diff = 8: 56
+  Pixels with max diff = 16: 31
+  Pixels with max diff = 248: 810
+
+  Large diff (>=240) pixel locations (first 10):
+    (60,36): cur=(192, 88, 240) ref=(224, 8, 0)
+    (61,36): cur=(208, 216, 240) ref=(232, 8, 0)
+    (62,36): cur=(224, 88, 248) ref=(240, 8, 0)
+    (63,36): cur=(240, 216, 248) ref=(248, 8, 0)
+    (124,36): cur=(192, 120, 240) ref=(224, 24, 0)
+    (125,36): cur=(208, 248, 240) ref=(232, 24, 0)
+    (126,36): cur=(224, 120, 248) ref=(240, 24, 0)
+    (127,36): cur=(240, 248, 248) ref=(248, 24, 0)
+    (158,36): cur=(0, 0, 0) ref=(240, 32, 0)
+    (159,36): cur=(0, 0, 0) ref=(248, 32, 0)
+
+  Diff=8 in top triangle (0-320, 0-240): 56
+  Diff=8 in bottom triangle (0-320, 240-480): 0
+  Diff=8 in big triangle (518-1023): 0
+
+RESULT: clut-cache MATCH=99.1% (diff=0.9%)
+
+===TEST: lines ===
+File size: 1048576 bytes
+Detected 16-bit CT16S dump
+
+=== VRAM Dump Pixel Samples ===
+  BG(5,5): RGB=(248, 248, 248)
+  Center(160,120): RGB=(248, 248, 248)
+  V0-Red(45,220): RGB=(136, 0, 0)
+  V1-Green(275,220): RGB=(248, 248, 248)
+  V2-Blue(160,20): RGB=(248, 248, 248)
+  BigTri(768,256): RGB=(248, 248, 248)
+  BottomTri(160,360): RGB=(248, 248, 248)
+
+Saved vram_current.png
+Reference size: (1024, 512)
+
+=== Reference Pixel Samples ===
+  BG(5,5): RGB=(248, 248, 248)
+  Center(160,120): RGB=(248, 248, 248)
+  V0-Red(45,220): RGB=(136, 0, 0)
+  V1-Green(275,220): RGB=(248, 248, 248)
+  V2-Blue(160,20): RGB=(248, 248, 248)
+  BigTri(768,256): RGB=(248, 248, 248)
+  BottomTri(160,360): RGB=(248, 248, 248)
+
+=== Comparison Results ===
+  Max pixel channel diff: 248
+  Mean pixel channel diff: 0.20
+  Differing pixels: 830/524288 (0.2%)
+  Main display (0-320, 0-240): 830/76800 diff (1.1%)
+  Right region (518-1023): 0/259072 diff (0.0%)
+  Bottom display (0-320, 240-480): 0/76800 diff (0.0%)
+
+Saved vram_diff.png
+
+=== Detailed Diff Analysis ===
+  Unique max-channel diffs: [np.int64(8), np.int64(16), np.int64(24), np.int64(32), np.int64(40), np.int64(48), np.int64(56), np.int64(64), np.int64(72), np.int64(80), np.int64(88), np.int64(96), np.int64(104), np.int64(112), np.int64(120), np.int64(128), np.int64(136), np.int64(248)]
+  Pixels with max diff = 8: 283
+  Pixels with max diff = 16: 6
+  Pixels with max diff = 248: 485
+
+  Large diff (>=240) pixel locations (first 10):
+    (96,16): cur=(248, 248, 248) ref=(0, 0, 0)
+    (200,17): cur=(248, 248, 248) ref=(0, 0, 0)
+    (174,21): cur=(248, 248, 248) ref=(0, 0, 0)
+    (175,21): cur=(0, 0, 0) ref=(248, 248, 248)
+    (201,21): cur=(248, 248, 248) ref=(0, 0, 0)
+    (150,24): cur=(248, 248, 248) ref=(0, 0, 0)
+    (151,24): cur=(0, 0, 0) ref=(248, 248, 248)
+    (96,25): cur=(248, 248, 248) ref=(0, 0, 0)
+    (202,25): cur=(248, 248, 248) ref=(0, 0, 0)
+    (142,26): cur=(248, 248, 248) ref=(0, 0, 0)
+
+  Diff=8 in top triangle (0-320, 0-240): 283
+  Diff=8 in bottom triangle (0-320, 240-480): 0
+  Diff=8 in big triangle (518-1023): 0
+
+RESULT: lines MATCH=99.8% (diff=0.2%)
+
+===TEST: quad ===
+File size: 1048576 bytes
+Detected 16-bit CT16S dump
+
+=== VRAM Dump Pixel Samples ===
+  BG(5,5): RGB=(120, 248, 120)
+  Center(160,120): RGB=(120, 120, 120)
+  V0-Red(45,220): RGB=(248, 120, 248)
+  V1-Green(275,220): RGB=(248, 120, 248)
+  V2-Blue(160,20): RGB=(120, 240, 120)
+  BigTri(768,256): RGB=(248, 248, 248)
+  BottomTri(160,360): RGB=(248, 248, 248)
+
+Saved vram_current.png
+Reference size: (1024, 512)
+
+=== Reference Pixel Samples ===
+  BG(5,5): RGB=(120, 248, 120)
+  Center(160,120): RGB=(120, 120, 120)
+  V0-Red(45,220): RGB=(248, 120, 248)
+  V1-Green(275,220): RGB=(248, 120, 248)
+  V2-Blue(160,20): RGB=(120, 248, 120)
+  BigTri(768,256): RGB=(248, 248, 248)
+  BottomTri(160,360): RGB=(248, 248, 248)
+
+=== Comparison Results ===
+  Max pixel channel diff: 128
+  Mean pixel channel diff: 0.05
+  Differing pixels: 7694/524288 (1.5%)
+  Main display (0-320, 0-240): 7694/76800 diff (10.0%)
+  Right region (518-1023): 0/259072 diff (0.0%)
+  Bottom display (0-320, 240-480): 0/76800 diff (0.0%)
+
+Saved vram_diff.png
+
+=== Detailed Diff Analysis ===
+  Unique max-channel diffs: [np.int64(8), np.int64(128)]
+  Pixels with max diff = 8: 7690
+  Pixels with max diff = 16: 0
+  Pixels with max diff = 248: 0
+
+  Diff=8 in top triangle (0-320, 0-240): 7690
+  Diff=8 in bottom triangle (0-320, 240-480): 0
+  Diff=8 in big triangle (518-1023): 0
+
+RESULT: quad MATCH=98.5% (diff=1.5%)
+
+===TEST: rectangles ===
+File size: 1048576 bytes
+Detected 16-bit CT16S dump
+
+=== VRAM Dump Pixel Samples ===
+  BG(5,5): RGB=(128, 128, 128)
+  Center(160,120): RGB=(248, 248, 248)
+  V0-Red(45,220): RGB=(248, 248, 248)
+  V1-Green(275,220): RGB=(200, 88, 88)
+  V2-Blue(160,20): RGB=(104, 200, 56)
+  BigTri(768,256): RGB=(248, 248, 248)
+  BottomTri(160,360): RGB=(248, 248, 248)
+
+Saved vram_current.png
+Reference size: (1024, 512)
+
+=== Reference Pixel Samples ===
+  BG(5,5): RGB=(128, 128, 128)
+  Center(160,120): RGB=(248, 248, 248)
+  V0-Red(45,220): RGB=(248, 248, 248)
+  V1-Green(275,220): RGB=(200, 88, 88)
+  V2-Blue(160,20): RGB=(104, 200, 56)
+  BigTri(768,256): RGB=(248, 248, 248)
+  BottomTri(160,360): RGB=(248, 248, 248)
+
+=== Comparison Results ===
+  Max pixel channel diff: 0
+  Mean pixel channel diff: 0.00
+  Differing pixels: 0/524288 (0.0%)
+  Main display (0-320, 0-240): 0/76800 diff (0.0%)
+  Right region (518-1023): 0/259072 diff (0.0%)
+  Bottom display (0-320, 240-480): 0/76800 diff (0.0%)
+
+Saved vram_diff.png
+
+=== Detailed Diff Analysis ===
+  Pixels with max diff = 8: 0
+  Pixels with max diff = 16: 0
+  Pixels with max diff = 248: 0
+
+  Diff=8 in top triangle (0-320, 0-240): 0
+  Diff=8 in bottom triangle (0-320, 240-480): 0
+  Diff=8 in big triangle (518-1023): 0
+
+RESULT: rectangles MATCH=100.0% (diff=0.0%)
+
+===TEST: texture-flip ===
+File size: 1048576 bytes
+Detected 16-bit CT16S dump
+
+=== VRAM Dump Pixel Samples ===
+  BG(5,5): RGB=(40, 64, 8)
+  Center(160,120): RGB=(0, 40, 240)
+  V0-Red(45,220): RGB=(104, 8, 184)
+  V1-Green(275,220): RGB=(144, 56, 184)
+  V2-Blue(160,20): RGB=(0, 40, 40)
+  BigTri(768,256): RGB=(248, 248, 248)
+  BottomTri(160,360): RGB=(0, 40, 56)
+
+Saved vram_current.png
+Reference size: (1024, 512)
+
+=== Reference Pixel Samples ===
+  BG(5,5): RGB=(40, 64, 8)
+  Center(160,120): RGB=(0, 40, 240)
+  V0-Red(45,220): RGB=(104, 8, 184)
+  V1-Green(275,220): RGB=(144, 56, 184)
+  V2-Blue(160,20): RGB=(0, 40, 40)
+  BigTri(768,256): RGB=(248, 248, 248)
+  BottomTri(160,360): RGB=(0, 40, 56)
+
+=== Comparison Results ===
+  Max pixel channel diff: 248
+  Mean pixel channel diff: 0.33
+  Differing pixels: 4040/524288 (0.8%)
+  Main display (0-320, 0-240): 2/76800 diff (0.0%)
+  Right region (518-1023): 4036/259072 diff (1.6%)
+  Bottom display (0-320, 240-480): 2/76800 diff (0.0%)
+
+Saved vram_diff.png
+
+=== Detailed Diff Analysis ===
+  Unique max-channel diffs: [np.int64(128), np.int64(248)]
+  Pixels with max diff = 8: 0
+  Pixels with max diff = 16: 0
+  Pixels with max diff = 248: 8
+
+  Large diff (>=240) pixel locations (first 10):
+    (0,0): cur=(0, 0, 0) ref=(248, 248, 248)
+    (261,0): cur=(0, 0, 0) ref=(248, 248, 248)
+    (0,260): cur=(0, 0, 0) ref=(248, 248, 248)
+    (261,260): cur=(0, 0, 0) ref=(248, 248, 248)
+    (640,260): cur=(0, 0, 0) ref=(248, 248, 248)
+    (715,260): cur=(0, 0, 0) ref=(248, 248, 248)
+    (640,334): cur=(0, 0, 0) ref=(248, 248, 248)
+    (714,334): cur=(0, 0, 0) ref=(248, 248, 248)
+
+  Diff=8 in top triangle (0-320, 0-240): 0
+  Diff=8 in bottom triangle (0-320, 240-480): 0
+  Diff=8 in big triangle (518-1023): 0
+
+RESULT: texture-flip MATCH=99.2% (diff=0.8%)
+
+===TEST: texture-overflow ===
+File size: 1048576 bytes
+Detected 16-bit CT16S dump
+
+=== VRAM Dump Pixel Samples ===
+  BG(5,5): RGB=(248, 248, 248)
+  Center(160,120): RGB=(40, 64, 56)
+  V0-Red(45,220): RGB=(248, 248, 248)
+  V1-Green(275,220): RGB=(248, 248, 248)
+  V2-Blue(160,20): RGB=(232, 232, 224)
+  BigTri(768,256): RGB=(248, 0, 0)
+  BottomTri(160,360): RGB=(248, 0, 0)
+
+Saved vram_current.png
+Reference size: (1024, 512)
+
+=== Reference Pixel Samples ===
+  BG(5,5): RGB=(248, 248, 248)
+  Center(160,120): RGB=(40, 64, 56)
+  V0-Red(45,220): RGB=(248, 248, 248)
+  V1-Green(275,220): RGB=(248, 248, 248)
+  V2-Blue(160,20): RGB=(232, 232, 224)
+  BigTri(768,256): RGB=(248, 0, 0)
+  BottomTri(160,360): RGB=(248, 0, 0)
+
+=== Comparison Results ===
+  Max pixel channel diff: 0
+  Mean pixel channel diff: 0.00
+  Differing pixels: 0/524288 (0.0%)
+  Main display (0-320, 0-240): 0/76800 diff (0.0%)
+  Right region (518-1023): 0/259072 diff (0.0%)
+  Bottom display (0-320, 240-480): 0/76800 diff (0.0%)
+
+Saved vram_diff.png
+
+=== Detailed Diff Analysis ===
+  Pixels with max diff = 8: 0
+  Pixels with max diff = 16: 0
+  Pixels with max diff = 248: 0
+
+  Diff=8 in top triangle (0-320, 0-240): 0
+  Diff=8 in bottom triangle (0-320, 240-480): 0
+  Diff=8 in big triangle (518-1023): 0
+
+RESULT: texture-overflow MATCH=100.0% (diff=0.0%)
+
+===TEST: transparency ===
+File size: 1048576 bytes
+Detected 16-bit CT16S dump
+
+=== VRAM Dump Pixel Samples ===
+  BG(5,5): RGB=(0, 0, 0)
+  Center(160,120): RGB=(128, 128, 128)
+  V0-Red(45,220): RGB=(0, 0, 0)
+  V1-Green(275,220): RGB=(248, 248, 248)
+  V2-Blue(160,20): RGB=(128, 128, 128)
+  BigTri(768,256): RGB=(0, 0, 0)
+  BottomTri(160,360): RGB=(0, 0, 0)
+
+Saved vram_current.png
+Reference size: (1024, 512)
+
+=== Reference Pixel Samples ===
+  BG(5,5): RGB=(0, 0, 0)
+  Center(160,120): RGB=(128, 128, 128)
+  V0-Red(45,220): RGB=(0, 0, 0)
+  V1-Green(275,220): RGB=(248, 248, 248)
+  V2-Blue(160,20): RGB=(128, 128, 128)
+  BigTri(768,256): RGB=(248, 248, 248)
+  BottomTri(160,360): RGB=(248, 248, 248)
+
+=== Comparison Results ===
+  Max pixel channel diff: 248
+  Mean pixel channel diff: 211.67
+  Differing pixels: 447488/524288 (85.4%)
+  Main display (0-320, 0-240): 0/76800 diff (0.0%)
+  Right region (518-1023): 259072/259072 diff (100.0%)
+  Bottom display (0-320, 240-480): 76800/76800 diff (100.0%)
+
+Saved vram_diff.png
+
+=== Detailed Diff Analysis ===
+  Unique max-channel diffs: [np.int64(248)]
+  Pixels with max diff = 8: 0
+  Pixels with max diff = 16: 0
+  Pixels with max diff = 248: 447488
+
+  Large diff (>=240) pixel locations (first 10):
+    (320,0): cur=(0, 0, 0) ref=(248, 248, 248)
+    (321,0): cur=(0, 0, 0) ref=(248, 248, 248)
+    (322,0): cur=(0, 0, 0) ref=(248, 248, 248)
+    (323,0): cur=(0, 0, 0) ref=(248, 248, 248)
+    (324,0): cur=(0, 0, 0) ref=(248, 248, 248)
+    (325,0): cur=(0, 0, 0) ref=(248, 248, 248)
+    (326,0): cur=(0, 0, 0) ref=(248, 248, 248)
+    (327,0): cur=(0, 0, 0) ref=(248, 248, 248)
+    (328,0): cur=(0, 0, 0) ref=(248, 248, 248)
+    (329,0): cur=(0, 0, 0) ref=(248, 248, 248)
+
+  Diff=8 in top triangle (0-320, 0-240): 0
+  Diff=8 in bottom triangle (0-320, 240-480): 0
+  Diff=8 in big triangle (518-1023): 0
+
+RESULT: transparency MATCH=14.6% (diff=85.4%)
+
+===TEST: triangle ===
+File size: 1048576 bytes
+Detected 16-bit CT16S dump
+
+=== VRAM Dump Pixel Samples ===
+  BG(5,5): RGB=(248, 248, 248)
+  Center(160,120): RGB=(64, 64, 120)
+  V0-Red(45,220): RGB=(240, 0, 0)
+  V1-Green(275,220): RGB=(0, 240, 0)
+  V2-Blue(160,20): RGB=(0, 0, 248)
+  BigTri(768,256): RGB=(56, 56, 120)
+  BottomTri(160,360): RGB=(56, 56, 120)
+
+Saved vram_current.png
+Reference size: (1024, 512)
+
+=== Reference Pixel Samples ===
+  BG(5,5): RGB=(248, 248, 248)
+  Center(160,120): RGB=(64, 64, 120)
+  V0-Red(45,220): RGB=(248, 0, 0)
+  V1-Green(275,220): RGB=(0, 248, 0)
+  V2-Blue(160,20): RGB=(0, 0, 248)
+  BigTri(768,256): RGB=(64, 64, 120)
+  BottomTri(160,360): RGB=(56, 56, 120)
+
+=== Comparison Results ===
+  Max pixel channel diff: 8
+  Mean pixel channel diff: 0.14
+  Differing pixels: 26174/524288 (5.0%)
+  Main display (0-320, 0-240): 3244/76800 diff (4.2%)
+  Right region (518-1023): 18745/259072 diff (7.2%)
+  Bottom display (0-320, 240-480): 4185/76800 diff (5.4%)
+
+Saved vram_diff.png
+
+=== Detailed Diff Analysis ===
+  Unique max-channel diffs: [np.int64(8)]
+  Pixels with max diff = 8: 26174
+  Pixels with max diff = 16: 0
+  Pixels with max diff = 248: 0
+
+  Diff=8 in top triangle (0-320, 0-240): 3244
+  Diff=8 in bottom triangle (0-320, 240-480): 4185
+  Diff=8 in big triangle (518-1023): 18745
+
+RESULT: triangle MATCH=95.0% (diff=5.0%)
+
+===TEST: uv-interpolation ===
+File size: 1048576 bytes
+Detected 16-bit CT16S dump
+
+=== VRAM Dump Pixel Samples ===
+  BG(5,5): RGB=(0, 0, 0)
+  Center(160,120): RGB=(0, 0, 0)
+  V0-Red(45,220): RGB=(0, 0, 0)
+  V1-Green(275,220): RGB=(0, 0, 0)
+  V2-Blue(160,20): RGB=(0, 0, 0)
+  BigTri(768,256): RGB=(0, 0, 0)
+  BottomTri(160,360): RGB=(0, 0, 0)
+
+Saved vram_current.png
+Reference size: (1024, 512)
+
+=== Reference Pixel Samples ===
+  BG(5,5): RGB=(0, 0, 0)
+  Center(160,120): RGB=(0, 0, 0)
+  V0-Red(45,220): RGB=(248, 0, 0)
+  V1-Green(275,220): RGB=(0, 0, 0)
+  V2-Blue(160,20): RGB=(0, 0, 0)
+  BigTri(768,256): RGB=(0, 0, 0)
+  BottomTri(160,360): RGB=(0, 0, 0)
+
+=== Comparison Results ===
+  Max pixel channel diff: 248
+  Mean pixel channel diff: 5.19
+  Differing pixels: 40509/524288 (7.7%)
+  Main display (0-320, 0-240): 28680/76800 diff (37.3%)
+  Right region (518-1023): 0/259072 diff (0.0%)
+  Bottom display (0-320, 240-480): 8437/76800 diff (11.0%)
+
+Saved vram_diff.png
+
+=== Detailed Diff Analysis ===
+  Unique max-channel diffs: [np.int64(8), np.int64(248)]
+  Pixels with max diff = 8: 7869
+  Pixels with max diff = 16: 0
+  Pixels with max diff = 248: 32640
+
+  Large diff (>=240) pixel locations (first 10):
+    (0,1): cur=(0, 0, 0) ref=(248, 0, 0)
+    (0,2): cur=(0, 0, 0) ref=(248, 0, 0)
+    (1,2): cur=(0, 0, 0) ref=(0, 248, 0)
+    (0,3): cur=(0, 0, 0) ref=(248, 0, 0)
+    (1,3): cur=(0, 0, 0) ref=(248, 0, 0)
+    (2,3): cur=(0, 0, 0) ref=(0, 248, 0)
+    (0,4): cur=(0, 0, 0) ref=(248, 0, 0)
+    (1,4): cur=(0, 0, 0) ref=(248, 0, 0)
+    (2,4): cur=(0, 0, 0) ref=(0, 248, 0)
+    (3,4): cur=(0, 0, 0) ref=(0, 248, 0)
+
+  Diff=8 in top triangle (0-320, 0-240): 0
+  Diff=8 in bottom triangle (0-320, 240-480): 4477
+  Diff=8 in big triangle (518-1023): 0
+
+RESULT: uv-interpolation MATCH=92.3% (diff=7.7%)
+
+===TEST: vram-to-vram-overlap ===
+File size: 1048576 bytes
+Detected 16-bit CT16S dump
+
+=== VRAM Dump Pixel Samples ===
+  BG(5,5): RGB=(0, 0, 0)
+  Center(160,120): RGB=(0, 0, 0)
+  V0-Red(45,220): RGB=(32, 112, 0)
+  V1-Green(275,220): RGB=(0, 0, 0)
+  V2-Blue(160,20): RGB=(0, 0, 0)
+  BigTri(768,256): RGB=(128, 0, 0)
+  BottomTri(160,360): RGB=(0, 0, 0)
+
+Saved vram_current.png
+Reference size: (1024, 512)
+
+=== Reference Pixel Samples ===
+  BG(5,5): RGB=(0, 0, 0)
+  Center(160,120): RGB=(0, 0, 0)
+  V0-Red(45,220): RGB=(32, 112, 0)
+  V1-Green(275,220): RGB=(0, 0, 0)
+  V2-Blue(160,20): RGB=(0, 0, 0)
+  BigTri(768,256): RGB=(128, 0, 0)
+  BottomTri(160,360): RGB=(0, 0, 0)
+
+=== Comparison Results ===
+  Max pixel channel diff: 248
+  Mean pixel channel diff: 5.94
+  Differing pixels: 25644/524288 (4.9%)
+  Main display (0-320, 0-240): 5854/76800 diff (7.6%)
+  Right region (518-1023): 14726/259072 diff (5.7%)
+  Bottom display (0-320, 240-480): 2096/76800 diff (2.7%)
+
+Saved vram_diff.png
+
+=== Detailed Diff Analysis ===
+  Unique max-channel diffs: [np.int64(8), np.int64(16), np.int64(32), np.int64(48), np.int64(56), np.int64(64), np.int64(80), np.int64(96), np.int64(104), np.int64(112), np.int64(120), np.int64(128), np.int64(144), np.int64(160), np.int64(176), np.int64(192), np.int64(208), np.int64(224), np.int64(232), np.int64(240)]
+  Pixels with max diff = 8: 1594
+  Pixels with max diff = 16: 375
+  Pixels with max diff = 248: 13680
+
+  Large diff (>=240) pixel locations (first 10):
+    (2,12): cur=(248, 120, 56) ref=(0, 0, 0)
+    (3,12): cur=(248, 0, 0) ref=(248, 248, 248)
+    (5,12): cur=(248, 0, 0) ref=(248, 248, 248)
+    (6,12): cur=(0, 120, 56) ref=(248, 248, 248)
+    (7,12): cur=(248, 0, 0) ref=(0, 0, 0)
+    (8,12): cur=(248, 0, 0) ref=(0, 0, 0)
+    (9,12): cur=(248, 0, 0) ref=(0, 0, 0)
+    (11,12): cur=(0, 0, 0) ref=(248, 248, 248)
+    (20,12): cur=(0, 0, 0) ref=(248, 248, 248)
+    (21,12): cur=(0, 0, 0) ref=(248, 248, 248)
+
+  Diff=8 in top triangle (0-320, 0-240): 506
+  Diff=8 in bottom triangle (0-320, 240-480): 192
+  Diff=8 in big triangle (518-1023): 728
+
+RESULT: vram-to-vram-overlap MATCH=95.1% (diff=4.9%)
+
+=== SUMMARY ===
+clipping: 99.4%
+clut-cache: 99.1%
+lines: 99.8%
+quad: 98.5%
+rectangles: 100.0%
+texture-flip: 99.2%
+texture-overflow: 100.0%
+transparency: 14.6%
+triangle: 95.0%
+uv-interpolation: 92.3%
+vram-to-vram-overlap: 95.1%
