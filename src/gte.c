@@ -185,15 +185,17 @@ static s16 get_matrix(R3000CPU *cpu, int mx, int row, int col) {
         case 2: base = 16; break;  /* Color (LCM) */
         default: {
             /* mx=3: garbage matrix
-             * Elements: -60h, +60h, IR0, RT13, RT13, RT13, RT22, RT22, RT22 */
+             * Row 0: -(R<<4), R<<4, IR0  (R = RGBC red byte)
+             * Row 1: R13, R13, R13       (R13 = lo16 of ctrl 1)
+             * Row 2: R22, R22, R22       (R22 = lo16 of ctrl 2) */
             int idx = row * 3 + col;
             switch (idx) {
-                case 0: return (s16)-0x60;
-                case 1: return (s16)0x60;
+                case 0: { s16 r = (s16)(cpu->cp2_data[d_RGBC] & 0xFF); return -(r << 4); }
+                case 1: { s16 r = (s16)(cpu->cp2_data[d_RGBC] & 0xFF); return r << 4; }
                 case 2: return (s16)(s32)cpu->cp2_data[d_IR0];
-                case 3: return hi16(cpu->cp2_ctrl[c_RT13RT21]);
-                case 4: return hi16(cpu->cp2_ctrl[c_RT13RT21]);
-                case 5: return hi16(cpu->cp2_ctrl[c_RT13RT21]);
+                case 3: return lo16(cpu->cp2_ctrl[c_RT13RT21]);
+                case 4: return lo16(cpu->cp2_ctrl[c_RT13RT21]);
+                case 5: return lo16(cpu->cp2_ctrl[c_RT13RT21]);
                 case 6: return lo16(cpu->cp2_ctrl[c_RT22RT23]);
                 case 7: return lo16(cpu->cp2_ctrl[c_RT22RT23]);
                 case 8: return lo16(cpu->cp2_ctrl[c_RT22RT23]);
@@ -346,31 +348,46 @@ static void gte_mvmva(R3000CPU *cpu, int sf, int lm, int mx, int v, int cv) {
     s16 vz = get_vector(cpu, v, 2);
 
     if (cv == 2) {
-        /* FC/Bugged: flags set as if full computation, result = only last term */
+        /* FC/Bugged: MAC = last 2 multiplication terms only (m_n2*vy + m_n3*vz).
+         * The first step (FC<<12 + m_n1*vx) is computed for flag side-effects only.
+         * Ref: PCSX-Redux gte.cc MVMVA cv=2 path */
         s64 fc1 = (s64)(s32)C(c_RFC) << 12;
         s64 fc2 = (s64)(s32)C(c_GFC) << 12;
         s64 fc3 = (s64)(s32)C(c_BFC) << 12;
 
-        /* Compute full with overflow checks at each addition step */
-        s64 t;
-        t = fc1 + (s64)get_matrix(cpu, mx, 0, 0) * vx; check_mac_overflow(t, 1);
-        t += (s64)get_matrix(cpu, mx, 0, 1) * vy; check_mac_overflow(t, 1);
-        t += (s64)get_matrix(cpu, mx, 0, 2) * vz; check_mac_overflow(t, 1);
+        /* Step 1: MAC stores m_n2*vy + m_n3*vz (last 2 terms) */
+        s64 m1 = (s64)get_matrix(cpu, mx, 0, 1) * vy + (s64)get_matrix(cpu, mx, 0, 2) * vz;
+        s64 m2 = (s64)get_matrix(cpu, mx, 1, 1) * vy + (s64)get_matrix(cpu, mx, 1, 2) * vz;
+        s64 m3 = (s64)get_matrix(cpu, mx, 2, 1) * vy + (s64)get_matrix(cpu, mx, 2, 2) * vz;
 
-        t = fc2 + (s64)get_matrix(cpu, mx, 1, 0) * vx; check_mac_overflow(t, 2);
-        t += (s64)get_matrix(cpu, mx, 1, 1) * vy; check_mac_overflow(t, 2);
-        t += (s64)get_matrix(cpu, mx, 1, 2) * vz; check_mac_overflow(t, 2);
+        /* Overflow check on the 2-term sums */
+        check_mac_overflow(m1, 1);
+        check_mac_overflow(m2, 2);
+        check_mac_overflow(m3, 3);
 
-        t = fc3 + (s64)get_matrix(cpu, mx, 2, 0) * vx; check_mac_overflow(t, 3);
-        t += (s64)get_matrix(cpu, mx, 2, 1) * vy; check_mac_overflow(t, 3);
-        t += (s64)get_matrix(cpu, mx, 2, 2) * vz; check_mac_overflow(t, 3);
+        /* Store MAC (shifted, truncated to 32 bits) */
+        D(d_MAC1) = (u32)(s32)mac_shift(m1, sf);
+        D(d_MAC2) = (u32)(s32)mac_shift(m2, sf);
+        D(d_MAC3) = (u32)(s32)mac_shift(m3, sf);
 
-        /* Bug: result = last multiplication term only */
-        s64 m1 = (s64)get_matrix(cpu, mx, 0, 2) * vz;
-        s64 m2 = (s64)get_matrix(cpu, mx, 1, 2) * vz;
-        s64 m3 = (s64)get_matrix(cpu, mx, 2, 2) * vz;
+        /* Step 2: Compute FC<<12 + m_n1*vx for flag side effects only */
+        s64 b1 = fc1 + (s64)get_matrix(cpu, mx, 0, 0) * vx;
+        s64 b2 = fc2 + (s64)get_matrix(cpu, mx, 1, 0) * vx;
+        s64 b3 = fc3 + (s64)get_matrix(cpu, mx, 2, 0) * vx;
 
-        store_mac_ir(cpu, m1, m2, m3, sf, lm);
+        check_mac_overflow(b1, 1);
+        check_mac_overflow(b2, 2);
+        check_mac_overflow(b3, 3);
+
+        /* IR saturation flags from the bugged path (lm=0) */
+        saturate_ir((s32)mac_shift(b1, sf), 1, 0);
+        saturate_ir((s32)mac_shift(b2, sf), 2, 0);
+        saturate_ir((s32)mac_shift(b3, sf), 3, 0);
+
+        /* Actual IR from the stored MAC values (real lm) */
+        D(d_IR1) = (u32)saturate_ir((s32)D(d_MAC1), 1, lm);
+        D(d_IR2) = (u32)saturate_ir((s32)D(d_MAC2), 2, lm);
+        D(d_IR3) = (u32)saturate_ir((s32)D(d_MAC3), 3, lm);
         return;
     }
 
@@ -383,15 +400,26 @@ static void gte_mvmva(R3000CPU *cpu, int sf, int lm, int mx, int v, int cv) {
         tx3 = (s64)get_translation(cpu, cv, 2) << 12;
     }
 
-    s64 m1 = tx1 + (s64)get_matrix(cpu, mx, 0, 0) * vx +
-                    (s64)get_matrix(cpu, mx, 0, 1) * vy +
-                    (s64)get_matrix(cpu, mx, 0, 2) * vz;
-    s64 m2 = tx2 + (s64)get_matrix(cpu, mx, 1, 0) * vx +
-                    (s64)get_matrix(cpu, mx, 1, 1) * vy +
-                    (s64)get_matrix(cpu, mx, 1, 2) * vz;
-    s64 m3 = tx3 + (s64)get_matrix(cpu, mx, 2, 0) * vx +
-                    (s64)get_matrix(cpu, mx, 2, 1) * vy +
-                    (s64)get_matrix(cpu, mx, 2, 2) * vz;
+    /* Hardware checks 44-bit overflow at each accumulator step.
+     * An intermediate overflow that gets canceled by later terms
+     * still sets the flag permanently for this operation. */
+    s64 m1 = tx1;
+    check_mac_overflow(m1, 1);
+    m1 += (s64)get_matrix(cpu, mx, 0, 0) * vx; check_mac_overflow(m1, 1);
+    m1 += (s64)get_matrix(cpu, mx, 0, 1) * vy; check_mac_overflow(m1, 1);
+    m1 += (s64)get_matrix(cpu, mx, 0, 2) * vz; check_mac_overflow(m1, 1);
+
+    s64 m2 = tx2;
+    check_mac_overflow(m2, 2);
+    m2 += (s64)get_matrix(cpu, mx, 1, 0) * vx; check_mac_overflow(m2, 2);
+    m2 += (s64)get_matrix(cpu, mx, 1, 1) * vy; check_mac_overflow(m2, 2);
+    m2 += (s64)get_matrix(cpu, mx, 1, 2) * vz; check_mac_overflow(m2, 2);
+
+    s64 m3 = tx3;
+    check_mac_overflow(m3, 3);
+    m3 += (s64)get_matrix(cpu, mx, 2, 0) * vx; check_mac_overflow(m3, 3);
+    m3 += (s64)get_matrix(cpu, mx, 2, 1) * vy; check_mac_overflow(m3, 3);
+    m3 += (s64)get_matrix(cpu, mx, 2, 2) * vz; check_mac_overflow(m3, 3);
 
     store_mac_ir(cpu, m1, m2, m3, sf, lm);
 }
@@ -542,42 +570,35 @@ static void gte_cmd_sqr(R3000CPU *cpu, int sf, int lm) {
  * Color calculation helpers
  * ================================================================ */
 
-/* Interpolate: MAC + (FC - MAC) * IR0 */
-static void interpolate_color(R3000CPU *cpu, int sf, int lm) {
+/* Interpolate: result = acc + (FC - acc) * IR0
+ * acc1/acc2/acc3 are the RAW accumulator values (before sf-shift). */
+static void interpolate_color_acc(R3000CPU *cpu, s64 acc1, s64 acc2, s64 acc3, int sf, int lm) {
     s64 fc1 = (s64)(s32)C(c_RFC) << 12;
     s64 fc2 = (s64)(s32)C(c_GFC) << 12;
     s64 fc3 = (s64)(s32)C(c_BFC) << 12;
 
-    /* Reconstruct the pre-shift MAC values */
-    s64 mac1_full = (s64)(s32)D(d_MAC1);
-    s64 mac2_full = (s64)(s32)D(d_MAC2);
-    s64 mac3_full = (s64)(s32)D(d_MAC3);
-
-    if (sf) {
-        mac1_full <<= 12;
-        mac2_full <<= 12;
-        mac3_full <<= 12;
-    }
-
-    s64 d1 = fc1 - mac1_full;
-    s64 d2 = fc2 - mac2_full;
-    s64 d3 = fc3 - mac3_full;
+    s64 d1 = fc1 - acc1;
+    s64 d2 = fc2 - acc2;
+    s64 d3 = fc3 - acc3;
 
     check_mac_overflow(d1, 1);
     check_mac_overflow(d2, 2);
     check_mac_overflow(d3, 3);
 
-    /* Saturate to -8000h..+7FFFh (lm=0 for this intermediate step) */
-    s32 tmp_ir1 = saturate_ir(mac_shift(d1, sf), 1, 0);
-    s32 tmp_ir2 = saturate_ir(mac_shift(d2, sf), 2, 0);
-    s32 tmp_ir3 = saturate_ir(mac_shift(d3, sf), 3, 0);
+    /* Saturate to -8000h..+7FFFh (lm=0 for this intermediate step).
+     * The hardware stores (shifted >> sf*12) in 32-bit MAC first,
+     * then derives IR from that truncated 32-bit value. */
+    s32 tmp_ir1 = saturate_ir((s32)mac_shift(d1, sf), 1, 0);
+    s32 tmp_ir2 = saturate_ir((s32)mac_shift(d2, sf), 2, 0);
+    s32 tmp_ir3 = saturate_ir((s32)mac_shift(d3, sf), 3, 0);
 
     s16 ir0 = (s16)(s32)D(d_IR0);
 
-    /* [MAC1,MAC2,MAC3] = ([IR1,IR2,IR3] * IR0) + [MAC1,MAC2,MAC3] */
-    s64 r1 = (s64)tmp_ir1 * ir0 + mac1_full;
-    s64 r2 = (s64)tmp_ir2 * ir0 + mac2_full;
-    s64 r3 = (s64)tmp_ir3 * ir0 + mac3_full;
+    /* [MAC1,MAC2,MAC3] = ([IR1,IR2,IR3] * IR0) + accumulator.
+     * Use safe 32-bit multiply since tmp_ir and ir0 fit in s16 range. */
+    s64 r1 = (s64)((s32)tmp_ir1 * (s32)ir0) + acc1;
+    s64 r2 = (s64)((s32)tmp_ir2 * (s32)ir0) + acc2;
+    s64 r3 = (s64)((s32)tmp_ir3 * (s32)ir0) + acc3;
 
     store_mac_ir(cpu, r1, r2, r3, sf, lm);
 }
@@ -660,7 +681,7 @@ static void gte_ncds_core(R3000CPU *cpu, int v, int sf, int lm) {
     s64 m3 = ((s64)b * (s16)(s32)D(d_IR3)) << 4;
 
     store_mac_ir(cpu, m1, m2, m3, sf, lm);
-    interpolate_color(cpu, sf, lm);
+    interpolate_color_acc(cpu, m1, m2, m3, sf, lm);
     push_color(cpu);
 }
 
@@ -707,7 +728,7 @@ static void gte_cmd_cdp(R3000CPU *cpu, int sf, int lm) {
     s64 m3 = ((s64)b * (s16)(s32)D(d_IR3)) << 4;
 
     store_mac_ir(cpu, m1, m2, m3, sf, lm);
-    interpolate_color(cpu, sf, lm);
+    interpolate_color_acc(cpu, m1, m2, m3, sf, lm);
     push_color(cpu);
 }
 
@@ -719,12 +740,18 @@ static void gte_cmd_dpcs(R3000CPU *cpu, int sf, int lm) {
     u8 g = (D(d_RGBC) >> 8) & 0xFF;
     u8 b = (D(d_RGBC) >> 16) & 0xFF;
 
+    /* Accumulator = [R,G,B] << 16 */
     s64 m1 = (s64)r << 16;
     s64 m2 = (s64)g << 16;
     s64 m3 = (s64)b << 16;
 
-    store_mac_ir(cpu, m1, m2, m3, sf, lm);
-    interpolate_color(cpu, sf, lm);
+    /* Overflow check (these never overflow, but set flags if needed) */
+    check_mac_overflow(m1, 1);
+    check_mac_overflow(m2, 2);
+    check_mac_overflow(m3, 3);
+
+    /* Interpolate directly from accumulator values */
+    interpolate_color_acc(cpu, m1, m2, m3, sf, lm);
     push_color(cpu);
 }
 
@@ -742,8 +769,11 @@ static void gte_cmd_dpct(R3000CPU *cpu, int sf, int lm) {
         s64 m2 = (s64)g << 16;
         s64 m3 = (s64)b << 16;
 
-        store_mac_ir(cpu, m1, m2, m3, sf, lm);
-        interpolate_color(cpu, sf, lm);
+        check_mac_overflow(m1, 1);
+        check_mac_overflow(m2, 2);
+        check_mac_overflow(m3, 3);
+
+        interpolate_color_acc(cpu, m1, m2, m3, sf, lm);
         push_color(cpu);
     }
 }
@@ -757,7 +787,7 @@ static void gte_cmd_intpl(R3000CPU *cpu, int sf, int lm) {
     s64 m3 = (s64)(s16)(s32)D(d_IR3) << 12;
 
     store_mac_ir(cpu, m1, m2, m3, sf, lm);
-    interpolate_color(cpu, sf, lm);
+    interpolate_color_acc(cpu, m1, m2, m3, sf, lm);
     push_color(cpu);
 }
 
@@ -774,7 +804,7 @@ static void gte_cmd_dcpl(R3000CPU *cpu, int sf, int lm) {
     s64 m3 = ((s64)b * (s16)(s32)D(d_IR3)) << 4;
 
     store_mac_ir(cpu, m1, m2, m3, sf, lm);
-    interpolate_color(cpu, sf, lm);
+    interpolate_color_acc(cpu, m1, m2, m3, sf, lm);
     push_color(cpu);
 }
 
