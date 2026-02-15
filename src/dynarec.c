@@ -1672,7 +1672,7 @@ void Run_CPU(void)
                     }
                     else
                     {
-                        printf("DYNAREC: Failed to load binary. Continuing BIOS.\n");
+                        printf("DYNAREC: Failed to load binary %s. Continuing BIOS.\n", psx_exe_filename);
                     }
                 }
                 else
