@@ -1320,31 +1320,36 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
             // These correspond to rs=0, rs=2, rs=4, rs=6.
 
             if (rs == 0x00)
-            { /* MFC2 rt, rd */
-                // printf("MFC2 %d, %d\n", rt, rd);
-                EMIT_LW(REG_T0, CPU_CP2_DATA(rd), REG_S0);
-                emit_store_psx_reg(rt, REG_T0);
+            { /* MFC2 rt, rd - read GTE data register */
+                EMIT_MOVE(REG_A0, REG_S0);          /* a0 = cpu */
+                emit_load_imm32(REG_A1, rd);         /* a1 = reg index */
+                EMIT_JAL_ABS((u32)GTE_ReadData);
+                EMIT_NOP();
+                emit_store_psx_reg(rt, REG_V0);      /* rt = result */
             }
             else if (rs == 0x02)
-            { /* CFC2 rt, rd */
-                // printf("CFC2 %d, %d\n", rt, rd);
-                EMIT_LW(REG_T0, CPU_CP2_CTRL(rd), REG_S0);
-                emit_store_psx_reg(rt, REG_T0);
+            { /* CFC2 rt, rd - read GTE control register */
+                EMIT_MOVE(REG_A0, REG_S0);          /* a0 = cpu */
+                emit_load_imm32(REG_A1, rd);         /* a1 = reg index */
+                EMIT_JAL_ABS((u32)GTE_ReadCtrl);
+                EMIT_NOP();
+                emit_store_psx_reg(rt, REG_V0);      /* rt = result */
             }
             else if (rs == 0x04)
-            { /* MTC2 rt, rd */
-                if (total_instructions < 1000)
-                {
-                    /* Emit log call? No, hard to emit printf call here easily without save/restore.
-                       Just rely on Compile log. */
-                }
-                emit_load_psx_reg(REG_T0, rt);
-                EMIT_SW(REG_T0, CPU_CP2_DATA(rd), REG_S0);
+            { /* MTC2 rt, rd - write GTE data register */
+                EMIT_MOVE(REG_A0, REG_S0);          /* a0 = cpu */
+                emit_load_imm32(REG_A1, rd);         /* a1 = reg index */
+                emit_load_psx_reg(6, rt);            /* a2 = value */
+                EMIT_JAL_ABS((u32)GTE_WriteData);
+                EMIT_NOP();
             }
             else if (rs == 0x06)
-            { /* CTC2 rt, rd */
-                emit_load_psx_reg(REG_T0, rt);
-                EMIT_SW(REG_T0, CPU_CP2_CTRL(rd), REG_S0);
+            { /* CTC2 rt, rd - write GTE control register */
+                EMIT_MOVE(REG_A0, REG_S0);          /* a0 = cpu */
+                emit_load_imm32(REG_A1, rd);         /* a1 = reg index */
+                emit_load_psx_reg(6, rt);            /* a2 = value */
+                EMIT_JAL_ABS((u32)GTE_WriteCtrl);
+                EMIT_NOP();
             }
             else
             {
@@ -1454,8 +1459,12 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
         EMIT_ADDIU(REG_A0, REG_A0, imm);
         EMIT_JAL_ABS((u32)ReadWord);
         EMIT_NOP();
-        // Store result ($v0) to CP2_DATA[rt]
-        EMIT_SW(REG_V0, CPU_CP2_DATA(rt), REG_S0);
+        // Write result through GTE helper for proper register behavior
+        EMIT_MOVE(REG_A0, REG_S0);          /* a0 = cpu */
+        emit_load_imm32(REG_A1, rt);         /* a1 = reg index */
+        EMIT_MOVE(6, REG_V0);               /* a2 = value from ReadWord */
+        EMIT_JAL_ABS((u32)GTE_WriteData);
+        EMIT_NOP();
     }
     break;
 
@@ -1464,9 +1473,15 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
     {
         // SWC2 rt, offset(base)
         // rt is source from CP2 Data Registers
+        // First read the GTE data register through helper
+        EMIT_MOVE(REG_A0, REG_S0);          /* a0 = cpu */
+        emit_load_imm32(REG_A1, rt);         /* a1 = reg index */
+        EMIT_JAL_ABS((u32)GTE_ReadData);
+        EMIT_NOP();
+        // Then write to memory
         emit_load_psx_reg(REG_A0, rs);
         EMIT_ADDIU(REG_A0, REG_A0, imm);
-        EMIT_LW(REG_A1, CPU_CP2_DATA(rt), REG_S0);
+        EMIT_MOVE(REG_A1, REG_V0);          /* a1 = value from GTE_ReadData */
         EMIT_JAL_ABS((u32)WriteWord);
         EMIT_NOP();
     }
@@ -1633,25 +1648,33 @@ void Run_CPU(void)
             if (!binary_loaded)
             {
                 printf("DYNAREC: Reached BIOS Shell Entry (0xBFC06FF0). Loading binary...\n");
-                if (Load_PSX_EXE(psx_exe_filename, &cpu) == 0)
+                if (psx_exe_filename && psx_exe_filename[0] != '\0')
                 {
-                    printf("DYNAREC: Binary loaded successfully. Jump to PC=0x%08X\n", (unsigned)cpu.pc);
+                    if (Load_PSX_EXE(psx_exe_filename, &cpu) == 0)
+                    {
+                        printf("DYNAREC: Binary loaded successfully. Jump to PC=0x%08X\n", (unsigned)cpu.pc);
 #ifdef ENABLE_HOST_LOG
-                    host_log_file = fopen("output.log", "w");
+                        host_log_file = fopen("output.log", "w");
 #endif
-                    binary_loaded = 1;
-                    /* Flush cache for new code */
-                    FlushCache(0);
-                    FlushCache(2);
-                    /* Reset stuck count as we changed PC */
-                    stuck_pc = cpu.pc;
-                    stuck_count = 0;
-                    continue; /* Resume execution at new PC */
+                        binary_loaded = 1;
+                        /* Flush cache for new code */
+                        FlushCache(0);
+                        FlushCache(2);
+                        /* Reset stuck count as we changed PC */
+                        stuck_pc = cpu.pc;
+                        stuck_count = 0;
+                        continue; /* Resume execution at new PC */
+                    }
+                    else
+                    {
+                        printf("DYNAREC: Failed to load binary. Continuing BIOS.\n");
+                    }
                 }
                 else
                 {
-                    printf("DYNAREC: Failed to load binary. Continuing BIOS.\n");
+                    printf("DYNAREC: No PSX EXE provided; continuing BIOS.\n");
                 }
+
                 binary_loaded = 1; /* Don't try again */
             }
         }
@@ -1783,7 +1806,7 @@ void Run_CPU(void)
         /* Periodic status */
         if (iterations % 100000 == 0)
         {
-            printf("DYNAREC: %u iterations\n", (unsigned)iterations);
+            // printf("DYNAREC: %u iterations\n", (unsigned)iterations);
         }
 
         /* Periodic VRAM Dump to capture sequence */

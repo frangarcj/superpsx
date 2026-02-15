@@ -68,6 +68,10 @@ void UpdateTimers(u32 cycles);
 void Init_Dynarec(void);
 void Run_CPU(void);
 void GTE_Execute(u32 opcode, R3000CPU *cpu);
+u32 GTE_ReadData(R3000CPU *cpu, int reg);
+void GTE_WriteData(R3000CPU *cpu, int reg, u32 val);
+u32 GTE_ReadCtrl(R3000CPU *cpu, int reg);
+void GTE_WriteCtrl(R3000CPU *cpu, int reg, u32 val);
 
 /*=== CPU Helper Functions (called from dynarec) ===*/
 u32 Helper_LWL(u32 addr, u32 cur_rt);
