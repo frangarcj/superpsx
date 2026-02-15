@@ -1653,7 +1653,7 @@ void Init_Graphics()
     printf("Initializing Graphics (GS)...\n");
 
     // Uncomment for GPU debug logging:
-    // gpu_debug_log = fopen("host:gpu_debug.log", "w");
+    // gpu_debug_log = fopen("gpu_debug.log", "w");
     // if (gpu_debug_log) fprintf(gpu_debug_log, "GPU Debug Log\n");
 
     dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
