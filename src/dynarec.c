@@ -1673,6 +1673,7 @@ void Run_CPU(void)
 
         iterations++;
 
+#ifdef ENABLE_STUCK_DETECTION
         /* Stuck loop detection */
         if (pc == stuck_pc)
         {
@@ -1723,6 +1724,7 @@ void Run_CPU(void)
             stuck_pc = pc;
             stuck_count = 0;
         }
+#endif
 
         /* Periodic status */
         if (iterations % 1000000 == 0)
