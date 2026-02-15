@@ -14,6 +14,17 @@
 #include "superpsx.h"
 #include "joystick.h"
 
+#include <string.h>
+#include <limits.h>
+
+/* Default executable filename; store in an internal buffer to avoid
+ * depending on `argv` pointer lifetime or external mutation. */
+#ifndef PSX_EXE_PATH_MAX
+#define PSX_EXE_PATH_MAX 512
+#endif
+static char psx_exe_filename_buf[PSX_EXE_PATH_MAX] = "test.exe";
+const char *psx_exe_filename = psx_exe_filename_buf;
+
 static void reset_IOP()
 {
     SifInitRpc(0);
@@ -52,6 +63,42 @@ int main(int argc, char *argv[])
 
     init_scr();
     scr_printf("SuperPSX v0.2 - Native Dynarec\n");
+
+    if (argc > 2)
+    {
+        /* argv[1] = host PWD, argv[2] = PSX exe filename */
+        /* chdir to the provided PWD if possible */
+        if (chdir(argv[1]) != 0)
+        {
+            printf("WARNING: Failed to chdir to %s\n", argv[1]);
+        }
+
+        /* Copy and sanitize filename into internal buffer */
+        size_t len = strnlen(argv[2], PSX_EXE_PATH_MAX - 1);
+        if (len == PSX_EXE_PATH_MAX - 1)
+        {
+            /* truncated */
+            printf("WARNING: PSX exe filename too long, truncated.\n");
+        }
+        strncpy(psx_exe_filename_buf, argv[2], PSX_EXE_PATH_MAX - 1);
+        psx_exe_filename_buf[PSX_EXE_PATH_MAX - 1] = '\0';
+
+        /* Remove surrounding quotes if present */
+        if (psx_exe_filename_buf[0] == '"')
+        {
+            size_t i;
+            for (i = 0; i + 1 < PSX_EXE_PATH_MAX && psx_exe_filename_buf[i + 1] != '\0'; ++i)
+                psx_exe_filename_buf[i] = psx_exe_filename_buf[i + 1];
+            psx_exe_filename_buf[i] = '\0';
+            /* remove trailing quote if left */
+            len = strlen(psx_exe_filename_buf);
+            if (len > 0 && psx_exe_filename_buf[len - 1] == '"')
+                psx_exe_filename_buf[len - 1] = '\0';
+        }
+
+        psx_exe_filename = psx_exe_filename_buf;
+        printf("Using PSX exe: %s (cwd set to %s)\n", psx_exe_filename, argv[1]);
+    }
 
     Init_SuperPSX();
 

@@ -109,4 +109,8 @@ void GPU_DMA2(u32 madr, u32 bcr, u32 chcr);
 /*=== Main ===*/
 void Init_SuperPSX(void);
 
+/* Filename of PS-X EXE to load (defaults to "test.exe").
+ * Can be overridden from `main` using command-line arguments. */
+extern const char *psx_exe_filename;
+
 #endif
