@@ -185,8 +185,8 @@ static void Setup_GS_Environment(void)
     // Setup GS registers like draw_setup_environment does
     // This mimics what libdraw does
 
-    // NLOOP=15, EOP=1, PRE=0, PRIM=0, FLG=PACKED, NREG=1, REGS=AD(0xE)
-    Push_GIF_Tag(15, 1, 0, 0, 0, 1, 0xE);
+    // NLOOP=16, EOP=1, PRE=0, PRIM=0, FLG=PACKED, NREG=1, REGS=AD(0xE)
+    Push_GIF_Tag(16, 1, 0, 0, 0, 1, 0xE);
 
     // FRAME_1 (Reg 0x4C) - Framebuffer address and settings
     // FBP=0 (Base 0), FBW=16 (1024/64 - matches PSX VRAM width), PSM=0 (CT32)
@@ -248,6 +248,10 @@ static void Setup_GS_Environment(void)
 
     // FBA_1 (Reg 0x4A) - Alpha correction
     Push_GIF_Data(0, 0x4A);
+
+    // TEX1_1 (Reg 0x14) - Texture filtering: nearest-neighbor for PSX pixel-perfect textures
+    // LCM=1 (fixed LOD), MXL=0, MMAG=0 (nearest), MMIN=0 (nearest), MTBA=0, L=0, K=0
+    Push_GIF_Data((u64)1 << 0, 0x14);
 
     // CLAMP_1 (Reg 0x08) - Texture clamping
     Push_GIF_Data(0, 0x08);
@@ -553,75 +557,72 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
 
         // Use GS SPRITE primitive (type 6) - 2 vertices: top-left, bottom-right
         u64 prim_reg = 6; // SPRITE
-        if (is_textured)
+        if (is_textured) {
             prim_reg |= (1 << 4); // TME
+            prim_reg |= (1 << 8); // FST=1 (use UV register, not STQ)
+        }
         if (cmd & 0x02)
             prim_reg |= (1 << 6); // ABE
 
         if (is_textured)
         {
-            // Textured sprite: UV, RGBAQ, XYZ2 per vertex
-            GifTag *tag = (GifTag *)(*gif_cursor);
-            tag->NLOOP = 2;
-            tag->EOP = 1;
-            tag->pad1 = 0;
-            tag->PRE = 1;
-            tag->PRIM = prim_reg;
-            tag->FLG = 1; // REGLIST
-            tag->NREG = 3;
-            tag->REGS = 0x513; // UV(3), RGBAQ(1), XYZ2(5)
-            (*gif_cursor)++;
-            u64 *data_ptr = (u64 *)(*gif_cursor);
+            // Textured sprite using A+D mode (explicit register writes, most reliable)
+            // Sync cursor to gif_packet_ptr
+            gif_packet_ptr = *gif_cursor - gif_packet_buf;
 
             u32 u0 = (uv_clut & 0xFF) + tex_page_x;
             u32 v0 = ((uv_clut >> 8) & 0xFF) + tex_page_y;
             u32 u1 = u0 + w;
             u32 v1 = v0 + h;
 
-            // Vertex 0 (top-left)
-            *data_ptr++ = GS_set_XYZ(u0 << 4, v0 << 4, 0); // UV
-            *data_ptr++ = GS_set_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0);
             s32 gx0 = ((s32)x + draw_offset_x + 2048) << 4;
             s32 gy0 = ((s32)y + draw_offset_y + 2048) << 4;
-            *data_ptr++ = GS_set_XYZ(gx0, gy0, 0);
-
-            // Vertex 1 (bottom-right)
-            *data_ptr++ = GS_set_XYZ(u1 << 4, v1 << 4, 0); // UV
-            *data_ptr++ = GS_set_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0);
             s32 gx1 = ((s32)(x + w) + draw_offset_x + 2048) << 4;
             s32 gy1 = ((s32)(y + h) + draw_offset_y + 2048) << 4;
-            *data_ptr++ = GS_set_XYZ(gx1, gy1, 0);
 
-            *gif_cursor = (u128 *)data_ptr;
+            u64 rgbaq = GS_set_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0x3F800000);
+
+            // 1 PRIM + 2*(UV + RGBAQ + XYZ2) = 7 registers
+            Push_GIF_Tag(7, 1, 0, 0, 0, 1, 0xE);
+            Push_GIF_Data(prim_reg, 0x00); // PRIM register
+
+            // Vertex 0 (top-left)
+            Push_GIF_Data(GS_set_XYZ(u0 << 4, v0 << 4, 0), 0x03); // UV
+            Push_GIF_Data(rgbaq, 0x01); // RGBAQ
+            Push_GIF_Data(GS_set_XYZ(gx0, gy0, 0), 0x05); // XYZ2
+
+            // Vertex 1 (bottom-right)
+            Push_GIF_Data(GS_set_XYZ(u1 << 4, v1 << 4, 0), 0x03); // UV
+            Push_GIF_Data(rgbaq, 0x01); // RGBAQ
+            Push_GIF_Data(GS_set_XYZ(gx1, gy1, 0), 0x05); // XYZ2
+
+            *gif_cursor = &gif_packet_buf[gif_packet_ptr];
         }
         else
         {
-            // Flat sprite: RGBAQ, XYZ2 per vertex
-            GifTag *tag = (GifTag *)(*gif_cursor);
-            tag->NLOOP = 2;
-            tag->EOP = 1;
-            tag->pad1 = 0;
-            tag->PRE = 1;
-            tag->PRIM = prim_reg;
-            tag->FLG = 1; // REGLIST
-            tag->NREG = 2;
-            tag->REGS = 0x51; // RGBAQ(1), XYZ2(5)
-            (*gif_cursor)++;
-            u64 *data_ptr = (u64 *)(*gif_cursor);
+            // Flat sprite using A+D mode (explicit register writes)
+            gif_packet_ptr = *gif_cursor - gif_packet_buf;
 
-            // Vertex 0 (top-left)
-            *data_ptr++ = GS_set_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0);
             s32 gx0 = ((s32)x + draw_offset_x + 2048) << 4;
             s32 gy0 = ((s32)y + draw_offset_y + 2048) << 4;
-            *data_ptr++ = GS_set_XYZ(gx0, gy0, 0);
-
-            // Vertex 1 (bottom-right)
-            *data_ptr++ = GS_set_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0);
             s32 gx1 = ((s32)(x + w) + draw_offset_x + 2048) << 4;
             s32 gy1 = ((s32)(y + h) + draw_offset_y + 2048) << 4;
-            *data_ptr++ = GS_set_XYZ(gx1, gy1, 0);
 
-            *gif_cursor = (u128 *)data_ptr;
+            u64 rgbaq = GS_set_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0x3F800000);
+
+            // 1 PRIM + 2*(RGBAQ + XYZ2) = 5 registers
+            Push_GIF_Tag(5, 1, 0, 0, 0, 1, 0xE);
+            Push_GIF_Data(prim_reg, 0x00); // PRIM register
+
+            // Vertex 0 (top-left)
+            Push_GIF_Data(rgbaq, 0x01); // RGBAQ
+            Push_GIF_Data(GS_set_XYZ(gx0, gy0, 0), 0x05); // XYZ2
+
+            // Vertex 1 (bottom-right)
+            Push_GIF_Data(rgbaq, 0x01); // RGBAQ
+            Push_GIF_Data(GS_set_XYZ(gx1, gy1, 0), 0x05); // XYZ2
+
+            *gif_cursor = &gif_packet_buf[gif_packet_ptr];
         }
 
         // printf("[GPU] Draw Sprite: Rect (%d,%d %dx%d) Color=%06X\n", x, y, w, h, color);
