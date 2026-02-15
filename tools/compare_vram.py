@@ -5,6 +5,7 @@ import numpy as np
 import sys
 import os
 
+
 def load_vram_bin(path):
     """Load raw VRAM dump (1024x512 CT16S) and convert to PIL RGB image."""
     with open(path, 'rb') as f:
@@ -25,23 +26,26 @@ def load_vram_bin(path):
         rgb = np.stack([r, g, b], axis=2)
         return Image.fromarray(rgb, 'RGB')
     else:
-        print(f'WARNING: unexpected file size (expected {expected_16} or {expected_32})')
+        print(
+            f'WARNING: unexpected file size (expected {expected_16} or {expected_32})')
         return None
+
 
 def main():
     dump_path = sys.argv[1] if len(sys.argv) > 1 else 'vram_5000000.bin'
-    ref_path = 'tests/gpu/triangle/vram.png'
-    
+    ref_path = sys.argv[2] if len(
+        sys.argv) > 2 else 'tests/gpu/rectangles/vram.png'
+
     if not os.path.exists(dump_path):
         print(f'ERROR: {dump_path} not found')
         return
-    
+
     img = load_vram_bin(dump_path)
     if not img:
         return
-    
+
     img_rgb = img
-    
+
     # Sample key pixels
     samples = [
         ('BG(5,5)', 5, 5),
@@ -52,29 +56,29 @@ def main():
         ('BigTri(768,256)', 768, 256),
         ('BottomTri(160,360)', 160, 360),
     ]
-    
+
     print('\n=== VRAM Dump Pixel Samples ===')
     for name, x, y in samples:
         px = img_rgb.getpixel((x, y))
         print(f'  {name}: RGB={px}')
-    
+
     # Save as PNG
     img_rgb.save('vram_current.png')
     print('\nSaved vram_current.png')
-    
+
     # Load reference
     if not os.path.exists(ref_path):
         print(f'WARNING: {ref_path} not found, skipping comparison')
         return
-    
+
     ref = Image.open(ref_path).convert('RGB')
     print(f'Reference size: {ref.size}')
-    
+
     print('\n=== Reference Pixel Samples ===')
     for name, x, y in samples:
         px = ref.getpixel((x, y))
         print(f'  {name}: RGB={px}')
-    
+
     # Compute difference
     arr_cur = np.array(img_rgb)
     arr_ref = np.array(ref)
@@ -83,49 +87,53 @@ def main():
     mean_diff = diff.mean()
     nonzero = np.count_nonzero(diff.sum(axis=2))
     total_pixels = 1024 * 512
-    
+
     print(f'\n=== Comparison Results ===')
     print(f'  Max pixel channel diff: {max_diff}')
     print(f'  Mean pixel channel diff: {mean_diff:.2f}')
-    print(f'  Differing pixels: {nonzero}/{total_pixels} ({100*nonzero/total_pixels:.1f}%)')
-    
+    print(
+        f'  Differing pixels: {nonzero}/{total_pixels} ({100*nonzero/total_pixels:.1f}%)')
+
     # Break down by region
     # Top-left quadrant (main display 0-320, 0-240)
     tl_diff = diff[:240, :320]
     tl_nonzero = np.count_nonzero(tl_diff.sum(axis=2))
     tl_total = 240 * 320
-    print(f'  Main display (0-320, 0-240): {tl_nonzero}/{tl_total} diff ({100*tl_nonzero/tl_total:.1f}%)')
-    
+    print(
+        f'  Main display (0-320, 0-240): {tl_nonzero}/{tl_total} diff ({100*tl_nonzero/tl_total:.1f}%)')
+
     # Right side (big triangle region 518-1023, 0-512)
     rt_diff = diff[:512, 518:]
     rt_nonzero = np.count_nonzero(rt_diff.sum(axis=2))
     rt_total = 512 * (1024-518)
-    print(f'  Right region (518-1023): {rt_nonzero}/{rt_total} diff ({100*rt_nonzero/rt_total:.1f}%)')
-    
+    print(
+        f'  Right region (518-1023): {rt_nonzero}/{rt_total} diff ({100*rt_nonzero/rt_total:.1f}%)')
+
     # Bottom region (dithered triangle 0-320, 240-480)
     bt_diff = diff[240:480, :320]
     bt_nonzero = np.count_nonzero(bt_diff.sum(axis=2))
     bt_total = 240 * 320
-    print(f'  Bottom display (0-320, 240-480): {bt_nonzero}/{bt_total} diff ({100*bt_nonzero/bt_total:.1f}%)')
-    
+    print(
+        f'  Bottom display (0-320, 240-480): {bt_nonzero}/{bt_total} diff ({100*bt_nonzero/bt_total:.1f}%)')
+
     # Save diff image (amplified)
     diff_img = Image.fromarray(np.clip(diff * 4, 0, 255).astype(np.uint8))
     diff_img.save('vram_diff.png')
     print('\nSaved vram_diff.png')
-    
+
     # Detailed analysis of remaining differences
     print('\n=== Detailed Diff Analysis ===')
     max_per_pixel = diff.max(axis=2)
     unique_max = np.unique(max_per_pixel[max_per_pixel > 0])
     if len(unique_max) > 0:
         print(f'  Unique max-channel diffs: {sorted(unique_max)[:20]}')
-        
+
     # Count pixels by diff magnitude
     for threshold in [8, 16, 248]:
         count = np.count_nonzero(max_per_pixel == threshold)
         print(f'  Pixels with max diff = {threshold}: {count}')
-    
-    # Find locations of max diff (248) pixels  
+
+    # Find locations of max diff (248) pixels
     large_diff_locs = np.where(max_per_pixel >= 240)
     if len(large_diff_locs[0]) > 0:
         print(f'\n  Large diff (>=240) pixel locations (first 10):')
@@ -134,12 +142,16 @@ def main():
             cur = img_rgb.getpixel((x, y))
             ref_px = ref.getpixel((x, y))
             print(f'    ({x},{y}): cur={cur} ref={ref_px}')
-    
+
     # Count by region for diff=8 (precision/dithering)
     small_diff = (max_per_pixel == 8)
-    print(f'\n  Diff=8 in top triangle (0-320, 0-240): {np.sum(small_diff[:240, :320])}')
-    print(f'  Diff=8 in bottom triangle (0-320, 240-480): {np.sum(small_diff[240:480, :320])}')
-    print(f'  Diff=8 in big triangle (518-1023): {np.sum(small_diff[:512, 518:])}')
+    print(
+        f'\n  Diff=8 in top triangle (0-320, 0-240): {np.sum(small_diff[:240, :320])}')
+    print(
+        f'  Diff=8 in bottom triangle (0-320, 240-480): {np.sum(small_diff[240:480, :320])}')
+    print(
+        f'  Diff=8 in big triangle (518-1023): {np.sum(small_diff[:512, 518:])}')
+
 
 if __name__ == '__main__':
     main()
