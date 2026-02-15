@@ -233,11 +233,14 @@ static void Setup_GS_Environment(void)
     // DTHE (Reg 0x45) - Dithering off
     Push_GIF_Data(0, 0x45);
 
-    // DIMX (Reg 0x44) - Dithering matrix
-    u64 dimx_reg = ((u64)4 << 0) | ((u64)2 << 4) | ((u64)5 << 8) | ((u64)3 << 12) |
-                   ((u64)0 << 16) | ((u64)6 << 20) | ((u64)1 << 24) | ((u64)7 << 28) |
-                   ((u64)5 << 32) | ((u64)3 << 36) | ((u64)4 << 40) | ((u64)2 << 44) |
-                   ((u64)1 << 48) | ((u64)7 << 52) | ((u64)0 << 56) | ((u64)6 << 60);
+    // DIMX (Reg 0x44) - PSX Dithering matrix
+    // PSX: -4 +0 -3 +1 / +2 -2 +3 -1 / -3 +1 -4 +0 / +3 -1 +2 -2
+    // GS DIMX stores 3-bit signed values (two's complement): -4=4, -3=5, -2=6, -1=7, 0=0, 1=1, 2=2, 3=3
+    // DM(col,row): [2:0]=DM00, [6:4]=DM01, [10:8]=DM02, [14:12]=DM03, etc.
+    u64 dimx_reg = ((u64)4 << 0) | ((u64)0 << 4) | ((u64)5 << 8) | ((u64)1 << 12) |   // Row 0: -4, 0, -3, +1
+                   ((u64)2 << 16) | ((u64)6 << 20) | ((u64)3 << 24) | ((u64)7 << 28) | // Row 1: +2, -2, +3, -1
+                   ((u64)5 << 32) | ((u64)1 << 36) | ((u64)4 << 40) | ((u64)0 << 44) | // Row 2: -3, +1, -4, 0
+                   ((u64)3 << 48) | ((u64)7 << 52) | ((u64)2 << 56) | ((u64)6 << 60);  // Row 3: +3, -1, +2, -2
     Push_GIF_Data(dimx_reg, 0x44);
 
     // COLCLAMP (Reg 0x46) - Color clamp
@@ -1062,7 +1065,7 @@ void GPU_WriteGP0(u32 data)
         tex_page_format = tpf;
 
         // Set TEX0: Use TBP0=0 (whole VRAM), UV offset applied per-vertex
-        Push_GIF_Tag(2, 1, 0, 0, 0, 1, 0xE);
+        Push_GIF_Tag(3, 1, 0, 0, 0, 1, 0xE);
         u64 tex0 = 0;                    // TBP0 = 0 (full VRAM base)
         tex0 |= (u64)PSX_VRAM_FBW << 14; // TBW = 16 (1024 pixels / 64)
         tex0 |= (u64)GS_PSM_16S << 20; // PSM = CT16S (matches framebuffer)
@@ -1073,6 +1076,10 @@ void GPU_WriteGP0(u32 data)
 
         Push_GIF_Data(tex0, 0x06); // TEX0_1
         Push_GIF_Data(0, 0x3F);    // TEXFLUSH
+
+        // Dithering: bit 9 of GP0 E1
+        u32 dither_enable = (data >> 9) & 1;
+        Push_GIF_Data(dither_enable, 0x45); // DTHE register
 
         // printf("[GPU] E1: TexPage(%d,%d) fmt=%d\n", tex_page_x, tex_page_y, tpf);
     }
