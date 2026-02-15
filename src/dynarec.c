@@ -1782,22 +1782,22 @@ void Run_CPU(void)
         /* Periodic status */
         if (iterations % 100000 == 0)
         {
-             printf("DYNAREC: %u iterations\n", (unsigned)iterations);
+            printf("DYNAREC: %u iterations\n", (unsigned)iterations);
         }
 
         /* Periodic VRAM Dump to capture sequence */
+        /* Controlled by ENABLE_VRAM_DUMP define in Makefile */
+        /* Comment out -DENABLE_VRAM_DUMP to disable for better performance */
+#ifdef ENABLE_VRAM_DUMP
         if (iterations % 1000000 == 0 && iterations > 0)
         {
-             char filename[64];
-             sprintf(filename, "host:vram_%u.bin", (unsigned)iterations);
-             extern void DumpVRAM(const char*);
-             DumpVRAM(filename);
-             printf("VRAM Dumped to %s\n", filename);
+            char filename[64];
+            sprintf(filename, "host:vram_%u.bin", (unsigned)iterations);
+            extern void DumpVRAM(const char *);
+            DumpVRAM(filename);
+            printf("VRAM Dumped to %s\n", filename);
         }
-
-
-
-
+#endif
     }
 
     printf("DYNAREC: Stopped after %u iterations. Final PC=0x%08X\n",
