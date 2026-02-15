@@ -160,6 +160,9 @@ static void emit_load_imm32(int hwreg, u32 val)
     }
 }
 
+/* ---- Temp buffer for IO code execution ---- */
+static u32 io_code_buffer[64];
+
 /* ---- Get pointer to PSX code in EE memory ---- */
 static u32 *get_psx_code_ptr(u32 psx_pc)
 {
@@ -168,6 +171,32 @@ static u32 *get_psx_code_ptr(u32 psx_pc)
         return (u32 *)(psx_ram + phys);
     if (phys >= 0x1FC00000 && phys < 0x1FC00000 + PSX_BIOS_SIZE)
         return (u32 *)(psx_bios + (phys - 0x1FC00000));
+
+    /* IO regions that support instruction fetch:
+     *   DMA registers  (0x1F801080-0x1F8010FF)
+     *   SPU registers  (0x1F801C00-0x1F801FFF)
+     * These preserve written values, so the CPU can execute from them.
+     * Other IO regions (scratchpad, MDEC, interrupt controller, etc.)
+     * trigger an Instruction Bus Error on the real PS1.
+     */
+    if ((phys >= 0x1F801080 && phys < 0x1F801100) ||
+        (phys >= 0x1F801C00 && phys < 0x1F802000))
+    {
+        int i;
+        memset(io_code_buffer, 0, sizeof(io_code_buffer));
+        for (i = 0; i < 64; i++)
+        {
+            u32 addr = psx_pc + i * 4;
+            u32 a_phys = addr & 0x1FFFFFFF;
+            /* Stay within the same IO region */
+            if (!((a_phys >= 0x1F801080 && a_phys < 0x1F801100) ||
+                  (a_phys >= 0x1F801C00 && a_phys < 0x1F802000)))
+                break;
+            io_code_buffer[i] = ReadWord(addr);
+        }
+        return io_code_buffer;
+    }
+
     return NULL;
 }
 
@@ -1701,8 +1730,12 @@ void Run_CPU(void)
             block = compile_block(pc);
             if (!block)
             {
-                printf("DYNAREC: Failed to compile at PC=0x%08X, stopping.\n", (unsigned)pc);
-                break;
+                /* PC points to non-executable region (scratchpad, MDEC, etc.)
+                 * Fire an Instruction Bus Error exception (cause 6) like real HW */
+                printf("DYNAREC: IBE at PC=0x%08X\n", (unsigned)pc);
+                cpu.pc = pc;
+                PSX_Exception(6); /* IBE - Instruction Bus Error */
+                continue;
             }
             cache_block(pc, block);
         }

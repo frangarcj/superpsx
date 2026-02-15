@@ -493,8 +493,8 @@ void WriteHardware(u32 addr, u32 data)
         return;
     }
 
-    /* DMA registers */
-    if (phys >= 0x1F801080 && phys < 0x1F801100)
+    /* DMA channel registers (0x1F801080-0x1F8010EF) */
+    if (phys >= 0x1F801080 && phys < 0x1F8010F0)
     {
         int ch = (phys - 0x1F801080) / 0x10;
         int reg = ((phys - 0x1F801080) % 0x10) / 4;
