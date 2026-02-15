@@ -10,7 +10,6 @@
 #include <ps2_filesystem_driver.h>
 #include <ps2_audio_driver.h>
 
-
 #include "superpsx.h"
 #include "joystick.h"
 
@@ -28,9 +27,13 @@ const char *psx_exe_filename = psx_exe_filename_buf;
 static void reset_IOP()
 {
     SifInitRpc(0);
-	/* Comment this line if you don't wanna debug the output */
-    while (!SifIopReset(NULL, 0)) {}
-    while (!SifIopSync()) {}
+    /* Comment this line if you don't wanna debug the output */
+    while (!SifIopReset(NULL, 0))
+    {
+    }
+    while (!SifIopSync())
+    {
+    }
 }
 
 static void prepare_IOP()
@@ -44,16 +47,16 @@ static void prepare_IOP()
 
 static void init_drivers()
 {
-	init_only_boot_ps2_filesystem_driver();
-	init_audio_driver();
+    init_only_boot_ps2_filesystem_driver();
+    init_audio_driver();
     Joystick_Init();
 }
 
 static void deinit_drivers()
 {
     Joystick_Shutdown();
-	deinit_audio_driver();
-	deinit_only_boot_ps2_filesystem_driver();
+    deinit_audio_driver();
+    deinit_only_boot_ps2_filesystem_driver();
 }
 
 int main(int argc, char *argv[])
@@ -63,24 +66,30 @@ int main(int argc, char *argv[])
 
     init_scr();
     scr_printf("SuperPSX v0.2 - Native Dynarec\n");
-
-    if (argc > 2)
+    printf("SuperPSX v0.2 - Native Dynarec\n");
+    printf("Initializing SuperPSX... with %d arguments\n", argc);
+    for (int i = 0; i < argc; i++)
+    {
+        printf("  argv[%d]: %s\n", i, argv[i]);
+    }
+    if (argc > 1)
     {
         /* argv[1] = host PWD, argv[2] = PSX exe filename */
         /* chdir to the provided PWD if possible */
-        if (chdir(argv[1]) != 0)
+
+        if (strcasecmp(argv[0], "host") && chdir(argv[1]) != 0)
         {
             printf("WARNING: Failed to chdir to %s\n", argv[1]);
         }
 
         /* Copy and sanitize filename into internal buffer */
-        size_t len = strnlen(argv[2], PSX_EXE_PATH_MAX - 1);
+        size_t len = strnlen(argv[1], PSX_EXE_PATH_MAX - 1);
         if (len == PSX_EXE_PATH_MAX - 1)
         {
             /* truncated */
             printf("WARNING: PSX exe filename too long, truncated.\n");
         }
-        strncpy(psx_exe_filename_buf, argv[2], PSX_EXE_PATH_MAX - 1);
+        strncpy(psx_exe_filename_buf, argv[1], PSX_EXE_PATH_MAX - 1);
         psx_exe_filename_buf[PSX_EXE_PATH_MAX - 1] = '\0';
 
         /* Remove surrounding quotes if present */
@@ -97,7 +106,7 @@ int main(int argc, char *argv[])
         }
 
         psx_exe_filename = psx_exe_filename_buf;
-        printf("Using PSX exe: %s (cwd set to %s)\n", psx_exe_filename, argv[1]);
+        printf("Using PSX exe: %s (cwd set to %s)\n", psx_exe_filename, argv[0]);
     }
 
     Init_SuperPSX();
@@ -105,7 +114,7 @@ int main(int argc, char *argv[])
     scr_printf("SuperPSX finished.\n");
 
     deinit_drivers();
-    
+
     SleepThread(); // Halt the main thread (or exit cleanly if desired)
     return 0;
 }
