@@ -1137,7 +1137,7 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
             EMIT_NOP();
             break;
         }
-        case 0x20: /* ADD (with overflow check) */
+        case 0x20:                         /* ADD (with overflow check) */
             emit_load_psx_reg(REG_A0, rs); /* a0 = rs_val */
             emit_load_psx_reg(REG_A1, rt); /* a1 = rt_val */
             emit_load_imm32(6, rd);        /* a2 = rd index */
@@ -1151,7 +1151,7 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
             EMIT_ADDU(REG_T0, REG_T0, REG_T1);
             emit_store_psx_reg(rd, REG_T0);
             break;
-        case 0x22: /* SUB (with overflow check) */
+        case 0x22:                         /* SUB (with overflow check) */
             emit_load_psx_reg(REG_A0, rs); /* a0 = rs_val */
             emit_load_psx_reg(REG_A1, rt); /* a1 = rt_val */
             emit_load_imm32(6, rd);        /* a2 = rd index */
@@ -1211,10 +1211,10 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
     /* I-type ALU */
     case 0x08: /* ADDI (with overflow check) */
     {
-        emit_load_psx_reg(REG_A0, rs);                     /* a0 = rs_val */
-        emit_load_imm32(REG_A1, (u32)(s32)imm);           /* a1 = sign-extended imm */
-        emit_load_imm32(6, rt);                            /* a2 = rt index */
-        emit_load_imm32(7, psx_pc);                        /* a3 = PC */
+        emit_load_psx_reg(REG_A0, rs);          /* a0 = rs_val */
+        emit_load_imm32(REG_A1, (u32)(s32)imm); /* a1 = sign-extended imm */
+        emit_load_imm32(6, rt);                 /* a2 = rt index */
+        emit_load_imm32(7, psx_pc);             /* a3 = PC */
         EMIT_JAL_ABS((u32)Helper_ADDI);
         EMIT_NOP();
         break;
@@ -1780,12 +1780,24 @@ void Run_CPU(void)
 #endif
 
         /* Periodic status */
-        if (iterations % 1000000 == 0)
+        if (iterations % 100000 == 0)
         {
-            //            printf("DYNAREC: %u iterations, PC=0x%08X, blocks=%u SR=%08X\n",
-            //                   (unsigned)iterations, (unsigned)cpu.pc, (unsigned)blocks_compiled,
-            //                   (unsigned)cpu.cop0[PSX_COP0_SR]);
+             printf("DYNAREC: %u iterations\n", (unsigned)iterations);
         }
+
+        /* Periodic VRAM Dump to capture sequence */
+        if (iterations % 1000000 == 0 && iterations > 0)
+        {
+             char filename[64];
+             sprintf(filename, "host:vram_%u.bin", (unsigned)iterations);
+             extern void DumpVRAM(const char*);
+             DumpVRAM(filename);
+             printf("VRAM Dumped to %s\n", filename);
+        }
+
+
+
+
     }
 
     printf("DYNAREC: Stopped after %u iterations. Final PC=0x%08X\n",

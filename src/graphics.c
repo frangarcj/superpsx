@@ -18,7 +18,7 @@ static u32 gpu_read = 0;
 static int fb_address = 0;
 static int fb_width = 640;
 static int fb_height = 448;
-static int fb_psm = GS_PSM_32;
+static int fb_psm = GS_PSM_16S;
 // PSX VRAM is 1024x512 - buffer width for ALL GS operations must match
 #define PSX_VRAM_WIDTH 1024
 #define PSX_VRAM_HEIGHT 512
@@ -43,6 +43,9 @@ static int tex_page_y = 0;      // Texture page Y offset in pixels
 static int tex_page_format = 2; // 0=4bit, 1=8bit, 2=15bit
 
 // Shadow PSX VRAM for CLUT texture decode - dynamically allocated
+
+// Debug log file (enable for detailed GPU command tracing)
+static FILE *gpu_debug_log = NULL;
 static u16 *psx_vram_shadow = NULL;
 
 // VRAM transfer tracking for shadow writes
@@ -193,7 +196,8 @@ static void Setup_GS_Environment(void)
     // ZBUF_1 (Reg 0x4E) - Disable ZBuffer (mask bit = 1)
     Push_GIF_Data(((u64)0 << 0) | ((u64)0 << 24) | ((u64)1 << 32), 0x4E);
 
-    // PRMODECONT (Reg 0x1A) - Enable primitive override from GIF tag
+    // PRMODECONT (Reg 0x1A) - ENABLE use of GIF tag PRIM field
+    // When PRE=1 in GIF tag, the tag's PRIM value is used for the primitive
     Push_GIF_Data(1, 0x1A);
 
     // XYOFFSET_1 (Reg 0x18) - Primitive coordinate offset
@@ -321,8 +325,8 @@ static void Start_VRAM_Transfer(int x, int y, int w, int h)
     // Using simple GIF tags to set registers
     Push_GIF_Tag(4, 1, 0, 0, 0, 1, 0xE); // NLOOP=4, EOP=1, A+D
 
-    // BITBLTBUF (0x50): DBP=0 (Base 0), DBW=16 (1024px), DPSM=0 (CT32)
-    Push_GIF_Data((u64)PSX_VRAM_FBW << 48, 0x50);
+    // BITBLTBUF (0x50): DBP=0 (Base 0), DBW=16 (1024px), DPSM=CT16S
+    Push_GIF_Data(((u64)GS_PSM_16S << 56) | ((u64)PSX_VRAM_FBW << 48), 0x50);
 
     // TRXPOS (0x51): SSAX=0, SSAY=0, DSAX=x, DSAY=y, DIR=0
     Push_GIF_Data(((u64)y << 48) | ((u64)x << 32), 0x51);
@@ -421,21 +425,18 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
 
         if (is_quad)
         {
-            // Emit two triangles: 0-1-2 and 1-3-2
+            // Emit two triangles: 0-1-2 and 1-3-2 using A+D mode
             int tris[2][3] = {{0, 1, 2}, {1, 3, 2}};
+            // Sync cursor to gif_packet_ptr first
+            gif_packet_ptr = *gif_cursor - gif_packet_buf;
+
             for (int t = 0; t < 2; t++)
             {
-                GifTag *tag = (GifTag *)(*gif_cursor);
-                tag->NLOOP = 3;
-                tag->EOP = (t == 1) ? 1 : 0;
-                tag->PRE = 1;
-                tag->PRIM = prim_reg;
-                tag->FLG = 1; // REGLIST mode (64-bit register data)
-                tag->NREG = nreg;
-                tag->REGS = regs;
-
-                (*gif_cursor)++;
-                u64 *data_ptr = (u64 *)(*gif_cursor);
+                // For non-textured: 1 PRIM + 3*(RGBAQ+XYZ2) = 7 registers
+                // For textured: 1 PRIM + 3*(UV+RGBAQ+XYZ2) = 10 registers
+                int ndata = is_textured ? 10 : 7;
+                Push_GIF_Tag(ndata, (t == 1) ? 1 : 0, 0, 0, 0, 1, 0xE);
+                Push_GIF_Data(prim_reg, 0x00); // PRIM register
 
                 for (int v = 0; v < 3; v++)
                 {
@@ -444,70 +445,61 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
                     {
                         u32 u = (verts[i].uv & 0xFF) + tex_page_x;
                         u32 v_coord = ((verts[i].uv >> 8) & 0xFF) + tex_page_y;
-                        *data_ptr++ = GS_set_XYZ(u << 4, v_coord << 4, 0);
+                        Push_GIF_Data(GS_set_XYZ(u << 4, v_coord << 4, 0), 0x03); // ST
                     }
                     u32 c = verts[i].color;
-                    *data_ptr++ = GS_set_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0);
+                    Push_GIF_Data(GS_set_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000), 0x01);
 
                     s32 gx = ((s32)verts[i].x + draw_offset_x + 2048) << 4;
                     s32 gy = ((s32)verts[i].y + draw_offset_y + 2048) << 4;
-                    *data_ptr++ = GS_set_XYZ(gx, gy, 0);
+                    Push_GIF_Data(GS_set_XYZ(gx, gy, 0), 0x05);
                 }
-
-                // Pad REGLIST to 128-bit alignment if odd number of 64-bit words
-                int total_regs = 3 * nreg;
-                if (total_regs & 1)
-                {
-                    *data_ptr++ = 0;
-                }
-                *gif_cursor = (u128 *)data_ptr;
             }
+            *gif_cursor = &gif_packet_buf[gif_packet_ptr];
         }
         else
         {
-            // Single triangle
-            GifTag *tag = (GifTag *)(*gif_cursor);
-            tag->NLOOP = 3;
-            tag->EOP = 1;
-            tag->PRE = 1;
-            tag->PRIM = prim_reg;
-            tag->FLG = 1; // REGLIST mode (64-bit register data)
-            tag->NREG = nreg;
-            tag->REGS = regs;
+            // Triangle using A+D mode (most reliable for Gouraud)
+            // Sync cursor to gif_packet_ptr
+            gif_packet_ptr = *gif_cursor - gif_packet_buf;
 
-            (*gif_cursor)++;
-            u64 *data_ptr = (u64 *)(*gif_cursor);
+            // 1 PRIM + 3*(RGBAQ+XYZ2) = 7 registers
+            int ndata = is_textured ? 10 : 7;
+            Push_GIF_Tag(ndata, 1, 0, 0, 0, 1, 0xE);
+            Push_GIF_Data(prim_reg, 0x00); // PRIM register
 
-            for (int v = 0; v < 3; v++)
+            for (int i = 0; i < 3; i++)
             {
-                int i = v;
                 if (is_textured)
                 {
                     u32 u = (verts[i].uv & 0xFF) + tex_page_x;
                     u32 v_coord = ((verts[i].uv >> 8) & 0xFF) + tex_page_y;
-                    *data_ptr++ = GS_set_XYZ(u << 4, v_coord << 4, 0);
+                    Push_GIF_Data(GS_set_XYZ(u << 4, v_coord << 4, 0), 0x03); // ST
                 }
                 u32 c = verts[i].color;
-                *data_ptr++ = GS_set_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0);
+                Push_GIF_Data(GS_set_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000), 0x01);
 
                 s32 gx = ((s32)verts[i].x + draw_offset_x + 2048) << 4;
                 s32 gy = ((s32)verts[i].y + draw_offset_y + 2048) << 4;
-                *data_ptr++ = GS_set_XYZ(gx, gy, 0);
+                Push_GIF_Data(GS_set_XYZ(gx, gy, 0), 0x05);
             }
-
-            // Pad REGLIST to 128-bit alignment if odd number of 64-bit words
-            {
-                int total_regs = 3 * nreg;
-                if (total_regs & 1)
-                {
-                    *data_ptr++ = 0;
-                }
+            *gif_cursor = &gif_packet_buf[gif_packet_ptr];
+            
+            // Debug output
+            if (gpu_debug_log) {
+                fprintf(gpu_debug_log, "[GPU] Triangle A+D: PRIM=%llu\n", (unsigned long long)prim_reg);
+                fflush(gpu_debug_log);
             }
-            *gif_cursor = (u128 *)data_ptr;
         }
 
-        printf("[GPU] Draw Poly: Verts=%d Color=%06X V0=(%d,%d) Offset=(%d,%d)\n",
-               num_psx_verts, color, verts[0].x, verts[0].y, draw_offset_x, draw_offset_y);
+        if (gpu_debug_log) {
+            fprintf(gpu_debug_log, "[GPU] Draw Poly: Cmd=%02X Shaded=%d Quad=%d Verts=%d Color=%06X Offset=(%d,%d)\n",
+                   cmd, is_shaded, is_quad, num_psx_verts, color, draw_offset_x, draw_offset_y);
+            for(int i=0; i<num_psx_verts; i++) {
+                 fprintf(gpu_debug_log, "\tV%d: (%d, %d) Col=%06X UV=%04X\n", i, verts[i].x, verts[i].y, verts[i].color, verts[i].uv);
+            }
+            fflush(gpu_debug_log);
+        }
     }
     else if ((cmd & 0xE0) == 0x60)
     { // Rectangle (Sprite) - use GS SPRITE primitive for reliable rendering
@@ -648,7 +640,7 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
         if (h == 0)
             h = 0x200;
 
-        printf("[GPU] Fill Rect: (%d,%d %dx%d) Color=%06X\n", x, y, w, h, color);
+        if (gpu_debug_log) { fprintf(gpu_debug_log, "[GPU] Fill Rect: (%d,%d %dx%d) Color=%06X\n", x, y, w, h, color); fflush(gpu_debug_log); }
 
         // FillRect bypasses scissor - temporarily set scissor to full VRAM
         // GIF tag: NLOOP=3, EOP=1, AD mode (set scissor, draw sprite, restore scissor)
@@ -820,15 +812,12 @@ static int buf_image_ptr = 0;
 
 // Convert 2 PSX pixels (32-bit word) to 2 GS pixels (2x 32-bit RGBA)
 // Returns 64-bit (2 pixels)
-static u64 Convert_Pixels(u32 data)
+// For CT16S framebuffer: PSX 16-bit pixels pass through directly
+// No conversion needed - PSX RGBA5551 == GS CT16 format
+static u64 Convert_Pixels_16(u32 data)
 {
-    u16 p0 = data & 0xFFFF;
-    u16 p1 = data >> 16;
-
-    u32 rgba0 = (p0 & 0x1F) << 3 | ((p0 >> 5) & 0x1F) << 11 | ((p0 >> 10) & 0x1F) << 19 | 0x80000000;
-    u32 rgba1 = (p1 & 0x1F) << 3 | ((p1 >> 5) & 0x1F) << 11 | ((p1 >> 10) & 0x1F) << 19 | 0x80000000;
-
-    return (u64)rgba0 | ((u64)rgba1 << 32);
+    // Just return the raw 32-bit word (2 x 16-bit pixels) as-is
+    return (u64)data;
 }
 
 void GPU_WriteGP0(u32 data)
@@ -855,23 +844,20 @@ void GPU_WriteGP0(u32 data)
             vram_tx_pixel++;
         }
 
-        // Convert to GS format and buffer
-        static u64 pending_qword = 0;
-        static int pending_has_data = 0;
+        // For CT16S: accumulate raw 32-bit words (2 pixels each) into 128-bit qwords (8 pixels)
+        static u32 pending_words[4];
+        static int pending_count = 0;
 
-        u64 pixels_64 = Convert_Pixels(data);
+        pending_words[pending_count++] = data;
 
-        if (!pending_has_data)
+        if (pending_count >= 4)
         {
-            pending_qword = pixels_64;
-            pending_has_data = 1;
-        }
-        else
-        {
-            // Combine with pending
-            u128 q = (u128)pending_qword | ((u128)pixels_64 << 64);
+            // Pack 4 x 32-bit words into one 128-bit qword
+            u64 lo = (u64)pending_words[0] | ((u64)pending_words[1] << 32);
+            u64 hi = (u64)pending_words[2] | ((u64)pending_words[3] << 32);
+            u128 q = (u128)lo | ((u128)hi << 64);
             buf_image[buf_image_ptr++] = q;
-            pending_has_data = 0;
+            pending_count = 0;
 
             if (buf_image_ptr >= 1000)
             {
@@ -889,12 +875,17 @@ void GPU_WriteGP0(u32 data)
         gpu_transfer_words--;
         if (gpu_transfer_words == 0)
         {
-            // End of transfer. Flush remaining.
-            if (pending_has_data)
+            // End of transfer. Flush remaining partial qword.
+            if (pending_count > 0)
             {
-                u128 q = (u128)pending_qword; // Pad with 0
+                // Pad remaining words with 0
+                while (pending_count < 4)
+                    pending_words[pending_count++] = 0;
+                u64 lo = (u64)pending_words[0] | ((u64)pending_words[1] << 32);
+                u64 hi = (u64)pending_words[2] | ((u64)pending_words[3] << 32);
+                u128 q = (u128)lo | ((u128)hi << 64);
                 buf_image[buf_image_ptr++] = q;
-                pending_has_data = 0;
+                pending_count = 0;
             }
             if (buf_image_ptr > 0)
             {
@@ -1004,8 +995,9 @@ void GPU_WriteGP0(u32 data)
 
                 Push_GIF_Tag(4, 1, 0, 0, 0, 1, 0xE);
 
-                // BITBLTBUF: SBP=0, SBW=16, SPSM=CT32, DBP=0, DBW=16, DPSM=CT32
-                u64 bitblt = ((u64)PSX_VRAM_FBW << 16) | ((u64)PSX_VRAM_FBW << 48);
+                // BITBLTBUF: SBP=0, SBW=16, SPSM=CT16S, DBP=0, DBW=16, DPSM=CT16S
+                u64 bitblt = ((u64)PSX_VRAM_FBW << 16) | ((u64)GS_PSM_16S << 24) |
+                             ((u64)PSX_VRAM_FBW << 48) | ((u64)GS_PSM_16S << 56);
                 Push_GIF_Data(bitblt, 0x50);
 
                 // TRXPOS: SSAX=sx, SSAY=sy, DSAX=dx, DSAY=dy
@@ -1073,7 +1065,7 @@ void GPU_WriteGP0(u32 data)
         Push_GIF_Tag(2, 1, 0, 0, 0, 1, 0xE);
         u64 tex0 = 0;                    // TBP0 = 0 (full VRAM base)
         tex0 |= (u64)PSX_VRAM_FBW << 14; // TBW = 16 (1024 pixels / 64)
-        tex0 |= (u64)0 << 20;            // PSM = CT32
+        tex0 |= (u64)GS_PSM_16S << 20; // PSM = CT16S (matches framebuffer)
         tex0 |= (u64)10 << 26;           // TW = 10 (2^10 = 1024)
         tex0 |= (u64)9 << 30;            // TH = 9 (2^9 = 512)
         tex0 |= (u64)1 << 34;            // TCC = 1 (RGBA)
@@ -1202,7 +1194,7 @@ void GPU_WriteGP1(u32 data)
         u64 dispfb = 0;
         dispfb |= (u64)0 << 0;            // FBP (Base 0)
         dispfb |= (u64)PSX_VRAM_FBW << 9; // FBW (1024 pixels)
-        dispfb |= (u64)0 << 15;           // PSM (CT32)
+        dispfb |= (u64)GS_PSM_16S << 15;  // PSM (CT16S - matches PSX 15-bit VRAM)
         dispfb |= (u64)x << 32;           // DBX
         dispfb |= (u64)y << 43;           // DBY
 
@@ -1519,6 +1511,10 @@ void GPU_DMA2(u32 madr, u32 bcr, u32 chcr)
 void Init_Graphics()
 {
     printf("Initializing Graphics (GS)...\n");
+    
+    // Uncomment for GPU debug logging:
+    // gpu_debug_log = fopen("host:gpu_debug.log", "w");
+    // if (gpu_debug_log) fprintf(gpu_debug_log, "GPU Debug Log\n");
 
     dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
     dma_channel_fast_waits(DMA_CHANNEL_GIF);
@@ -1532,7 +1528,7 @@ void Init_Graphics()
         u64 dispfb = 0;
         dispfb |= (u64)0 << 0;                  // FBP (Base 0)
         dispfb |= (u64)PSX_VRAM_FBW << 9;       // FBW (1024 pixels)
-        dispfb |= (u64)0 << 15;                 // PSM (CT32)
+        dispfb |= (u64)GS_PSM_16S << 15;        // PSM (CT16S - matches PSX 15-bit VRAM)
         dispfb |= (u64)0 << 32;                 // DBX
         dispfb |= (u64)0 << 43;                 // DBY
         *((volatile u64 *)0xB2000070) = dispfb; // DISPFB1
@@ -1543,4 +1539,136 @@ void Init_Graphics()
     Setup_GS_Environment();
 
     printf("Graphics Initialized. GS rendering state set.\n");
+}
+
+#include <stdlib.h>
+#include <malloc.h>
+
+// Standard PS2 Hardware Registers for VIF1 DMA (Channel 1)
+#define GS_CSR ((volatile u64 *)0x12001000)
+#define D1_CHCR  ((volatile u32 *)0x10009000)
+#define D1_MADR  ((volatile u32 *)0x10009010)
+#define D1_QWC   ((volatile u32 *)0x10009020)
+#define D1_TADR  ((volatile u32 *)0x10009030)
+#define D1_ASR0  ((volatile u32 *)0x10009040)
+#define D1_ASR1  ((volatile u32 *)0x10009050)
+#define D1_SADR  ((volatile u32 *)0x10009080)
+
+void DumpVRAM(const char *filename)
+{
+    printf("[DumpVRAM] Dumping VRAM to %s...\n", filename);
+
+    // 1. Finish any pending rendering
+    Flush_GIF();
+    *GS_CSR = *GS_CSR & 8;
+    while (!(*GS_CSR & 8));
+
+    // 2. Prepare transfer size (CT16S = 2 bytes per pixel)
+    int width = 1024;
+    int height = 512;
+    int size_bytes = width * height * 2; // 16-bit color (CT16S)
+    int qwc = size_bytes / 16;
+
+    // Allocate buffer (aligned to 16 bytes, preferably 64)
+    void *buf = memalign(64, size_bytes);
+    if (!buf)
+    {
+        printf("[DumpVRAM] Failed to allocate %d bytes\n", size_bytes);
+        return;
+    }
+    
+    // Flush data cache for the buffer range to ensure DMA writes go to RAM
+    // (Actually DMA writes to RAM, so CPU needs to invalidate cache before reading.
+    //  But here we are just allocating. We will sync after DMA.)
+    
+    // 3. Setup GS for StoreImage
+    // We send a GIF packet to set BITBLTBUF, TRXPOS, TRXREG, TRXDIR
+    // BITBLTBUF: SrcBase=0, SrcWidth=16, PSM=CT16S (0x0A)
+    // TRXPOS: SrcX=0, SrcY=0
+    // TRXREG: W=1024, H=512
+    // TRXDIR: 1 (Local -> Host)
+    
+    u64 bitbltbuf = ((u64)0 << 0) | ((u64)16 << 16) | ((u64)GS_PSM_16S << 24);
+    u64 trxpos    = 0;
+    u64 trxreg    = ((u64)1024 << 0) | ((u64)512 << 32);
+    u64 trxdir    = 1; // Local -> Host
+
+    // Use a small local buffer for the packet
+    u128 packet[8];
+    GifTag *tag = (GifTag *)packet;
+    tag->NLOOP = 4;
+    tag->EOP = 1;
+    tag->PRE = 0;
+    tag->PRIM = 0;
+    tag->FLG = 0; // PACKED
+    tag->NREG = 1;
+    tag->REGS = 0xE; // A+D
+
+    u64 *ptr = (u64 *)&packet[1];
+    *ptr++ = bitbltbuf; *ptr++ = 0x50; // BITBLTBUF
+    *ptr++ = trxpos;    *ptr++ = 0x51; // TRXPOS
+    *ptr++ = trxreg;    *ptr++ = 0x52; // TRXREG
+    *ptr++ = trxdir;    *ptr++ = 0x53; // TRXDIR
+
+    // 4. Setup VIF1 DMA to receive
+    // Channel 1 (VIF1), Direction = 0 (Device -> Memory)
+    // Mode = 0 (Normal) causes it to transfer QWC qwords.
+    
+    // 5. Send the Request to GS/GIF
+    // This triggers the data flow from GS -> FIFO -> VIF1 -> DMA -> Mem
+    // We send the packet via GIF (Channel 2)
+    dma_channel_send_normal(DMA_CHANNEL_GIF, packet, 5, 0, 0);
+
+    // 6. Receive data via VIF1 DMA
+    // The GS will send 1024*512*4 bytes = 2MB.
+    // QWC = 131072. The QWC register which is 16-bit compliant or just safer to split.
+    // We'll split into chunks of 65535 QW just in case.
+    
+    // Convert to physical address for DMA (mask 0x1FFFFFFF)
+    u32 phys_addr = (u32)buf & 0x1FFFFFFF;
+    
+    u32 remaining_qwc = qwc;
+    u32 current_addr = phys_addr;
+    
+    while (remaining_qwc > 0)
+    {
+        u32 transfer_qwc = (remaining_qwc > 0xFFFF) ? 0xFFFF : remaining_qwc;
+        
+        *D1_MADR = current_addr;
+        *D1_QWC  = transfer_qwc;
+        *D1_CHCR = 0x100; // STR=1, DIR=0, MODE=0
+        
+        // Wait for completion
+        while (*D1_CHCR & 0x100);
+        
+        current_addr += transfer_qwc * 16;
+        remaining_qwc -= transfer_qwc;
+    }
+
+    // 7. Sync Cache / Use Uncached access
+    // We use KSEG1 (0xA0000000) alias to read the data
+    u8 *uncached_buf = (u8 *)(phys_addr | 0xA0000000);
+
+    // Debug: Print first few pixels (16-bit CT16S)
+    u16 *p = (u16*)uncached_buf;
+    printf("[DumpVRAM] First pixel: %04X\n", p[0]);
+    printf("[DumpVRAM] Center pixel: %04X\n", p[(512*1024/2) + 512]);
+    fflush(stdout);
+
+    // 8. Save to file
+    FILE *f = fopen(filename, "wb");
+    if (f)
+    {
+        fwrite(uncached_buf, 1, size_bytes, f);
+        fclose(f);
+        printf("[DumpVRAM] Saved %d bytes to %s\n", size_bytes, filename);
+        fflush(stdout);
+    }
+    else
+    {
+        printf("[DumpVRAM] Error opening file %s\n", filename);
+        fflush(stdout);
+    }
+
+    free(buf);
 }
