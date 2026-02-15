@@ -225,8 +225,46 @@ u32 ReadHardware(u32 addr)
     return 0;
 }
 
+/* Scanline/frame tracking for timer sync modes */
+/* PSX NTSC: 263 scanlines per frame, ~2152 CPU cycles per scanline */
+/* Hblank occurs at the end of each scanline for ~538 CPU cycles */
+#define CYCLES_PER_SCANLINE   2152
+#define HBLANK_START_CYCLE    1614  /* Active display ends, hblank begins */
+#define SCANLINES_PER_FRAME   263
+#define VBLANK_START_LINE     240   /* Vblank starts after line 240 */
+
+static u32 scanline_cycle = 0;     /* Current cycle within the scanline */
+static u32 current_scanline = 0;   /* Current scanline number */
+static int in_hblank = 0;          /* Whether we're in hblank */
+static int in_vblank = 0;          /* Whether we're in vblank */
+static int prev_hblank = 0;        /* Previous hblank state (for edge detect) */
+static int prev_vblank = 0;        /* Previous vblank state (for edge detect) */
+
+/* Per-timer sync state */
+static int timer0_sync3_started = 0; /* Timer0 sync mode 3: after first hblank */
+static int timer1_sync3_started = 0; /* Timer1 sync mode 3: after first vblank */
+
 void UpdateTimers(u32 cycles)
 {
+    /* Update scanline position */
+    prev_hblank = in_hblank;
+    prev_vblank = in_vblank;
+    
+    scanline_cycle += cycles;
+    while (scanline_cycle >= CYCLES_PER_SCANLINE)
+    {
+        scanline_cycle -= CYCLES_PER_SCANLINE;
+        current_scanline++;
+        if (current_scanline >= SCANLINES_PER_FRAME)
+            current_scanline = 0;
+    }
+    
+    in_hblank = (scanline_cycle >= HBLANK_START_CYCLE) ? 1 : 0;
+    in_vblank = (current_scanline >= VBLANK_START_LINE) ? 1 : 0;
+    
+    int hblank_edge = (in_hblank && !prev_hblank); /* Rising edge of hblank */
+    int vblank_edge = (in_vblank && !prev_vblank); /* Rising edge of vblank */
+
     int i;
     for (i = 0; i < 3; i++)
     {
@@ -235,18 +273,78 @@ void UpdateTimers(u32 cycles)
         u32 val = timers[i].value;
 
         /* Check sync mode (bit 0 = sync enable, bits 1-2 = sync type) */
-        if (mode & 1)
+        int sync_enabled = mode & 1;
+        int sync_type = (mode >> 1) & 3;
+        
+        if (sync_enabled)
         {
-            int sync_type = (mode >> 1) & 3;
-            if (i == 2)
+            if (i == 0)
+            {
+                /* Timer0 sync modes use Hblank */
+                switch (sync_type)
+                {
+                case 0: /* Pause counter during Hblank */
+                    if (in_hblank)
+                        continue; /* Don't count during hblank */
+                    break;
+                case 1: /* Reset counter to 0 at Hblank */
+                    if (hblank_edge)
+                        val = 0;
+                    break;
+                case 2: /* Reset at Hblank, pause outside Hblank */
+                    if (hblank_edge)
+                        val = 0;
+                    if (!in_hblank)
+                        continue; /* Only count during hblank */
+                    break;
+                case 3: /* Pause until Hblank once, then Free Run */
+                    if (!timer0_sync3_started)
+                    {
+                        if (hblank_edge)
+                            timer0_sync3_started = 1;
+                        else
+                            continue; /* Paused until first hblank */
+                    }
+                    break;
+                }
+            }
+            else if (i == 1)
+            {
+                /* Timer1 sync modes use Vblank */
+                switch (sync_type)
+                {
+                case 0: /* Pause counter during Vblank */
+                    if (in_vblank)
+                        continue;
+                    break;
+                case 1: /* Reset counter to 0 at Vblank */
+                    if (vblank_edge)
+                        val = 0;
+                    break;
+                case 2: /* Reset at Vblank, pause outside Vblank */
+                    if (vblank_edge)
+                        val = 0;
+                    if (!in_vblank)
+                        continue;
+                    break;
+                case 3: /* Pause until Vblank once, then Free Run */
+                    if (!timer1_sync3_started)
+                    {
+                        if (vblank_edge)
+                            timer1_sync3_started = 1;
+                        else
+                            continue;
+                    }
+                    break;
+                }
+            }
+            else if (i == 2)
             {
                 /* Timer2: sync modes 0,3 = stop counter; 1,2 = free run */
                 if (sync_type == 0 || sync_type == 3)
-                    continue; /* Counter is stopped */
+                    continue;
                 /* sync_type 1 or 2: fall through to free run */
             }
-            /* Timer0/Timer1 sync modes: not fully implemented yet,
-             * but don't skip them - let them count for now */
         }
 
         u32 inc = cycles;
@@ -630,6 +728,11 @@ void WriteHardware(u32 addr, u32 data)
                  * - Sets bit 10 (IRQ request = No/1) */
                 timers[t].mode = (data & 0x03FF) | (1 << 10);
                 timers[t].value = 0;
+                /* Reset sync mode 3 state for this timer */
+                if (t == 0)
+                    timer0_sync3_started = 0;
+                else if (t == 1)
+                    timer1_sync3_started = 0;
                 break;
             case 2:
                 timers[t].target = data & 0xFFFF;
