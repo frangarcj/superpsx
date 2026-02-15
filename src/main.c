@@ -10,7 +10,9 @@
 #include <ps2_filesystem_driver.h>
 #include <ps2_audio_driver.h>
 
+
 #include "superpsx.h"
+#include "joystick.h"
 
 static void reset_IOP()
 {
@@ -33,10 +35,12 @@ static void init_drivers()
 {
 	init_only_boot_ps2_filesystem_driver();
 	init_audio_driver();
+    Joystick_Init();
 }
 
 static void deinit_drivers()
 {
+    Joystick_Shutdown();
 	deinit_audio_driver();
 	deinit_only_boot_ps2_filesystem_driver();
 }
