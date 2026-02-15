@@ -81,6 +81,11 @@ void Helper_DIVU(u32 rs, u32 rt, u32 *lo_out, u32 *hi_out);
 void Init_CPU(void);
 void PSX_Exception(u32 cause_code);
 void Handle_Syscall(void);
+void Helper_Syscall_Exception(u32 pc);
+void Helper_Break_Exception(u32 pc);
+void Helper_ADD(u32 rs_val, u32 rt_val, u32 rd, u32 pc);
+void Helper_SUB(u32 rs_val, u32 rt_val, u32 rd, u32 pc);
+void Helper_ADDI(u32 rs_val, u32 imm_sext, u32 rt, u32 pc);
 
 /*=== Exception support for dynarec ===*/
 extern jmp_buf psx_block_jmp;

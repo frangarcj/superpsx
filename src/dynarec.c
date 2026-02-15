@@ -1049,15 +1049,16 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
             emit_store_psx_reg(rd, REG_T0);
             break;
         case 0x0C: /* SYSCALL */
-            /* Use HLE handler for BIOS compatibility */
-            emit_load_imm32(REG_T0, psx_pc);
-            EMIT_SW(REG_T0, CPU_PC, REG_S0);
-            emit_load_imm32(REG_A0, 0);
-            EMIT_JAL_ABS((u32)Handle_Syscall);
+            /* Trigger proper PSX exception (code 8) */
+            emit_load_imm32(REG_A0, psx_pc);
+            EMIT_JAL_ABS((u32)Helper_Syscall_Exception);
             EMIT_NOP();
             break;
         case 0x0D: /* BREAK */
-            /* For now, just skip */
+            /* Trigger proper PSX exception (code 9) */
+            emit_load_imm32(REG_A0, psx_pc);
+            EMIT_JAL_ABS((u32)Helper_Break_Exception);
+            EMIT_NOP();
             break;
         case 0x10: /* MFHI */
             EMIT_LW(REG_T0, CPU_HI, REG_S0);
@@ -1116,14 +1117,28 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
             EMIT_NOP();
             break;
         }
-        case 0x20: /* ADD */
+        case 0x20: /* ADD (with overflow check) */
+            emit_load_psx_reg(REG_A0, rs); /* a0 = rs_val */
+            emit_load_psx_reg(REG_A1, rt); /* a1 = rt_val */
+            emit_load_imm32(6, rd);        /* a2 = rd index */
+            emit_load_imm32(7, psx_pc);    /* a3 = PC */
+            EMIT_JAL_ABS((u32)Helper_ADD);
+            EMIT_NOP();
+            break;
         case 0x21: /* ADDU */
             emit_load_psx_reg(REG_T0, rs);
             emit_load_psx_reg(REG_T1, rt);
             EMIT_ADDU(REG_T0, REG_T0, REG_T1);
             emit_store_psx_reg(rd, REG_T0);
             break;
-        case 0x22: /* SUB */
+        case 0x22: /* SUB (with overflow check) */
+            emit_load_psx_reg(REG_A0, rs); /* a0 = rs_val */
+            emit_load_psx_reg(REG_A1, rt); /* a1 = rt_val */
+            emit_load_imm32(6, rd);        /* a2 = rd index */
+            emit_load_imm32(7, psx_pc);    /* a3 = PC */
+            EMIT_JAL_ABS((u32)Helper_SUB);
+            EMIT_NOP();
+            break;
         case 0x23: /* SUBU */
             emit_load_psx_reg(REG_T0, rs);
             emit_load_psx_reg(REG_T1, rt);
@@ -1174,7 +1189,16 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
         break;
 
     /* I-type ALU */
-    case 0x08: /* ADDI */
+    case 0x08: /* ADDI (with overflow check) */
+    {
+        emit_load_psx_reg(REG_A0, rs);                     /* a0 = rs_val */
+        emit_load_imm32(REG_A1, (u32)(s32)imm);           /* a1 = sign-extended imm */
+        emit_load_imm32(6, rt);                            /* a2 = rt index */
+        emit_load_imm32(7, psx_pc);                        /* a3 = PC */
+        EMIT_JAL_ABS((u32)Helper_ADDI);
+        EMIT_NOP();
+        break;
+    }
     case 0x09: /* ADDIU */
         emit_load_psx_reg(REG_T0, rs);
         EMIT_ADDIU(REG_T0, REG_T0, imm);
@@ -1635,7 +1659,10 @@ void Run_CPU(void)
         {
             ((block_func_t)block)(&cpu, psx_ram, psx_bios);
         }
-        /* else: exception fired during block, cpu.pc already set by PSX_Exception */
+        else
+        {
+            /* Exception fired during block, cpu.pc already set by PSX_Exception */
+        }
         psx_block_exception = 0; /* Disable longjmp */
 
         /* Get instruction count from cache for this block */
