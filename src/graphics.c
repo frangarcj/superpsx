@@ -41,6 +41,8 @@ static int draw_clip_y2 = 480;
 static int tex_page_x = 0;      // Texture page X offset in pixels
 static int tex_page_y = 0;      // Texture page Y offset in pixels
 static int tex_page_format = 2; // 0=4bit, 1=8bit, 2=15bit
+static int semi_trans_mode = 0; // Semi-transparency mode from E1 bits 5-6
+static int dither_enabled = 0; // Dithering enable from E1 bit 9
 
 // Shadow PSX VRAM for CLUT texture decode - dynamically allocated
 
@@ -75,6 +77,24 @@ typedef struct
     GifTag tag;
     u64 data[2]; // Variable length normally
 } GSPacket;
+
+// Compute GS ALPHA_1 register value from PSX semi-transparency mode
+// GS formula: ((A-B)*C >> 7) + D  (C=FIX divides by 128, so FIX=128=1.0, 64=0.5, 32=0.25)
+static u64 Get_Alpha_Reg(int mode)
+{
+    switch (mode) {
+        case 0: // 0.5*Cd + 0.5*Cs: (Cs-Cd)*FIX+Cd with FIX=0x40 (64/128=0.5)
+            return (u64)0 | ((u64)1 << 2) | ((u64)2 << 4) | ((u64)1 << 6) | ((u64)0x40 << 32);
+        case 1: // Cd + Cs: (Cs-0)*FIX+Cd with FIX=0x80 (128/128=1.0)
+            return (u64)0 | ((u64)2 << 2) | ((u64)2 << 4) | ((u64)1 << 6) | ((u64)0x80 << 32);
+        case 2: // Cd - Cs: (Cd-Cs)*FIX+0 with FIX=0x80 (128/128=1.0)
+            return (u64)1 | ((u64)0 << 2) | ((u64)2 << 4) | ((u64)2 << 6) | ((u64)0x80 << 32);
+        case 3: // Cd + 0.25*Cs: (Cs-0)*FIX+Cd with FIX=0x20 (32/128=0.25)
+            return (u64)0 | ((u64)2 << 2) | ((u64)2 << 4) | ((u64)1 << 6) | ((u64)0x20 << 32);
+        default:
+            return (u64)0 | ((u64)1 << 2) | ((u64)2 << 4) | ((u64)1 << 6) | ((u64)0x40 << 32);
+    }
+}
 
 // -- Helper Functions --
 
@@ -212,22 +232,29 @@ static void Setup_GS_Environment(void)
     Push_GIF_Data(scax0 | (scax1 << 16) | (scay0 << 32) | (scay1 << 48), 0x40);
 
     // TEST_1 (Reg 0x47) - Alpha test, depth test, etc
-    // ALPHA TEST: enable=1, method=NOTEQUAL, compval=0, keep=FRAMEBUFFER
+    // ALPHA TEST: enable=1, method=ALWAYS (pass all pixels)
+    // DATE: disabled (DATE=0) - Don't gate draws on dest alpha bit
+    //   DATE=1 would block semi-transparent draws on pixels where STP=1
     // DEPTH TEST: enable=1, method=ALLPASS
-    u64 test_reg = ((u64)1 << 0) | ((u64)1 << 1) | ((u64)0 << 5) | ((u64)1 << 12) |
-                   ((u64)0 << 15) | ((u64)1 << 16) | ((u64)1 << 17);
+    u64 test_reg = ((u64)1 << 0) | ((u64)1 << 1) | ((u64)0 << 4) | ((u64)0 << 12) |
+                   ((u64)0 << 13) | ((u64)1 << 16) | ((u64)1 << 17);
     Push_GIF_Data(test_reg, 0x47);
 
     // FOGCOL (Reg 0x3D) - Fog color
     Push_GIF_Data(0, 0x3D);
 
-    // PABE (Reg 0x49) - Per-pixel alpha blending
-    Push_GIF_Data(0, 0x49);
+    // PABE (Reg 0x49) - Per-pixel alpha blending enable
+    // PSX uses texture STP bit (bit 15) to control per-pixel semi-transparency.
+    // With PABE=1, GS checks source alpha MSB: if 0→opaque, if 1→blended.
+    // CT16S texture alpha: STP=0→alpha=0x00(MSB=0), STP=1→alpha=0x80(MSB=1).
+    // This correctly maps PSX per-pixel STP behavior to GS.
+    Push_GIF_Data(1, 0x49);
 
     // ALPHA_1 (Reg 0x42) - Alpha blending settings
-    // (Cs - Cd) * As + Cd
-    u64 alpha_reg = ((u64)0 << 0) | ((u64)1 << 2) | ((u64)0 << 4) |
-                    ((u64)1 << 6) | ((u64)0x80 << 32);
+    // Default: PSX mode 0 = 0.5*Cd + 0.5*Cs
+    // GS: ((Cs-Cd)*FIX >> 7)+Cd with FIX=0x40 (64/128=0.5)
+    u64 alpha_reg = ((u64)0 << 0) | ((u64)1 << 2) | ((u64)2 << 4) |
+                    ((u64)1 << 6) | ((u64)0x40 << 32);
     Push_GIF_Data(alpha_reg, 0x42);
 
     // DTHE (Reg 0x45) - Dithering off
@@ -256,8 +283,12 @@ static void Setup_GS_Environment(void)
     // CLAMP_1 (Reg 0x08) - Texture clamping
     Push_GIF_Data(0, 0x08);
 
-    // TEXA (Reg 0x3B) - Texture alpha
-    Push_GIF_Data(((u64)0x80 << 0) | ((u64)0 << 15) | ((u64)0x80 << 32), 0x3B);
+    // TEXA (Reg 0x3B) - Texture alpha expansion for CT16S
+    // TA0 (bits 0-7): Alpha for STP=0 texels = 0x00 → PABE won't blend these
+    // AEM (bit 15): 0 = standard mode
+    // TA1 (bits 32-39): Alpha for STP=1 texels = 0x80 → PABE will blend these
+    // This enables per-pixel semi-transparency matching PSX STP behavior
+    Push_GIF_Data(((u64)0x00 << 0) | ((u64)0 << 15) | ((u64)0x80 << 32), 0x3B);
 
     Flush_GIF();
 }
@@ -582,8 +613,37 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
 
             u64 rgbaq = GS_set_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0x3F800000);
 
-            // 1 PRIM + 2*(UV + RGBAQ + XYZ2) = 7 registers
-            Push_GIF_Tag(7, 1, 0, 0, 0, 1, 0xE);
+            // Check raw texture bit (bit 0): 1=Decal (raw texture), 0=Modulate (texture*color)
+            int is_raw_texture = (cmd & 0x01) != 0;
+            int is_semi_trans = (cmd & 0x02) != 0;
+            int nregs = 7; // PRIM + 2*(UV + RGBAQ + XYZ2)
+            nregs += 2; // +DTHE=0 before, +DTHE=restore after (PSX rects never dither)
+            if (is_raw_texture) nregs += 4; // +2 TEX0 before, +2 TEX0 after
+            if (is_semi_trans) nregs += 1;  // +1 ALPHA_1 before
+
+            Push_GIF_Tag(nregs, 1, 0, 0, 0, 1, 0xE);
+
+            // PSX rectangles never apply dithering - disable temporarily
+            Push_GIF_Data(0, 0x45); // DTHE = 0
+
+            // Set ALPHA_1 before the draw if semi-transparent
+            if (is_semi_trans) {
+                Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), 0x42); // ALPHA_1
+            }
+
+            // If raw texture, override TEX0 to TFX=1 (Decal)
+            if (is_raw_texture) {
+                u64 tex0_decal = 0;
+                tex0_decal |= (u64)PSX_VRAM_FBW << 14;
+                tex0_decal |= (u64)GS_PSM_16S << 20;
+                tex0_decal |= (u64)10 << 26;
+                tex0_decal |= (u64)9 << 30;
+                tex0_decal |= (u64)1 << 34;  // TCC = 1
+                tex0_decal |= (u64)1 << 35;  // TFX = 1 (Decal)
+                Push_GIF_Data(tex0_decal, 0x06); // TEX0_1
+                Push_GIF_Data(0, 0x3F);           // TEXFLUSH
+            }
+
             Push_GIF_Data(prim_reg, 0x00); // PRIM register
 
             // Vertex 0 (top-left)
@@ -595,6 +655,22 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
             Push_GIF_Data(GS_set_XYZ(u1 << 4, v1 << 4, 0), 0x03); // UV
             Push_GIF_Data(rgbaq, 0x01); // RGBAQ
             Push_GIF_Data(GS_set_XYZ(gx1, gy1, 0), 0x05); // XYZ2
+
+            // Restore TEX0 to TFX=0 (Modulate) after raw texture draw
+            if (is_raw_texture) {
+                u64 tex0_mod = 0;
+                tex0_mod |= (u64)PSX_VRAM_FBW << 14;
+                tex0_mod |= (u64)GS_PSM_16S << 20;
+                tex0_mod |= (u64)10 << 26;
+                tex0_mod |= (u64)9 << 30;
+                tex0_mod |= (u64)1 << 34;  // TCC = 1
+                tex0_mod |= (u64)0 << 35;  // TFX = 0 (Modulate)
+                Push_GIF_Data(tex0_mod, 0x06); // TEX0_1
+                Push_GIF_Data(0, 0x3F);        // TEXFLUSH
+            }
+
+            // Restore dither state
+            Push_GIF_Data((u64)dither_enabled, 0x45); // DTHE = restore
 
             *gif_cursor = &gif_packet_buf[gif_packet_ptr];
         }
@@ -610,8 +686,21 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
 
             u64 rgbaq = GS_set_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0x3F800000);
 
-            // 1 PRIM + 2*(RGBAQ + XYZ2) = 5 registers
-            Push_GIF_Tag(5, 1, 0, 0, 0, 1, 0xE);
+            int is_semi_trans = (cmd & 0x02) != 0;
+            int nregs = 5; // PRIM + 2*(RGBAQ + XYZ2)
+            nregs += 2; // +DTHE=0 before, +DTHE=restore after (PSX rects never dither)
+            if (is_semi_trans) nregs += 1; // +1 ALPHA_1
+
+            Push_GIF_Tag(nregs, 1, 0, 0, 0, 1, 0xE);
+
+            // PSX rectangles never apply dithering - disable temporarily
+            Push_GIF_Data(0, 0x45); // DTHE = 0
+
+            // Set ALPHA_1 before the draw if semi-transparent
+            if (is_semi_trans) {
+                Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), 0x42); // ALPHA_1
+            }
+
             Push_GIF_Data(prim_reg, 0x00); // PRIM register
 
             // Vertex 0 (top-left)
@@ -621,6 +710,9 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
             // Vertex 1 (bottom-right)
             Push_GIF_Data(rgbaq, 0x01); // RGBAQ
             Push_GIF_Data(GS_set_XYZ(gx1, gy1, 0), 0x05); // XYZ2
+
+            // Restore dither state
+            Push_GIF_Data((u64)dither_enabled, 0x45); // DTHE = restore
 
             *gif_cursor = &gif_packet_buf[gif_packet_ptr];
         }
@@ -1072,8 +1164,12 @@ void GPU_WriteGP0(u32 data)
         tex_page_y = tp_y * 256;
         tex_page_format = tpf;
 
+        // Semi-transparency mode: bits 5-6 of E1
+        u32 trans_mode = (data >> 5) & 3;
+        semi_trans_mode = trans_mode;
+
         // Set TEX0: Use TBP0=0 (whole VRAM), UV offset applied per-vertex
-        Push_GIF_Tag(3, 1, 0, 0, 0, 1, 0xE);
+        Push_GIF_Tag(4, 1, 0, 0, 0, 1, 0xE);
         u64 tex0 = 0;                    // TBP0 = 0 (full VRAM base)
         tex0 |= (u64)PSX_VRAM_FBW << 14; // TBW = 16 (1024 pixels / 64)
         tex0 |= (u64)GS_PSM_16S << 20;   // PSM = CT16S (matches framebuffer)
@@ -1087,9 +1183,38 @@ void GPU_WriteGP0(u32 data)
 
         // Dithering: bit 9 of GP0 E1
         u32 dither_enable = (data >> 9) & 1;
+        dither_enabled = dither_enable;
         Push_GIF_Data(dither_enable, 0x45); // DTHE register
 
+        // Semi-transparency blending (ALPHA_1 register 0x42)
+        // PSX modes: 0=0.5B+0.5F, 1=B+F, 2=B-F, 3=B+0.25F
+        // GS ALPHA: A=Cs, B=Cd, C=FIX/As, D=Cd/0
+        // Formula: (A-B)*C + D
+        {
+            u64 alpha_reg;
+            switch (trans_mode) {
+                case 0: // 0.5*Cd + 0.5*Cs
+                        // GS: ((Cs-Cd)*FIX >> 7)+Cd with FIX=0x40 (64/128=0.5)
+                    alpha_reg = (u64)0 | ((u64)1 << 2) | ((u64)2 << 4) | ((u64)1 << 6) | ((u64)0x40 << 32);
+                    break;
+                case 1: // Cd + Cs (saturating)
+                        // GS: ((Cs-0)*FIX >> 7)+Cd with FIX=0x80 (128/128=1.0)
+                    alpha_reg = (u64)0 | ((u64)2 << 2) | ((u64)2 << 4) | ((u64)1 << 6) | ((u64)0x80 << 32);
+                    break;
+                case 2: // Cd - Cs
+                        // GS: ((Cd-Cs)*FIX >> 7)+0 with FIX=0x80 (128/128=1.0)
+                    alpha_reg = (u64)1 | ((u64)0 << 2) | ((u64)2 << 4) | ((u64)2 << 6) | ((u64)0x80 << 32);
+                    break;
+                case 3: // Cd + 0.25*Cs
+                        // GS: ((Cs-0)*FIX >> 7)+Cd with FIX=0x20 (32/128=0.25)
+                    alpha_reg = (u64)0 | ((u64)2 << 2) | ((u64)2 << 4) | ((u64)1 << 6) | ((u64)0x20 << 32);
+                    break;
+            }
+            Push_GIF_Data(alpha_reg, 0x42); // ALPHA_1
+        }
+
         // printf("[GPU] E1: TexPage(%d,%d) fmt=%d\n", tex_page_x, tex_page_y, tpf);
+        Flush_GIF(); // Ensure ALPHA_1 and other settings reach GS immediately
     }
     break;
     case 0xE3: // Drawing Area Top-Left
@@ -1559,15 +1684,13 @@ void Init_Graphics()
 #include <stdlib.h>
 #include <malloc.h>
 
-// Standard PS2 Hardware Registers for VIF1 DMA (Channel 1)
-#define GS_CSR ((volatile u64 *)0x12001000)
+// Standard PS2 Hardware Registers
+#define GS_CSR    ((volatile u64 *)0x12001000)
+
+// DMA Channel 1 (VIF1) registers - PCSX2 routes GS readback through VIF1
 #define D1_CHCR ((volatile u32 *)0x10009000)
 #define D1_MADR ((volatile u32 *)0x10009010)
-#define D1_QWC ((volatile u32 *)0x10009020)
-#define D1_TADR ((volatile u32 *)0x10009030)
-#define D1_ASR0 ((volatile u32 *)0x10009040)
-#define D1_ASR1 ((volatile u32 *)0x10009050)
-#define D1_SADR ((volatile u32 *)0x10009080)
+#define D1_QWC  ((volatile u32 *)0x10009020)
 
 void DumpVRAM(const char *filename)
 {
@@ -1577,9 +1700,6 @@ void DumpVRAM(const char *filename)
 
     // 1. Finish any pending rendering
     Flush_GIF();
-    *GS_CSR = *GS_CSR & 8;
-    while (!(*GS_CSR & 8))
-        ;
 
     // 2. Prepare transfer size (CT16S = 2 bytes per pixel)
     int width = 1024;
@@ -1587,7 +1707,7 @@ void DumpVRAM(const char *filename)
     int size_bytes = width * height * 2; // 16-bit color (CT16S)
     int qwc = size_bytes / 16;
 
-    // Allocate buffer (aligned to 16 bytes, preferably 64)
+    // Allocate buffer (aligned to 64 bytes)
     void *buf = memalign(64, size_bytes);
     if (!buf)
     {
@@ -1597,30 +1717,20 @@ void DumpVRAM(const char *filename)
         return;
     }
 
-    // Flush data cache for the buffer range to ensure DMA writes go to RAM
-    // (Actually DMA writes to RAM, so CPU needs to invalidate cache before reading.
-    //  But here we are just allocating. We will sync after DMA.)
-
-    // 3. Setup GS for StoreImage
-    // We send a GIF packet to set BITBLTBUF, TRXPOS, TRXREG, TRXDIR
-    // BITBLTBUF: SrcBase=0, SrcWidth=16, PSM=CT16S (0x0A)
-    // TRXPOS: SrcX=0, SrcY=0
-    // TRXREG: W=1024, H=512
-    // TRXDIR: 1 (Local -> Host)
-
+    // 3. Setup GS for StoreImage via GIF A+D packet
     u64 bitbltbuf = ((u64)0 << 0) | ((u64)16 << 16) | ((u64)GS_PSM_16S << 24);
     u64 trxpos = 0;
     u64 trxreg = ((u64)1024 << 0) | ((u64)512 << 32);
     u64 trxdir = 1; // Local -> Host
 
-    // Use a small local buffer for the packet
-    u128 packet[8];
+    u128 packet[8] __attribute__((aligned(16)));
     GifTag *tag = (GifTag *)packet;
     tag->NLOOP = 4;
     tag->EOP = 1;
+    tag->pad1 = 0;
     tag->PRE = 0;
     tag->PRIM = 0;
-    tag->FLG = 0; // PACKED
+    tag->FLG = 0; // PACKED (A+D)
     tag->NREG = 1;
     tag->REGS = 0xE; // A+D
 
@@ -1634,23 +1744,12 @@ void DumpVRAM(const char *filename)
     *ptr++ = trxdir;
     *ptr++ = 0x53; // TRXDIR
 
-    // 4. Setup VIF1 DMA to receive
-    // Channel 1 (VIF1), Direction = 0 (Device -> Memory)
-    // Mode = 0 (Normal) causes it to transfer QWC qwords.
-
-    // 5. Send the Request to GS/GIF
-    // This triggers the data flow from GS -> FIFO -> VIF1 -> DMA -> Mem
-    // We send the packet via GIF (Channel 2)
+    // 4. Send setup to GS then receive via VIF1/DMA Ch1
     dma_channel_send_normal(DMA_CHANNEL_GIF, packet, 5, 0, 0);
+    dma_wait_fast();
 
-    // 6. Receive data via VIF1 DMA
-    // The GS will send 1024*512*4 bytes = 2MB.
-    // QWC = 131072. The QWC register which is 16-bit compliant or just safer to split.
-    // We'll split into chunks of 65535 QW just in case.
-
-    // Convert to physical address for DMA (mask 0x1FFFFFFF)
+    // 5. Receive data via VIF1 DMA (PCSX2-specific readback path)
     u32 phys_addr = (u32)buf & 0x1FFFFFFF;
-
     u32 remaining_qwc = qwc;
     u32 current_addr = phys_addr;
 
@@ -1660,7 +1759,7 @@ void DumpVRAM(const char *filename)
 
         *D1_MADR = current_addr;
         *D1_QWC = transfer_qwc;
-        *D1_CHCR = 0x100; // STR=1, DIR=0, MODE=0
+        *D1_CHCR = 0x100; // STR=1, DIR=0 (device→memory), MODE=0
 
         // Wait for completion
         while (*D1_CHCR & 0x100)
@@ -1670,19 +1769,16 @@ void DumpVRAM(const char *filename)
         remaining_qwc -= transfer_qwc;
     }
 
-    // 7. Sync Cache / Use Uncached access
-    // We use KSEG1 (0xA0000000) alias to read the data
+    // 6. Read via uncached access and save to file
     u8 *uncached_buf = (u8 *)(phys_addr | 0xA0000000);
 
-    // Debug: Print first few pixels (16-bit CT16S)
-    u16 *p = (u16 *)uncached_buf;
 #ifdef ENABLE_VRAM_DUMP
+    u16 *p = (u16 *)uncached_buf;
     printf("[DumpVRAM] First pixel: %04X\n", p[0]);
     printf("[DumpVRAM] Center pixel: %04X\n", p[(512 * 1024 / 2) + 512]);
     fflush(stdout);
 #endif
 
-    // 8. Save to file
     FILE *f = fopen(filename, "wb");
     if (f)
     {
