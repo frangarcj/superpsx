@@ -58,6 +58,25 @@ static int vram_read_x, vram_read_y, vram_read_w, vram_read_h;
 static int vram_read_remaining; // Words remaining to read
 static int vram_read_pixel;     // Current pixel index
 
+// Polyline accumulation state (GP0 48h-5Fh polylines)
+static int polyline_active = 0;
+static int polyline_shaded = 0;
+static int polyline_semi_trans = 0;
+static u32 polyline_prev_color;
+static u32 polyline_next_color;
+static s16 polyline_prev_x, polyline_prev_y;
+static int polyline_expect_color = 0; // For shaded: 1=expecting color, 0=expecting vertex
+
+// Texture flip bits from GP0(E1) bits 12-13
+static int tex_flip_x = 0;
+static int tex_flip_y = 0;
+
+// Texture window from GP0(E2)
+static u32 tex_win_mask_x = 0; // In 8-pixel steps
+static u32 tex_win_mask_y = 0;
+static u32 tex_win_off_x = 0;
+static u32 tex_win_off_y = 0;
+
 // -- GIF Tag --
 typedef struct
 {
@@ -395,6 +414,57 @@ static void Start_VRAM_Transfer(int x, int y, int w, int h)
 // Lookup table for Primitive Sizes (0x00-0xFF)
 // Could be useful, but for now we calculate it.
 
+// -- Helper: Emit a single line segment using A+D mode GIF packets --
+static void Emit_Line_Segment_AD(s16 x0, s16 y0, u32 color0,
+                                  s16 x1, s16 y1, u32 color1,
+                                  int is_shaded, int is_semi_trans)
+{
+    u64 prim_reg = 1; // LINE
+    if (is_shaded) prim_reg |= (1 << 3); // IIP=1 (Gouraud)
+    if (is_semi_trans) prim_reg |= (1 << 6); // ABE=1
+
+    int nregs = 5; // PRIM + 2*(RGBAQ + XYZ2)
+    if (is_semi_trans) nregs++;
+
+    Push_GIF_Tag(nregs, 1, 0, 0, 0, 1, 0xE); // A+D mode
+
+    if (is_semi_trans) {
+        Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), 0x42); // ALPHA_1
+    }
+
+    Push_GIF_Data(prim_reg, 0x00); // PRIM register
+
+    // Vertex 0
+    Push_GIF_Data(GS_set_RGBAQ(color0 & 0xFF, (color0 >> 8) & 0xFF,
+                                (color0 >> 16) & 0xFF, 0x80, 0x3F800000), 0x01);
+    s32 gx0 = ((s32)x0 + draw_offset_x + 2048) << 4;
+    s32 gy0 = ((s32)y0 + draw_offset_y + 2048) << 4;
+    Push_GIF_Data(GS_set_XYZ(gx0, gy0, 0), 0x05);
+
+    // Vertex 1
+    Push_GIF_Data(GS_set_RGBAQ(color1 & 0xFF, (color1 >> 8) & 0xFF,
+                                (color1 >> 16) & 0xFF, 0x80, 0x3F800000), 0x01);
+    s32 gx1 = ((s32)x1 + draw_offset_x + 2048) << 4;
+    s32 gy1 = ((s32)y1 + draw_offset_y + 2048) << 4;
+    Push_GIF_Data(GS_set_XYZ(gx1, gy1, 0), 0x05);
+}
+
+// Apply PSX texture window formula to a texture coordinate
+// texcoord = (texcoord AND NOT(Mask*8)) OR ((Offset AND Mask)*8)
+static u32 Apply_Tex_Window_U(u32 u) {
+    if (tex_win_mask_x == 0) return u;
+    u32 mask = tex_win_mask_x * 8;
+    u32 off = (tex_win_off_x & tex_win_mask_x) * 8;
+    return (u & ~mask) | off;
+}
+
+static u32 Apply_Tex_Window_V(u32 v) {
+    if (tex_win_mask_y == 0) return v;
+    u32 mask = tex_win_mask_y * 8;
+    u32 off = (tex_win_off_y & tex_win_mask_y) * 8;
+    return (v & ~mask) | off;
+}
+
 // Translate a single GP0 command to GS GIF packets
 // Writes directly to the GIF buffer cursor
 void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
@@ -482,8 +552,8 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
                     int i = tris[t][v];
                     if (is_textured)
                     {
-                        u32 u = (verts[i].uv & 0xFF) + tex_page_x;
-                        u32 v_coord = ((verts[i].uv >> 8) & 0xFF) + tex_page_y;
+                        u32 u = Apply_Tex_Window_U(verts[i].uv & 0xFF) + tex_page_x;
+                        u32 v_coord = Apply_Tex_Window_V((verts[i].uv >> 8) & 0xFF) + tex_page_y;
                         Push_GIF_Data(GS_set_XYZ(u << 4, v_coord << 4, 0), 0x03); // ST
                     }
                     u32 c = verts[i].color;
@@ -511,8 +581,8 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
             {
                 if (is_textured)
                 {
-                    u32 u = (verts[i].uv & 0xFF) + tex_page_x;
-                    u32 v_coord = ((verts[i].uv >> 8) & 0xFF) + tex_page_y;
+                    u32 u = Apply_Tex_Window_U(verts[i].uv & 0xFF) + tex_page_x;
+                    u32 v_coord = Apply_Tex_Window_V((verts[i].uv >> 8) & 0xFF) + tex_page_y;
                     Push_GIF_Data(GS_set_XYZ(u << 4, v_coord << 4, 0), 0x03); // ST
                 }
                 u32 c = verts[i].color;
@@ -603,10 +673,29 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
             // Sync cursor to gif_packet_ptr
             gif_packet_ptr = *gif_cursor - gif_packet_buf;
 
-            u32 u0 = (uv_clut & 0xFF) + tex_page_x;
-            u32 v0 = ((uv_clut >> 8) & 0xFF) + tex_page_y;
-            u32 u1 = u0 + w;
-            u32 v1 = v0 + h;
+            u32 u0_raw = Apply_Tex_Window_U(uv_clut & 0xFF);
+            u32 v0_raw = Apply_Tex_Window_V((uv_clut >> 8) & 0xFF);
+            u32 u1_raw = Apply_Tex_Window_U(((uv_clut & 0xFF) + w) & 0xFF);
+            u32 v1_raw = Apply_Tex_Window_V((((uv_clut >> 8) & 0xFF) + h) & 0xFF);
+
+            u32 u0 = u0_raw + tex_page_x;
+            u32 v0 = v0_raw + tex_page_y;
+            u32 u1 = u1_raw + tex_page_x;
+            u32 v1 = v1_raw + tex_page_y;
+
+            // Apply texture flip for rectangles (E1 bits 12-13)
+            if (tex_flip_x)
+            {
+                u32 tmp = u0;
+                u0 = u1;
+                u1 = tmp;
+            }
+            if (tex_flip_y)
+            {
+                u32 tmp = v0;
+                v0 = v1;
+                v1 = tmp;
+            }
 
             s32 gx0 = ((s32)x + draw_offset_x + 2048) << 4;
             s32 gy0 = ((s32)y + draw_offset_y + 2048) << 4;
@@ -802,34 +891,10 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
         *gif_cursor = &gif_packet_buf[gif_packet_ptr];
     }
     else if ((cmd & 0xE0) == 0x40)
-    { // Line (GP0 40h-5Fh)
+    { // Line (GP0 40h-5Fh) - using A+D mode for reliable rendering
         int is_shaded = (cmd & 0x10) != 0;
-        int is_polyline = (cmd & 0x08) != 0; // Polyline vs single line
+        int is_semi_trans = (cmd & 0x02) != 0;
 
-        // For simplicity, handle single line (2 vertices)
-        // Polyline would need terminator detection (0x55555555)
-
-        GifTag *tag = (GifTag *)(*gif_cursor);
-        tag->NLOOP = 2; // 2 vertices for a line
-        tag->EOP = 1;
-        tag->PRE = 1;
-
-        // PRIM: type=1 (LINE), IIP=is_shaded, TME=0, FGE=0, ABE=(cmd&0x02), AA1=0
-        u64 prim_reg = 1; // LINE
-        if (is_shaded)
-            prim_reg |= (1 << 3); // IIP=1 (Gouraud shading)
-        if (cmd & 0x02)
-            prim_reg |= (1 << 6); // ABE=1 (semi-transparent)
-        tag->PRIM = prim_reg;
-
-        tag->FLG = 1;     // REGLIST mode
-        tag->NREG = 2;    // RGBAQ + XYZ2 per vertex
-        tag->REGS = 0x51; // Reg 1 (RGBAQ), Reg 5 (XYZ2)
-
-        (*gif_cursor)++;
-        u64 *data_ptr = (u64 *)(*gif_cursor);
-
-        // Parse vertices
         u32 color0 = cmd_word & 0xFFFFFF;
         int idx = 1;
 
@@ -848,20 +913,19 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
         s16 x1 = (s16)(xy1 & 0xFFFF);
         s16 y1 = (s16)(xy1 >> 16);
 
-        // Emit vertex 0
-        *data_ptr++ = GS_set_RGBAQ(color0 & 0xFF, (color0 >> 8) & 0xFF, (color0 >> 16) & 0xFF, 0x80, 0);
-        s32 gx0 = ((s32)x0 + draw_offset_x + 2048) << 4;
-        s32 gy0 = ((s32)y0 + draw_offset_y + 2048) << 4;
-        *data_ptr++ = GS_set_XYZ(gx0, gy0, 0);
+        // Sync cursor to gif_packet_ptr
+        gif_packet_ptr = *gif_cursor - gif_packet_buf;
 
-        // Emit vertex 1
-        *data_ptr++ = GS_set_RGBAQ(color1 & 0xFF, (color1 >> 8) & 0xFF, (color1 >> 16) & 0xFF, 0x80, 0);
-        s32 gx1 = ((s32)x1 + draw_offset_x + 2048) << 4;
-        s32 gy1 = ((s32)y1 + draw_offset_y + 2048) << 4;
-        *data_ptr++ = GS_set_XYZ(gx1, gy1, 0);
+        Emit_Line_Segment_AD(x0, y0, color0, x1, y1, color1, is_shaded, is_semi_trans);
 
-        *gif_cursor = (u128 *)data_ptr;
-        printf("[GPU] Draw Line: (%d,%d)-(%d,%d) Color=%06X\n", x0, y0, x1, y1, color0);
+        *gif_cursor = &gif_packet_buf[gif_packet_ptr];
+
+        if (gpu_debug_log)
+        {
+            fprintf(gpu_debug_log, "[GPU] Draw Line: (%d,%d)-(%d,%d) Color=%06X->%06X\n",
+                    x0, y0, x1, y1, color0, color1);
+            fflush(gpu_debug_log);
+        }
     }
 }
 
@@ -1015,6 +1079,48 @@ void GPU_WriteGP0(u32 data)
         return;
     }
 
+    // Polyline continuation - handle before normal command processing
+    if (polyline_active)
+    {
+        // Check for polyline terminator
+        if ((data & 0xF000F000) == 0x50005000)
+        {
+            polyline_active = 0;
+            Flush_GIF();
+            return;
+        }
+
+        if (polyline_shaded && polyline_expect_color)
+        {
+            // This is a color word for the next vertex
+            polyline_next_color = data & 0xFFFFFF;
+            polyline_expect_color = 0;
+        }
+        else
+        {
+            // This is a vertex word
+            s16 x = (s16)(data & 0xFFFF);
+            s16 y = (s16)(data >> 16);
+
+            u32 new_color = polyline_shaded ? polyline_next_color : polyline_prev_color;
+
+            Emit_Line_Segment_AD(polyline_prev_x, polyline_prev_y, polyline_prev_color,
+                                 x, y, new_color,
+                                 polyline_shaded, polyline_semi_trans);
+            Flush_GIF();
+
+            polyline_prev_x = x;
+            polyline_prev_y = y;
+            polyline_prev_color = new_color;
+
+            if (polyline_shaded)
+            {
+                polyline_expect_color = 1; // Next word should be a color
+            }
+        }
+        return;
+    }
+
     if (gpu_cmd_remaining > 0)
     {
         gpu_cmd_buffer[gpu_cmd_ptr++] = data;
@@ -1131,6 +1237,31 @@ void GPU_WriteGP0(u32 data)
                 Translate_GP0_to_GS(gpu_cmd_buffer, &cursor);
                 gif_packet_ptr = cursor - gif_packet_buf;
                 Flush_GIF(); // Flush immediately so primitives are visible
+
+                // Check if this was a polyline command - activate polyline mode
+                if ((cmd & 0xE0) == 0x40 && (cmd & 0x08))
+                {
+                    polyline_active = 1;
+                    polyline_shaded = (cmd & 0x10) != 0;
+                    polyline_semi_trans = (cmd & 0x02) != 0;
+
+                    // Save last vertex from the first segment
+                    int v1_idx = polyline_shaded ? 3 : 2;
+                    u32 xy1 = gpu_cmd_buffer[v1_idx];
+                    polyline_prev_x = (s16)(xy1 & 0xFFFF);
+                    polyline_prev_y = (s16)(xy1 >> 16);
+
+                    if (polyline_shaded)
+                    {
+                        polyline_prev_color = gpu_cmd_buffer[2] & 0xFFFFFF; // color1
+                        polyline_expect_color = 1; // Next word is a color
+                    }
+                    else
+                    {
+                        polyline_prev_color = gpu_cmd_buffer[0] & 0xFFFFFF; // Original flat color
+                        polyline_expect_color = 0; // Next word is a vertex
+                    }
+                }
             }
         }
         return;
@@ -1176,6 +1307,10 @@ void GPU_WriteGP0(u32 data)
         // Semi-transparency mode: bits 5-6 of E1
         u32 trans_mode = (data >> 5) & 3;
         semi_trans_mode = trans_mode;
+
+        // Texture flip bits: bits 12-13 of E1
+        tex_flip_x = (data >> 12) & 1;
+        tex_flip_y = (data >> 13) & 1;
 
         // Set TEX0: Use TBP0=0 (whole VRAM), UV offset applied per-vertex
         Push_GIF_Tag(4, 1, 0, 0, 0, 1, 0xE);
@@ -1269,7 +1404,10 @@ void GPU_WriteGP0(u32 data)
         printf("[GPU] E5: Draw Offset = (%d, %d)\n", draw_offset_x, draw_offset_y);
         break;
     case 0xE2: // Texture Window Setting
-        // TODO: implement texture window masking
+        tex_win_mask_x = data & 0x1F;
+        tex_win_mask_y = (data >> 5) & 0x1F;
+        tex_win_off_x = (data >> 10) & 0x1F;
+        tex_win_off_y = (data >> 15) & 0x1F;
         break;
     case 0xE6: // Mask Bit Setting
         // Bit 0: Set mask while drawing (1=set MSB)
@@ -1530,10 +1668,34 @@ void GPU_DMA2(u32 madr, u32 bcr, u32 chcr)
             addr += 4;
             for (u32 i = 0; i < count;)
             {
-                u32 cmd_word = GPU_GetWord(addr);
+                // If polyline is still active from previous command, continue feeding words
+                if (polyline_active)
+                {
+                    u32 word = GPU_GetWord(addr);
+                    GPU_WriteGP0(word);
+                    i++;
+                    addr += 4;
+                    continue;
+                }
 
-                // If it's a render command, translate it
-                if (((cmd_word >> 24) >= 0x20 && (cmd_word >> 24) <= 0x7F))
+                u32 cmd_word = GPU_GetWord(addr);
+                u32 cmd_byte = cmd_word >> 24;
+
+                // Line/polyline commands - route through GPU_WriteGP0 for polyline state machine
+                if ((cmd_byte & 0xE0) == 0x40)
+                {
+                    Flush_GIF();
+                    while (i < count)
+                    {
+                        GPU_WriteGP0(GPU_GetWord(addr));
+                        i++;
+                        addr += 4;
+                        if (gpu_cmd_remaining == 0 && gpu_transfer_words == 0 && !polyline_active)
+                            break;
+                    }
+                }
+                // Other render commands (polygons 0x20-0x3F, rectangles 0x60-0x7F)
+                else if (cmd_byte >= 0x20 && cmd_byte <= 0x7F)
                 {
                     // Get pointer to command in RAM
                     u32 *cmd_ptr = (u32 *)&psx_ram[addr];
