@@ -112,6 +112,34 @@ def main():
     diff_img = Image.fromarray(np.clip(diff * 4, 0, 255).astype(np.uint8))
     diff_img.save('vram_diff.png')
     print('\nSaved vram_diff.png')
+    
+    # Detailed analysis of remaining differences
+    print('\n=== Detailed Diff Analysis ===')
+    max_per_pixel = diff.max(axis=2)
+    unique_max = np.unique(max_per_pixel[max_per_pixel > 0])
+    if len(unique_max) > 0:
+        print(f'  Unique max-channel diffs: {sorted(unique_max)[:20]}')
+        
+    # Count pixels by diff magnitude
+    for threshold in [8, 16, 248]:
+        count = np.count_nonzero(max_per_pixel == threshold)
+        print(f'  Pixels with max diff = {threshold}: {count}')
+    
+    # Find locations of max diff (248) pixels  
+    large_diff_locs = np.where(max_per_pixel >= 240)
+    if len(large_diff_locs[0]) > 0:
+        print(f'\n  Large diff (>=240) pixel locations (first 10):')
+        for i in range(min(10, len(large_diff_locs[0]))):
+            y, x = large_diff_locs[0][i], large_diff_locs[1][i]
+            cur = img_rgb.getpixel((x, y))
+            ref_px = ref.getpixel((x, y))
+            print(f'    ({x},{y}): cur={cur} ref={ref_px}')
+    
+    # Count by region for diff=8 (precision/dithering)
+    small_diff = (max_per_pixel == 8)
+    print(f'\n  Diff=8 in top triangle (0-320, 0-240): {np.sum(small_diff[:240, :320])}')
+    print(f'  Diff=8 in bottom triangle (0-320, 240-480): {np.sum(small_diff[240:480, :320])}')
+    print(f'  Diff=8 in big triangle (518-1023): {np.sum(small_diff[:512, 518:])}')
 
 if __name__ == '__main__':
     main()
