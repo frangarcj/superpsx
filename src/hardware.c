@@ -1,7 +1,11 @@
-#include "superpsx.h"
-#include "superpsx.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+
 #include <kernel.h>
+#include "superpsx.h"
+#include "joystick.h"
+#include "superpsx.h"
 
 /*
  * PSX Hardware Register Emulation
@@ -70,13 +74,18 @@ typedef struct
 } PsxTimer;
 static PsxTimer timers[3];
 
-/* SIO (Joypad/Memcard) - Minimal emulation for "no controller" */
-static u32 sio_data = 0xFF;       /* RX Data (0xFF = no controller) */
+/* SIO (Joypad/Memcard) - PSX controller protocol state machine */
+static u32 sio_data = 0xFF;       /* RX Data register */
 static u32 sio_stat = 0x00000005; /* TX Ready 1+2 */
 static u16 sio_mode = 0;
 static u16 sio_ctrl = 0;
 static u16 sio_baud = 0;
-static int sio_tx_pending = 0; /* 1 = byte was sent, response pending */
+static int sio_tx_pending = 0;    /* 1 = RX data available */
+
+/* Controller protocol state machine */
+static int sio_state = 0;         /* Current byte index in protocol */
+static uint8_t sio_response[5];   /* Pre-built response buffer */
+static int sio_selected = 0;      /* 1 = JOY SELECT is asserted */
 
 /* SPU */
 static u16 spu_regs[512]; /* 0x1F801C00-0x1F801DFF */
@@ -98,22 +107,20 @@ u32 ReadHardware(u32 addr)
     /* SIO (Joypad/Memcard) */
     if (phys == 0x1F801040)
     {
-        /* JOY_DATA - Return RX data (0xFF = no controller) */
-        sio_stat &= ~0x02; /* Clear RX Not Empty after read */
+        /* JOY_DATA - Return RX data from controller */
+        u32 val = sio_data;
         sio_tx_pending = 0;
-        return sio_data;
+        return val;
     }
     if (phys == 0x1F801044)
     {
         /* JOY_STAT: bit0=TX Ready1, bit1=RX Not Empty, bit2=TX Ready2, bit7=/ACK */
-        u32 stat = 0x00000005; /* TX Ready 1 + 2 */
+        u32 stat = 0x00000005; /* TX Ready 1 + 2 always set */
         if (sio_tx_pending)
-        {
-            /* After a byte was transmitted, set RX data available
-             * This simulates the controller response (0xFF = no pad) */
-            stat |= 0x02; /* RX Not Empty */
-            sio_tx_pending = 0;
-        }
+            stat |= 0x02;     /* RX Not Empty */
+        /* Report /ACK low (active) during active transfer (bytes 0-3) */
+        if (sio_selected && sio_state > 0 && sio_state < 5)
+            stat |= 0x80;     /* /ACK input level */
         return stat;
     }
     if (phys == 0x1F801048)
@@ -342,10 +349,78 @@ void WriteHardware(u32 addr, u32 data)
     /* SIO (Joypad/Memcard) */
     if (phys == 0x1F801040)
     {
-        /* JOY_DATA - TX byte. After sending, a response will be available.
-         * With no controller: response is 0xFF */
-        sio_data = 0xFF;    /* No controller connected */
-        sio_tx_pending = 1; /* Mark that RX data will be available */
+        /* JOY_DATA - TX byte: PSX controller protocol state machine */
+        uint8_t tx = (uint8_t)(data & 0xFF);
+
+        if (!sio_selected) {
+            /* No device selected, respond with 0xFF (hi-z) */
+            sio_data = 0xFF;
+            sio_tx_pending = 1;
+            return;
+        }
+
+        switch (sio_state) {
+        case 0:
+            /* Byte 0: Host sends 0x01 to select controller */
+            if (tx == 0x01) {
+                /* Snapshot the buttons now for this entire transfer */
+                Joystick_GetPSXDigitalResponse(sio_response + 1);
+                sio_response[0] = 0xFF; /* hi-z during address byte */
+                /* response[1]=0x41  response[2]=0x5A  put button bytes after */
+                /* Rearrange: [0]=0xFF [1]=0x41 [2]=0x5A [3]=btnLo [4]=btnHi */
+                {
+                    uint8_t id  = sio_response[1]; /* 0x41 */
+                    uint8_t lo  = sio_response[2]; /* buttons low */
+                    uint8_t hi  = sio_response[3]; /* buttons high */
+                    sio_response[1] = id;   /* 0x41 */
+                    sio_response[2] = 0x5A; /* data-start marker */
+                    sio_response[3] = lo;
+                    sio_response[4] = hi;
+                }
+                sio_data = sio_response[0]; /* 0xFF */
+                sio_state = 1;
+                sio_tx_pending = 1;
+                SignalInterrupt(7); /* IRQ7 - controller */
+            } else {
+                /* Not addressing controller - ignore */
+                sio_data = 0xFF;
+                sio_tx_pending = 1;
+            }
+            break;
+        case 1:
+            /* Byte 1: Host sends 0x42 (Read command) */
+            sio_data = sio_response[1]; /* 0x41 = digital pad ID */
+            sio_state = 2;
+            sio_tx_pending = 1;
+            SignalInterrupt(7);
+            break;
+        case 2:
+            /* Byte 2: Host sends 0x00, controller responds 0x5A */
+            sio_data = sio_response[2]; /* 0x5A */
+            sio_state = 3;
+            sio_tx_pending = 1;
+            SignalInterrupt(7);
+            break;
+        case 3:
+            /* Byte 3: Host sends 0x00, controller responds button low byte */
+            sio_data = sio_response[3];
+            sio_state = 4;
+            sio_tx_pending = 1;
+            SignalInterrupt(7);
+            break;
+        case 4:
+            /* Byte 4: Host sends 0x00, controller responds button high byte */
+            sio_data = sio_response[4];
+            sio_state = 5; /* transfer complete */
+            sio_tx_pending = 1;
+            SignalInterrupt(7);
+            break;
+        default:
+            /* Beyond protocol length - return hi-z */
+            sio_data = 0xFF;
+            sio_tx_pending = 1;
+            break;
+        }
         return;
     }
     if (phys == 0x1F801048)
@@ -358,13 +433,27 @@ void WriteHardware(u32 addr, u32 data)
         sio_ctrl = (u16)data;
         if (data & 0x40)
         {
-            /* Reset - clear status */
+            /* Reset - clear all state */
             sio_tx_pending = 0;
+            sio_state = 0;
+            sio_selected = 0;
+            sio_data = 0xFF;
         }
         if (data & 0x10)
         {
             /* ACK - acknowledge interrupt */
             sio_stat &= ~(1 << 9); /* Clear IRQ flag */
+        }
+        /* Bit 1: JOYn output select - directly controls /SEL line */
+        if (data & 0x02) {
+            if (!sio_selected) {
+                /* Freshly asserted: reset protocol state */
+                sio_state = 0;
+            }
+            sio_selected = 1;
+        } else {
+            sio_selected = 0;
+            sio_state = 0;
         }
         return;
     }
