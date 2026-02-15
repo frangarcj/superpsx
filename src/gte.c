@@ -451,13 +451,33 @@ static void gte_rtps_core(R3000CPU *cpu, int v, int sf, int lm, int last) {
     s64 ty = (s64)(s32)C(c_TRY) << 12;
     s64 tz = (s64)(s32)C(c_TRZ) << 12;
 
-    s64 m1 = tx + mul16(lo16(C(c_RT11RT12)), vx) + mul16(hi16(C(c_RT11RT12)), vy) + mul16(lo16(C(c_RT13RT21)), vz);
-    s64 m2 = ty + mul16(hi16(C(c_RT13RT21)), vx) + mul16(lo16(C(c_RT22RT23)), vy) + mul16(hi16(C(c_RT22RT23)), vz);
-    s64 m3 = tz + mul16(lo16(C(c_RT31RT32)), vx) + mul16(hi16(C(c_RT31RT32)), vy) + mul16(lo16(C(c_RT33)), vz);
+    /* Per-step 44-bit accumulator wrapping (same as MVMVA) */
+#define RTPS_STEP(acc_m, acc_hw, prod, ch) do { \
+        acc_m += (prod); \
+        s64 _unwrapped = (acc_hw) + (prod); \
+        check_mac_overflow(_unwrapped, ch); \
+        acc_hw = wrap44(_unwrapped); \
+    } while(0)
 
-    check_mac_overflow(m1, 1);
-    check_mac_overflow(m2, 2);
-    check_mac_overflow(m3, 3);
+    s64 m1 = tx, hw1 = wrap44(tx);
+    check_mac_overflow(tx, 1);
+    RTPS_STEP(m1, hw1, mul16(lo16(C(c_RT11RT12)), vx), 1);
+    RTPS_STEP(m1, hw1, mul16(hi16(C(c_RT11RT12)), vy), 1);
+    RTPS_STEP(m1, hw1, mul16(lo16(C(c_RT13RT21)), vz), 1);
+
+    s64 m2 = ty, hw2 = wrap44(ty);
+    check_mac_overflow(ty, 2);
+    RTPS_STEP(m2, hw2, mul16(hi16(C(c_RT13RT21)), vx), 2);
+    RTPS_STEP(m2, hw2, mul16(lo16(C(c_RT22RT23)), vy), 2);
+    RTPS_STEP(m2, hw2, mul16(hi16(C(c_RT22RT23)), vz), 2);
+
+    s64 m3 = tz, hw3 = wrap44(tz);
+    check_mac_overflow(tz, 3);
+    RTPS_STEP(m3, hw3, mul16(lo16(C(c_RT31RT32)), vx), 3);
+    RTPS_STEP(m3, hw3, mul16(hi16(C(c_RT31RT32)), vy), 3);
+    RTPS_STEP(m3, hw3, mul16(lo16(C(c_RT33)), vz), 3);
+
+#undef RTPS_STEP
 
     D(d_MAC1) = (u32)(s32)mac_shift(m1, sf);
     D(d_MAC2) = (u32)(s32)mac_shift(m2, sf);
@@ -467,12 +487,17 @@ static void gte_rtps_core(R3000CPU *cpu, int v, int sf, int lm, int last) {
     D(d_IR1) = (u32)saturate_ir((s32)D(d_MAC1), 1, lm);
     D(d_IR2) = (u32)saturate_ir((s32)D(d_MAC2), 2, lm);
 
-    /* IR3 in RTPS: derived from stored 32-bit MAC3.
-     * For sf=1: MAC3 already >>12. For sf=0: MAC3 is unshifted, so >>12.
-     * Flag Bit22 checked against -8000..7FFF (ignoring lm), value clamped per lm. */
+    /* IR3 in RTPS: special handling per Lm_B3_sf from reference.
+     * FLAG bit 22 is checked against (raw_mac3 >> 12), always.
+     * VALUE is clamped from (raw_mac3 >> sf*12), i.e. same shift as MAC3. */
     {
-        s32 ir3_raw = sf ? (s32)D(d_MAC3) : ((s32)D(d_MAC3) >> 12);
-        D(d_IR3) = (u32)saturate_ir_rtps3(ir3_raw, lm);
+        s64 val_12 = m3 >> 12;  /* always >> 12 for flag check */
+        if (val_12 < -0x8000 || val_12 > 0x7FFF) flag_set(22);
+        s32 val_sf = (s32)mac_shift(m3, sf);
+        s32 lo = lm ? 0 : -0x8000;
+        if (val_sf < lo)       D(d_IR3) = (u32)lo;
+        else if (val_sf > 0x7FFF) D(d_IR3) = 0x7FFF;
+        else                   D(d_IR3) = (u32)val_sf;
     }
 
     /* Push SZ FIFO: SZ3 from 44-bit truncated accumulator >> 12 */
@@ -628,16 +653,7 @@ static void gte_ncs_core(R3000CPU *cpu, int v, int sf, int lm) {
     /* Step 2: BK + LCM * IR */
     gte_mvmva(cpu, sf, lm, 2, 3, 1);
 
-    /* Step 3: [R*IR1, G*IR2, B*IR3] SHL 4 */
-    u8 r = D(d_RGBC) & 0xFF;
-    u8 g = (D(d_RGBC) >> 8) & 0xFF;
-    u8 b = (D(d_RGBC) >> 16) & 0xFF;
-
-    s64 m1 = ((s64)r * (s16)(s32)D(d_IR1)) << 4;
-    s64 m2 = ((s64)g * (s16)(s32)D(d_IR2)) << 4;
-    s64 m3 = ((s64)b * (s16)(s32)D(d_IR3)) << 4;
-
-    store_mac_ir(cpu, m1, m2, m3, sf, lm);
+    /* NCS: No R*IR step. Push color directly from step 2 result. */
     push_color(cpu);
 }
 
