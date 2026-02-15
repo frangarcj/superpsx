@@ -175,9 +175,14 @@ u32 ReadHardware(u32 addr)
             switch (reg)
             {
             case 0:
-                return timers[t].value; // Return live value
+                return timers[t].value & 0xFFFF;
             case 1:
-                return timers[t].mode;
+            {
+                u32 val = timers[t].mode;
+                /* Bits 11-12 are cleared after reading */
+                timers[t].mode &= ~((1 << 11) | (1 << 12));
+                return val;
+            }
             case 2:
                 return timers[t].target;
             default:
@@ -264,13 +269,20 @@ void UpdateTimers(u32 cycles)
 
         // Check Target
         if (val >= target && target > 0)
-        { // Target match
+        {
+            // Set bit 11: Reached Target Value flag
+            timers[i].mode |= (1 << 11);
+
             // Bit 4: IRQ on Target
             if (mode & (1 << 4))
             {
-                // Bit 6: Toggle/One-shot?
-                // Bit 10: IRQ Request Flag (we should set this in mode reg too?)
-                timers[i].mode |= (1 << 10);
+                // Bit 10: IRQ Request flag (0=Yes, 1=No)
+                // Pulse mode (bit 7=0): briefly set bit 10 to 0
+                // Toggle mode (bit 7=1): toggle bit 10
+                if (mode & (1 << 7))
+                    timers[i].mode ^= (1 << 10);
+                else
+                    timers[i].mode &= ~(1 << 10);
 
                 // Signal CPU Interrupt (IRQ 4, 5, 6)
                 SignalInterrupt(4 + i);
@@ -279,17 +291,24 @@ void UpdateTimers(u32 cycles)
             // Bit 3: Reset on Target
             if (mode & (1 << 3))
             {
-                val = 0;
+                val %= (target + 1); // Handle overshoot properly
             }
         }
 
         // Check Overflow (FFFF)
         if (val >= 0xFFFF)
         {
+            // Set bit 12: Reached FFFFh Value flag
+            timers[i].mode |= (1 << 12);
+
             // Bit 5: IRQ on Overflow
             if (mode & (1 << 5))
             {
-                timers[i].mode |= (1 << 11); // Flag? 11 or 12?
+                if (mode & (1 << 7))
+                    timers[i].mode ^= (1 << 10);
+                else
+                    timers[i].mode &= ~(1 << 10);
+
                 SignalInterrupt(4 + i);
             }
             val &= 0xFFFF; // Wrap
@@ -573,7 +592,12 @@ void WriteHardware(u32 addr, u32 data)
                 timers[t].value = data & 0xFFFF;
                 break;
             case 1:
-                timers[t].mode = data;
+                /* Writing mode register:
+                 * - Resets counter to 0
+                 * - Clears bits 11-12 (reached flags)
+                 * - Sets bit 10 (IRQ request = No/1) */
+                timers[t].mode = (data & 0x03FF) | (1 << 10);
+                timers[t].value = 0;
                 break;
             case 2:
                 timers[t].target = data & 0xFFFF;
