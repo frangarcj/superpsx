@@ -234,15 +234,47 @@ void UpdateTimers(u32 cycles)
         u32 target = timers[i].target;
         u32 val = timers[i].value;
 
+        /* Check sync mode (bit 0 = sync enable, bits 1-2 = sync type) */
+        if (mode & 1)
+        {
+            int sync_type = (mode >> 1) & 3;
+            if (i == 2)
+            {
+                /* Timer2: sync modes 0,3 = stop counter; 1,2 = free run */
+                if (sync_type == 0 || sync_type == 3)
+                    continue; /* Counter is stopped */
+                /* sync_type 1 or 2: fall through to free run */
+            }
+            /* Timer0/Timer1 sync modes: not fully implemented yet,
+             * but don't skip them - let them count for now */
+        }
+
         u32 inc = cycles;
         
         // Timer clock sources (bits 8-9):
-        // Timer 0: 0/2=sysclk, 1=dotclock
-        // Timer 1: 0/2=sysclk, 1=hblank
-        // Timer 2: 0/1=sysclk, 2=sysclk/8
+        // Timer 0: 0/2=sysclk, 1/3=dotclock
+        // Timer 1: 0/2=sysclk, 1/3=hblank
+        // Timer 2: 0/1=sysclk, 2/3=sysclk/8
         
+        // Timer 0 dot clock mode
+        if (i == 0 && ((mode >> 8) & 1) == 1)
+        {
+            static u32 t0_accumulator = 0;
+            t0_accumulator += cycles;
+            // Dot clock varies with resolution. Default 320px = 53.2224 MHz / 10 = 5.32224 MHz
+            // Ratio: CPU 33.8688 MHz / dotclock 5.32224 MHz ≈ 6.3636
+            // But for 320x mode the dot clock is ~6.65 MHz, ratio ~5.09
+            // Use a reasonable average: CPU/dotclock ≈ 5 for 320x
+            // A simpler approach: dotclock ≈ sysclk * 7 / 33.8688 ≈ sysclk / 5
+            // Actually GPU pixels per scanline is 3413 GPU clocks at 53.69 MHz
+            // For 320px: 53.693175 / 8 = 6.7116 MHz. CPU ratio = 33.8688/6.7116 ≈ 5.046
+            inc = t0_accumulator / 5;
+            t0_accumulator %= 5;
+            if (inc == 0)
+                continue;
+        }
         // Timer 1 hblank mode (more accurate for boot logo timing)
-        if (i == 1 && ((mode >> 8) & 3) == 1)
+        else if (i == 1 && ((mode >> 8) & 1) == 1)
         {
             static u32 t1_accumulator = 0;
             t1_accumulator += cycles;
@@ -254,8 +286,8 @@ void UpdateTimers(u32 cycles)
                 continue;
         }
         // Timer 2 clock source (bits 8-9)
-        // 2 = Sys/8.
-        else if (i == 2 && ((mode >> 8) & 3) == 2)
+        // 2 or 3 = Sys/8.
+        else if (i == 2 && ((mode >> 8) & 2) == 2)
         {
             static u32 t2_accumulator = 0;
             t2_accumulator += cycles;
