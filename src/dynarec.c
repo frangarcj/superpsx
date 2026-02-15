@@ -1632,11 +1632,11 @@ void Run_CPU(void)
             if (!binary_loaded)
             {
                 printf("DYNAREC: Reached BIOS Shell Entry (0xBFC06FF0). Loading binary...\n");
-                if (Load_PSX_EXE("host:test.exe", &cpu) == 0)
+                if (Load_PSX_EXE("test.exe", &cpu) == 0)
                 {
                     printf("DYNAREC: Binary loaded successfully. Jump to PC=0x%08X\n", (unsigned)cpu.pc);
 #ifdef ENABLE_HOST_LOG
-                    host_log_file = fopen("host:output.log", "w");
+                    host_log_file = fopen("output.log", "w");
 #endif
                     binary_loaded = 1;
                     /* Flush cache for new code */
@@ -1792,7 +1792,7 @@ void Run_CPU(void)
         if (iterations % 1000000 == 0 && iterations > 0)
         {
             char filename[64];
-            sprintf(filename, "host:vram_%u.bin", (unsigned)iterations);
+            sprintf(filename, "vram_%u.bin", (unsigned)iterations);
             extern void DumpVRAM(const char *);
             DumpVRAM(filename);
             printf("VRAM Dumped to %s\n", filename);
