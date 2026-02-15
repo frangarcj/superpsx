@@ -104,6 +104,11 @@ static inline s64 check_mac_overflow(s64 val, int n) {
     return val;
 }
 
+/* Wrap a value to 44-bit signed range (sign-extend from bit 43) */
+static inline s64 wrap44(s64 val) {
+    return (val << 20) >> 20;
+}
+
 /* Check MAC0 overflow (32-bit signed) */
 static inline s64 check_mac0_overflow(s64 val) {
     if (val > 0x7FFFFFFFll)  flag_set(16);
@@ -400,26 +405,36 @@ static void gte_mvmva(R3000CPU *cpu, int sf, int lm, int mx, int v, int cv) {
         tx3 = (s64)get_translation(cpu, cv, 2) << 12;
     }
 
-    /* Hardware checks 44-bit overflow at each accumulator step.
-     * An intermediate overflow that gets canceled by later terms
-     * still sets the flag permanently for this operation. */
-    s64 m1 = tx1;
-    check_mac_overflow(m1, 1);
-    m1 += (s64)get_matrix(cpu, mx, 0, 0) * vx; check_mac_overflow(m1, 1);
-    m1 += (s64)get_matrix(cpu, mx, 0, 1) * vy; check_mac_overflow(m1, 1);
-    m1 += (s64)get_matrix(cpu, mx, 0, 2) * vz; check_mac_overflow(m1, 1);
+    /* Hardware uses a 44-bit accumulator that wraps on overflow.
+     * After wrapping, subsequent additions can trigger additional overflows.
+     * We track both the mathematical 64-bit sum (for the MAC value)
+     * and a 44-bit wrapped accumulator (for overflow detection). */
+#define MVMVA_STEP(acc_m, acc_hw, prod, ch) do { \
+        acc_m += (prod); \
+        s64 _unwrapped = (acc_hw) + (prod); \
+        check_mac_overflow(_unwrapped, ch); \
+        acc_hw = wrap44(_unwrapped); \
+    } while(0)
 
-    s64 m2 = tx2;
-    check_mac_overflow(m2, 2);
-    m2 += (s64)get_matrix(cpu, mx, 1, 0) * vx; check_mac_overflow(m2, 2);
-    m2 += (s64)get_matrix(cpu, mx, 1, 1) * vy; check_mac_overflow(m2, 2);
-    m2 += (s64)get_matrix(cpu, mx, 1, 2) * vz; check_mac_overflow(m2, 2);
+    s64 m1 = tx1, hw1 = wrap44(tx1);
+    check_mac_overflow(tx1, 1);
+    MVMVA_STEP(m1, hw1, (s64)get_matrix(cpu, mx, 0, 0) * vx, 1);
+    MVMVA_STEP(m1, hw1, (s64)get_matrix(cpu, mx, 0, 1) * vy, 1);
+    MVMVA_STEP(m1, hw1, (s64)get_matrix(cpu, mx, 0, 2) * vz, 1);
 
-    s64 m3 = tx3;
-    check_mac_overflow(m3, 3);
-    m3 += (s64)get_matrix(cpu, mx, 2, 0) * vx; check_mac_overflow(m3, 3);
-    m3 += (s64)get_matrix(cpu, mx, 2, 1) * vy; check_mac_overflow(m3, 3);
-    m3 += (s64)get_matrix(cpu, mx, 2, 2) * vz; check_mac_overflow(m3, 3);
+    s64 m2 = tx2, hw2 = wrap44(tx2);
+    check_mac_overflow(tx2, 2);
+    MVMVA_STEP(m2, hw2, (s64)get_matrix(cpu, mx, 1, 0) * vx, 2);
+    MVMVA_STEP(m2, hw2, (s64)get_matrix(cpu, mx, 1, 1) * vy, 2);
+    MVMVA_STEP(m2, hw2, (s64)get_matrix(cpu, mx, 1, 2) * vz, 2);
+
+    s64 m3 = tx3, hw3 = wrap44(tx3);
+    check_mac_overflow(tx3, 3);
+    MVMVA_STEP(m3, hw3, (s64)get_matrix(cpu, mx, 2, 0) * vx, 3);
+    MVMVA_STEP(m3, hw3, (s64)get_matrix(cpu, mx, 2, 1) * vy, 3);
+    MVMVA_STEP(m3, hw3, (s64)get_matrix(cpu, mx, 2, 2) * vz, 3);
+
+#undef MVMVA_STEP
 
     store_mac_ir(cpu, m1, m2, m3, sf, lm);
 }
