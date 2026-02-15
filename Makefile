@@ -2,7 +2,8 @@ EE_BIN = superpsx.elf
 EE_OBJS = src/main.o src/memory.o src/cpu.o src/hardware.o src/graphics.o src/dynarec.o src/gte.o src/cdrom.o src/loader.o
 EE_LIBS = -ldebug -lkernel -lgraph -ldma -ldraw -lmath3d
 
-EE_CFLAGS = -I$(PS2SDK)/ee/include -I$(PS2SDK)/common/include -Iinclude -O2 -G0 -Wall -DENABLE_HOST_LOG
+EE_CFLAGS = -I$(PS2SDK)/ee/include -I$(PS2SDK)/common/include -Iinclude -O2 -G0 -Wall -DENABLE_HOST_LOG -DENABLE_VRAM_DUMP
+# Remove -DENABLE_VRAM_DUMP to disable VRAM dumping (improves performance)
 EE_LDFLAGS = -L$(PS2SDK)/ee/lib -Tbuild/linkfile -L.
 
 all: $(EE_BIN)

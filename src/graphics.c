@@ -237,7 +237,7 @@ static void Setup_GS_Environment(void)
     // PSX: -4 +0 -3 +1 / +2 -2 +3 -1 / -3 +1 -4 +0 / +3 -1 +2 -2
     // GS DIMX stores 3-bit signed values (two's complement): -4=4, -3=5, -2=6, -1=7, 0=0, 1=1, 2=2, 3=3
     // DM(col,row): [2:0]=DM00, [6:4]=DM01, [10:8]=DM02, [14:12]=DM03, etc.
-    u64 dimx_reg = ((u64)4 << 0) | ((u64)0 << 4) | ((u64)5 << 8) | ((u64)1 << 12) |   // Row 0: -4, 0, -3, +1
+    u64 dimx_reg = ((u64)4 << 0) | ((u64)0 << 4) | ((u64)5 << 8) | ((u64)1 << 12) |    // Row 0: -4, 0, -3, +1
                    ((u64)2 << 16) | ((u64)6 << 20) | ((u64)3 << 24) | ((u64)7 << 28) | // Row 1: +2, -2, +3, -1
                    ((u64)5 << 32) | ((u64)1 << 36) | ((u64)4 << 40) | ((u64)0 << 44) | // Row 2: -3, +1, -4, 0
                    ((u64)3 << 48) | ((u64)7 << 52) | ((u64)2 << 56) | ((u64)6 << 60);  // Row 3: +3, -1, +2, -2
@@ -487,19 +487,22 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
                 Push_GIF_Data(GS_set_XYZ(gx, gy, 0), 0x05);
             }
             *gif_cursor = &gif_packet_buf[gif_packet_ptr];
-            
+
             // Debug output
-            if (gpu_debug_log) {
+            if (gpu_debug_log)
+            {
                 fprintf(gpu_debug_log, "[GPU] Triangle A+D: PRIM=%llu\n", (unsigned long long)prim_reg);
                 fflush(gpu_debug_log);
             }
         }
 
-        if (gpu_debug_log) {
+        if (gpu_debug_log)
+        {
             fprintf(gpu_debug_log, "[GPU] Draw Poly: Cmd=%02X Shaded=%d Quad=%d Verts=%d Color=%06X Offset=(%d,%d)\n",
-                   cmd, is_shaded, is_quad, num_psx_verts, color, draw_offset_x, draw_offset_y);
-            for(int i=0; i<num_psx_verts; i++) {
-                 fprintf(gpu_debug_log, "\tV%d: (%d, %d) Col=%06X UV=%04X\n", i, verts[i].x, verts[i].y, verts[i].color, verts[i].uv);
+                    cmd, is_shaded, is_quad, num_psx_verts, color, draw_offset_x, draw_offset_y);
+            for (int i = 0; i < num_psx_verts; i++)
+            {
+                fprintf(gpu_debug_log, "\tV%d: (%d, %d) Col=%06X UV=%04X\n", i, verts[i].x, verts[i].y, verts[i].color, verts[i].uv);
             }
             fflush(gpu_debug_log);
         }
@@ -643,7 +646,11 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
         if (h == 0)
             h = 0x200;
 
-        if (gpu_debug_log) { fprintf(gpu_debug_log, "[GPU] Fill Rect: (%d,%d %dx%d) Color=%06X\n", x, y, w, h, color); fflush(gpu_debug_log); }
+        if (gpu_debug_log)
+        {
+            fprintf(gpu_debug_log, "[GPU] Fill Rect: (%d,%d %dx%d) Color=%06X\n", x, y, w, h, color);
+            fflush(gpu_debug_log);
+        }
 
         // FillRect bypasses scissor - temporarily set scissor to full VRAM
         // GIF tag: NLOOP=3, EOP=1, AD mode (set scissor, draw sprite, restore scissor)
@@ -1068,7 +1075,7 @@ void GPU_WriteGP0(u32 data)
         Push_GIF_Tag(3, 1, 0, 0, 0, 1, 0xE);
         u64 tex0 = 0;                    // TBP0 = 0 (full VRAM base)
         tex0 |= (u64)PSX_VRAM_FBW << 14; // TBW = 16 (1024 pixels / 64)
-        tex0 |= (u64)GS_PSM_16S << 20; // PSM = CT16S (matches framebuffer)
+        tex0 |= (u64)GS_PSM_16S << 20;   // PSM = CT16S (matches framebuffer)
         tex0 |= (u64)10 << 26;           // TW = 10 (2^10 = 1024)
         tex0 |= (u64)9 << 30;            // TH = 9 (2^9 = 512)
         tex0 |= (u64)1 << 34;            // TCC = 1 (RGBA)
@@ -1518,7 +1525,7 @@ void GPU_DMA2(u32 madr, u32 bcr, u32 chcr)
 void Init_Graphics()
 {
     printf("Initializing Graphics (GS)...\n");
-    
+
     // Uncomment for GPU debug logging:
     // gpu_debug_log = fopen("host:gpu_debug.log", "w");
     // if (gpu_debug_log) fprintf(gpu_debug_log, "GPU Debug Log\n");
@@ -1553,22 +1560,25 @@ void Init_Graphics()
 
 // Standard PS2 Hardware Registers for VIF1 DMA (Channel 1)
 #define GS_CSR ((volatile u64 *)0x12001000)
-#define D1_CHCR  ((volatile u32 *)0x10009000)
-#define D1_MADR  ((volatile u32 *)0x10009010)
-#define D1_QWC   ((volatile u32 *)0x10009020)
-#define D1_TADR  ((volatile u32 *)0x10009030)
-#define D1_ASR0  ((volatile u32 *)0x10009040)
-#define D1_ASR1  ((volatile u32 *)0x10009050)
-#define D1_SADR  ((volatile u32 *)0x10009080)
+#define D1_CHCR ((volatile u32 *)0x10009000)
+#define D1_MADR ((volatile u32 *)0x10009010)
+#define D1_QWC ((volatile u32 *)0x10009020)
+#define D1_TADR ((volatile u32 *)0x10009030)
+#define D1_ASR0 ((volatile u32 *)0x10009040)
+#define D1_ASR1 ((volatile u32 *)0x10009050)
+#define D1_SADR ((volatile u32 *)0x10009080)
 
 void DumpVRAM(const char *filename)
 {
+#ifdef ENABLE_VRAM_DUMP
     printf("[DumpVRAM] Dumping VRAM to %s...\n", filename);
+#endif
 
     // 1. Finish any pending rendering
     Flush_GIF();
     *GS_CSR = *GS_CSR & 8;
-    while (!(*GS_CSR & 8));
+    while (!(*GS_CSR & 8))
+        ;
 
     // 2. Prepare transfer size (CT16S = 2 bytes per pixel)
     int width = 1024;
@@ -1580,25 +1590,27 @@ void DumpVRAM(const char *filename)
     void *buf = memalign(64, size_bytes);
     if (!buf)
     {
+#ifdef ENABLE_VRAM_DUMP
         printf("[DumpVRAM] Failed to allocate %d bytes\n", size_bytes);
+#endif
         return;
     }
-    
+
     // Flush data cache for the buffer range to ensure DMA writes go to RAM
     // (Actually DMA writes to RAM, so CPU needs to invalidate cache before reading.
     //  But here we are just allocating. We will sync after DMA.)
-    
+
     // 3. Setup GS for StoreImage
     // We send a GIF packet to set BITBLTBUF, TRXPOS, TRXREG, TRXDIR
     // BITBLTBUF: SrcBase=0, SrcWidth=16, PSM=CT16S (0x0A)
     // TRXPOS: SrcX=0, SrcY=0
     // TRXREG: W=1024, H=512
     // TRXDIR: 1 (Local -> Host)
-    
+
     u64 bitbltbuf = ((u64)0 << 0) | ((u64)16 << 16) | ((u64)GS_PSM_16S << 24);
-    u64 trxpos    = 0;
-    u64 trxreg    = ((u64)1024 << 0) | ((u64)512 << 32);
-    u64 trxdir    = 1; // Local -> Host
+    u64 trxpos = 0;
+    u64 trxreg = ((u64)1024 << 0) | ((u64)512 << 32);
+    u64 trxdir = 1; // Local -> Host
 
     // Use a small local buffer for the packet
     u128 packet[8];
@@ -1612,15 +1624,19 @@ void DumpVRAM(const char *filename)
     tag->REGS = 0xE; // A+D
 
     u64 *ptr = (u64 *)&packet[1];
-    *ptr++ = bitbltbuf; *ptr++ = 0x50; // BITBLTBUF
-    *ptr++ = trxpos;    *ptr++ = 0x51; // TRXPOS
-    *ptr++ = trxreg;    *ptr++ = 0x52; // TRXREG
-    *ptr++ = trxdir;    *ptr++ = 0x53; // TRXDIR
+    *ptr++ = bitbltbuf;
+    *ptr++ = 0x50; // BITBLTBUF
+    *ptr++ = trxpos;
+    *ptr++ = 0x51; // TRXPOS
+    *ptr++ = trxreg;
+    *ptr++ = 0x52; // TRXREG
+    *ptr++ = trxdir;
+    *ptr++ = 0x53; // TRXDIR
 
     // 4. Setup VIF1 DMA to receive
     // Channel 1 (VIF1), Direction = 0 (Device -> Memory)
     // Mode = 0 (Normal) causes it to transfer QWC qwords.
-    
+
     // 5. Send the Request to GS/GIF
     // This triggers the data flow from GS -> FIFO -> VIF1 -> DMA -> Mem
     // We send the packet via GIF (Channel 2)
@@ -1630,24 +1646,25 @@ void DumpVRAM(const char *filename)
     // The GS will send 1024*512*4 bytes = 2MB.
     // QWC = 131072. The QWC register which is 16-bit compliant or just safer to split.
     // We'll split into chunks of 65535 QW just in case.
-    
+
     // Convert to physical address for DMA (mask 0x1FFFFFFF)
     u32 phys_addr = (u32)buf & 0x1FFFFFFF;
-    
+
     u32 remaining_qwc = qwc;
     u32 current_addr = phys_addr;
-    
+
     while (remaining_qwc > 0)
     {
         u32 transfer_qwc = (remaining_qwc > 0xFFFF) ? 0xFFFF : remaining_qwc;
-        
+
         *D1_MADR = current_addr;
-        *D1_QWC  = transfer_qwc;
+        *D1_QWC = transfer_qwc;
         *D1_CHCR = 0x100; // STR=1, DIR=0, MODE=0
-        
+
         // Wait for completion
-        while (*D1_CHCR & 0x100);
-        
+        while (*D1_CHCR & 0x100)
+            ;
+
         current_addr += transfer_qwc * 16;
         remaining_qwc -= transfer_qwc;
     }
@@ -1657,10 +1674,12 @@ void DumpVRAM(const char *filename)
     u8 *uncached_buf = (u8 *)(phys_addr | 0xA0000000);
 
     // Debug: Print first few pixels (16-bit CT16S)
-    u16 *p = (u16*)uncached_buf;
+    u16 *p = (u16 *)uncached_buf;
+#ifdef ENABLE_VRAM_DUMP
     printf("[DumpVRAM] First pixel: %04X\n", p[0]);
-    printf("[DumpVRAM] Center pixel: %04X\n", p[(512*1024/2) + 512]);
+    printf("[DumpVRAM] Center pixel: %04X\n", p[(512 * 1024 / 2) + 512]);
     fflush(stdout);
+#endif
 
     // 8. Save to file
     FILE *f = fopen(filename, "wb");
@@ -1668,13 +1687,17 @@ void DumpVRAM(const char *filename)
     {
         fwrite(uncached_buf, 1, size_bytes, f);
         fclose(f);
+#ifdef ENABLE_VRAM_DUMP
         printf("[DumpVRAM] Saved %d bytes to %s\n", size_bytes, filename);
         fflush(stdout);
+#endif
     }
     else
     {
+#ifdef ENABLE_VRAM_DUMP
         printf("[DumpVRAM] Error opening file %s\n", filename);
         fflush(stdout);
+#endif
     }
 
     free(buf);
