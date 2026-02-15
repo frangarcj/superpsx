@@ -38,9 +38,9 @@ static int draw_clip_x2 = 640;
 static int draw_clip_y2 = 480;
 
 // Texture page state (from GP0 E1)
-static int tex_page_x = 0;       // Texture page X offset in pixels
-static int tex_page_y = 0;       // Texture page Y offset in pixels
-static int tex_page_format = 2;  // 0=4bit, 1=8bit, 2=15bit
+static int tex_page_x = 0;      // Texture page X offset in pixels
+static int tex_page_y = 0;      // Texture page Y offset in pixels
+static int tex_page_format = 2; // 0=4bit, 1=8bit, 2=15bit
 
 // Shadow PSX VRAM for CLUT texture decode - dynamically allocated
 static u16 *psx_vram_shadow = NULL;
@@ -256,35 +256,38 @@ static void Setup_GS_Environment(void)
 u32 GPU_Read(void)
 {
     // If VRAM read transfer is active (GP0 C0h)
-    if (vram_read_remaining > 0) {
+    if (vram_read_remaining > 0)
+    {
         // Read 2 pixels from shadow VRAM and pack into 32-bit word
         u16 p0 = 0, p1 = 0;
-        
-        if (psx_vram_shadow && vram_read_w > 0) {
+
+        if (psx_vram_shadow && vram_read_w > 0)
+        {
             // Calculate current pixel position
             int px0 = vram_read_x + (vram_read_pixel % vram_read_w);
             int py0 = vram_read_y + (vram_read_pixel / vram_read_w);
             if (px0 < 1024 && py0 < 512)
                 p0 = psx_vram_shadow[py0 * 1024 + px0];
             vram_read_pixel++;
-            
+
             int px1 = vram_read_x + (vram_read_pixel % vram_read_w);
             int py1 = vram_read_y + (vram_read_pixel / vram_read_w);
             if (px1 < 1024 && py1 < 512)
                 p1 = psx_vram_shadow[py1 * 1024 + px1];
             vram_read_pixel++;
         }
-        
+
         vram_read_remaining--;
-        
+
         // If transfer complete, clear GPUSTAT ready bit
-        if (vram_read_remaining == 0) {
+        if (vram_read_remaining == 0)
+        {
             gpu_stat &= ~0x08000000; // Clear bit 27 (ready to send VRAM to CPU)
         }
-        
+
         return (u32)p0 | ((u32)p1 << 16);
     }
-    
+
     // Otherwise return GPU info (GP1 10h responses)
     return gpu_read;
 }
@@ -503,7 +506,7 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
             *gif_cursor = (u128 *)data_ptr;
         }
 
-        printf("[GPU] Draw Poly: Verts=%d Color=%06X V0=(%d,%d) Offset=(%d,%d)\n", 
+        printf("[GPU] Draw Poly: Verts=%d Color=%06X V0=(%d,%d) Offset=(%d,%d)\n",
                num_psx_verts, color, verts[0].x, verts[0].y, draw_offset_x, draw_offset_y);
     }
     else if ((cmd & 0xE0) == 0x60)
@@ -533,9 +536,21 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
         }
         else
         {
-            if (size_mode == 1) { w = 1; h = 1; }
-            else if (size_mode == 2) { w = 8; h = 8; }
-            else { w = 16; h = 16; }
+            if (size_mode == 1)
+            {
+                w = 1;
+                h = 1;
+            }
+            else if (size_mode == 2)
+            {
+                w = 8;
+                h = 8;
+            }
+            else
+            {
+                w = 16;
+                h = 16;
+            }
         }
 
         // Use GS SPRITE primitive (type 6) - 2 vertices: top-left, bottom-right
@@ -611,7 +626,7 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
             *gif_cursor = (u128 *)data_ptr;
         }
 
-        printf("[GPU] Draw Sprite: Rect (%d,%d %dx%d) Color=%06X\n", x, y, w, h, color);
+        // printf("[GPU] Draw Sprite: Rect (%d,%d %dx%d) Color=%06X\n", x, y, w, h, color);
     }
     else if (cmd == 0x02)
     { // FillRect
@@ -623,13 +638,15 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
         u32 xy = psx_cmd[1];
         u32 wh = psx_cmd[2];
         // Proper PSX coordinate masking for FillRect
-        int x = (xy & 0xFFFF) & 0x3F0;       // X: 10 bits, aligned to 16 pixels
-        int y = (xy >> 16) & 0x1FF;           // Y: 9 bits
+        int x = (xy & 0xFFFF) & 0x3F0; // X: 10 bits, aligned to 16 pixels
+        int y = (xy >> 16) & 0x1FF;    // Y: 9 bits
         int w = ((wh & 0xFFFF) & 0x3FF) + 0xF;
-        w &= ~0xF;                             // W: round up to 16
-        if (w == 0) w = 0x400;
-        int h = (wh >> 16) & 0x1FF;           // H: 9 bits
-        if (h == 0) h = 0x200;
+        w &= ~0xF; // W: round up to 16
+        if (w == 0)
+            w = 0x400;
+        int h = (wh >> 16) & 0x1FF; // H: 9 bits
+        if (h == 0)
+            h = 0x200;
 
         printf("[GPU] Fill Rect: (%d,%d %dx%d) Color=%06X\n", x, y, w, h, color);
 
@@ -637,7 +654,7 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
         // GIF tag: NLOOP=3, EOP=1, AD mode (set scissor, draw sprite, restore scissor)
         Push_GIF_Tag(5, 1, 0, 0, 0, 1, 0xE);
         // Set SCISSOR to full VRAM
-        u64 full_scissor = 0 | ((u64)(PSX_VRAM_WIDTH-1) << 16) | ((u64)0 << 32) | ((u64)(PSX_VRAM_HEIGHT-1) << 48);
+        u64 full_scissor = 0 | ((u64)(PSX_VRAM_WIDTH - 1) << 16) | ((u64)0 << 32) | ((u64)(PSX_VRAM_HEIGHT - 1) << 48);
         Push_GIF_Data(full_scissor, 0x40);
         // Set PRIM to SPRITE (6)
         Push_GIF_Data(6, 0x00);
@@ -664,10 +681,13 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
         Flush_GIF();
 
         // Update shadow VRAM for filled area
-        if (psx_vram_shadow) {
+        if (psx_vram_shadow)
+        {
             u16 psx_color = ((r >> 3) & 0x1F) | (((g >> 3) & 0x1F) << 5) | (((b >> 3) & 0x1F) << 10);
-            for (int row = y; row < y + h && row < 512; row++) {
-                for (int col = x; col < x + w && col < 1024; col++) {
+            for (int row = y; row < y + h && row < 512; row++)
+            {
+                for (int col = x; col < x + w && col < 1024; col++)
+                {
                     psx_vram_shadow[row * 1024 + col] = psx_color;
                 }
             }
@@ -681,15 +701,15 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
     { // Line (GP0 40h-5Fh)
         int is_shaded = (cmd & 0x10) != 0;
         int is_polyline = (cmd & 0x08) != 0; // Polyline vs single line
-        
+
         // For simplicity, handle single line (2 vertices)
         // Polyline would need terminator detection (0x55555555)
-        
+
         GifTag *tag = (GifTag *)(*gif_cursor);
         tag->NLOOP = 2; // 2 vertices for a line
         tag->EOP = 1;
         tag->PRE = 1;
-        
+
         // PRIM: type=1 (LINE), IIP=is_shaded, TME=0, FGE=0, ABE=(cmd&0x02), AA1=0
         u64 prim_reg = 1; // LINE
         if (is_shaded)
@@ -697,44 +717,45 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
         if (cmd & 0x02)
             prim_reg |= (1 << 6); // ABE=1 (semi-transparent)
         tag->PRIM = prim_reg;
-        
-        tag->FLG = 1; // REGLIST mode
-        tag->NREG = 2; // RGBAQ + XYZ2 per vertex
+
+        tag->FLG = 1;     // REGLIST mode
+        tag->NREG = 2;    // RGBAQ + XYZ2 per vertex
         tag->REGS = 0x51; // Reg 1 (RGBAQ), Reg 5 (XYZ2)
-        
+
         (*gif_cursor)++;
         u64 *data_ptr = (u64 *)(*gif_cursor);
-        
+
         // Parse vertices
         u32 color0 = cmd_word & 0xFFFFFF;
         int idx = 1;
-        
+
         // Vertex 0
         u32 xy0 = psx_cmd[idx++];
         s16 x0 = (s16)(xy0 & 0xFFFF);
         s16 y0 = (s16)(xy0 >> 16);
-        
+
         // Vertex 1
         u32 color1 = color0;
-        if (is_shaded) {
+        if (is_shaded)
+        {
             color1 = psx_cmd[idx++] & 0xFFFFFF;
         }
         u32 xy1 = psx_cmd[idx++];
         s16 x1 = (s16)(xy1 & 0xFFFF);
         s16 y1 = (s16)(xy1 >> 16);
-        
+
         // Emit vertex 0
         *data_ptr++ = GS_set_RGBAQ(color0 & 0xFF, (color0 >> 8) & 0xFF, (color0 >> 16) & 0xFF, 0x80, 0);
         s32 gx0 = ((s32)x0 + draw_offset_x + 2048) << 4;
         s32 gy0 = ((s32)y0 + draw_offset_y + 2048) << 4;
         *data_ptr++ = GS_set_XYZ(gx0, gy0, 0);
-        
+
         // Emit vertex 1
         *data_ptr++ = GS_set_RGBAQ(color1 & 0xFF, (color1 >> 8) & 0xFF, (color1 >> 16) & 0xFF, 0x80, 0);
         s32 gx1 = ((s32)x1 + draw_offset_x + 2048) << 4;
         s32 gy1 = ((s32)y1 + draw_offset_y + 2048) << 4;
         *data_ptr++ = GS_set_XYZ(gx1, gy1, 0);
-        
+
         *gif_cursor = (u128 *)data_ptr;
         printf("[GPU] Draw Line: (%d,%d)-(%d,%d) Color=%06X\n", x0, y0, x1, y1, color0);
     }
@@ -816,16 +837,17 @@ void GPU_WriteGP0(u32 data)
     if (gpu_transfer_words > 0)
     {
         // Write to shadow VRAM (raw 16-bit data)
-        if (psx_vram_shadow && vram_tx_w > 0) {
+        if (psx_vram_shadow && vram_tx_w > 0)
+        {
             u16 p0 = data & 0xFFFF;
             u16 p1 = data >> 16;
-            
+
             int px = vram_tx_x + (vram_tx_pixel % vram_tx_w);
             int py = vram_tx_y + (vram_tx_pixel / vram_tx_w);
             if (px < 1024 && py < 512)
                 psx_vram_shadow[py * 1024 + px] = p0;
             vram_tx_pixel++;
-            
+
             px = vram_tx_x + (vram_tx_pixel % vram_tx_w);
             py = vram_tx_y + (vram_tx_pixel / vram_tx_w);
             if (px < 1024 && py < 512)
@@ -937,11 +959,11 @@ void GPU_WriteGP0(u32 data)
                     vram_read_h = 512;
                 vram_read_remaining = (vram_read_w * vram_read_h + 1) / 2;
                 vram_read_pixel = 0;
-                
+
                 // Set GPUSTAT bit 27 (ready to send VRAM to CPU)
                 gpu_stat |= 0x08000000;
-                
-                printf("[GPU] GP0(C0) VRAM Read: %dx%d at (%d,%d), %d words\n", 
+
+                printf("[GPU] GP0(C0) VRAM Read: %dx%d at (%d,%d), %d words\n",
                        vram_read_w, vram_read_h, vram_read_x, vram_read_y, vram_read_remaining);
             }
             else if ((cmd & 0xE0) == 0x80)
@@ -956,41 +978,46 @@ void GPU_WriteGP0(u32 data)
                 int dy = (dst_xy >> 16) & 0x1FF;
                 int w = wh & 0x3FF;
                 int h = (wh >> 16) & 0x1FF;
-                if (w == 0) w = 0x400;
-                if (h == 0) h = 0x200;
-                
+                if (w == 0)
+                    w = 0x400;
+                if (h == 0)
+                    h = 0x200;
+
                 printf("[GPU] GP0(80) VRAM Copy: (%d,%d)->(%d,%d) %dx%d\n", sx, sy, dx, dy, w, h);
-                
+
                 // Update shadow VRAM
-                if (psx_vram_shadow) {
-                    for (int row = 0; row < h; row++) {
-                        for (int col = 0; col < w; col++) {
+                if (psx_vram_shadow)
+                {
+                    for (int row = 0; row < h; row++)
+                    {
+                        for (int col = 0; col < w; col++)
+                        {
                             int src_px = ((sy + row) & 0x1FF) * 1024 + ((sx + col) & 0x3FF);
                             int dst_px = ((dy + row) & 0x1FF) * 1024 + ((dx + col) & 0x3FF);
                             psx_vram_shadow[dst_px] = psx_vram_shadow[src_px];
                         }
                     }
                 }
-                
+
                 // Use GS local-to-local transfer
                 Flush_GIF(); // Ensure pending draws complete before transfer
-                
+
                 Push_GIF_Tag(4, 1, 0, 0, 0, 1, 0xE);
-                
+
                 // BITBLTBUF: SBP=0, SBW=16, SPSM=CT32, DBP=0, DBW=16, DPSM=CT32
                 u64 bitblt = ((u64)PSX_VRAM_FBW << 16) | ((u64)PSX_VRAM_FBW << 48);
                 Push_GIF_Data(bitblt, 0x50);
-                
+
                 // TRXPOS: SSAX=sx, SSAY=sy, DSAX=dx, DSAY=dy
                 u64 trxpos = (u64)sx | ((u64)sy << 16) | ((u64)dx << 32) | ((u64)dy << 48);
                 Push_GIF_Data(trxpos, 0x51);
-                
+
                 // TRXREG: RRW=w, RRH=h
                 Push_GIF_Data((u64)w | ((u64)h << 32), 0x52);
-                
+
                 // TRXDIR: 2 = Local-to-Local
                 Push_GIF_Data(2, 0x53);
-                
+
                 Flush_GIF();
             }
             else
@@ -1044,18 +1071,18 @@ void GPU_WriteGP0(u32 data)
 
         // Set TEX0: Use TBP0=0 (whole VRAM), UV offset applied per-vertex
         Push_GIF_Tag(2, 1, 0, 0, 0, 1, 0xE);
-        u64 tex0 = 0;                              // TBP0 = 0 (full VRAM base)
-        tex0 |= (u64)PSX_VRAM_FBW << 14;           // TBW = 16 (1024 pixels / 64)
-        tex0 |= (u64)0 << 20;                      // PSM = CT32
-        tex0 |= (u64)10 << 26;                     // TW = 10 (2^10 = 1024)
-        tex0 |= (u64)9 << 30;                      // TH = 9 (2^9 = 512)
-        tex0 |= (u64)1 << 34;                      // TCC = 1 (RGBA)
-        tex0 |= (u64)0 << 35;                      // TFX = 0 (Modulate)
+        u64 tex0 = 0;                    // TBP0 = 0 (full VRAM base)
+        tex0 |= (u64)PSX_VRAM_FBW << 14; // TBW = 16 (1024 pixels / 64)
+        tex0 |= (u64)0 << 20;            // PSM = CT32
+        tex0 |= (u64)10 << 26;           // TW = 10 (2^10 = 1024)
+        tex0 |= (u64)9 << 30;            // TH = 9 (2^9 = 512)
+        tex0 |= (u64)1 << 34;            // TCC = 1 (RGBA)
+        tex0 |= (u64)0 << 35;            // TFX = 0 (Modulate)
 
-        Push_GIF_Data(tex0, 0x06);                  // TEX0_1
-        Push_GIF_Data(0, 0x3F);                     // TEXFLUSH
+        Push_GIF_Data(tex0, 0x06); // TEX0_1
+        Push_GIF_Data(0, 0x3F);    // TEXFLUSH
 
-        //printf("[GPU] E1: TexPage(%d,%d) fmt=%d\n", tex_page_x, tex_page_y, tpf);
+        // printf("[GPU] E1: TexPage(%d,%d) fmt=%d\n", tex_page_x, tex_page_y, tpf);
     }
     break;
     case 0xE3: // Drawing Area Top-Left
@@ -1209,9 +1236,14 @@ void GPU_WriteGP1(u32 data)
             printf("[GPU] GP1(08) Display Mode CHANGED: %dx%d %s %s\n",
                    widths[hres], vres ? 480 : 240,
                    pal ? "PAL" : "NTSC", interlace ? "Interlaced" : "Progressive");
+
+            // Update GS display mode to match PSX
+            int gs_mode = pal ? GRAPH_MODE_PAL : GRAPH_MODE_NTSC;
+            int gs_interlace = interlace ? GRAPH_MODE_INTERLACED : GRAPH_MODE_NONINTERLACED;
+            int gs_ffmd = 0; // Frame mode
+            SetGsCrt(gs_interlace, gs_mode, gs_ffmd);
         }
-        // Don't reconfigure GS display - keep initial 640x448 setup to avoid PCSX2 issues
-        // PSX content renders to VRAM and is visible through the fixed GS display window
+        // PSX content renders to VRAM and is visible through the updated GS display window
     }
     break;
     case 0x10: // Get GPU Info
@@ -1433,7 +1465,7 @@ void GPU_DMA2(u32 madr, u32 bcr, u32 chcr)
                     // GP0(80h) - VRAM-to-VRAM copy (4 words)
                     // Flush pending GIF data before transfer
                     Flush_GIF();
-                    
+
                     GPU_WriteGP0(cmd_word);
                     i++;
                     addr += 4;
