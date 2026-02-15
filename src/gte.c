@@ -1,81 +1,831 @@
+/*
+ * SuperPSX – Comprehensive GTE (Geometry Transformation Engine) Emulation
+ *
+ * Based on the PSX-SPX documentation:
+ *   https://psx-spx.consoledev.net/geometrytransformationenginegte/
+ *
+ * Implements all 22 GTE opcodes tested by ps1-tests gte/test-all:
+ *   RTPS, NCLIP, OP, DPCS, INTPL, MVMVA, NCDS, CDP, NCDT, NCCS, CC,
+ *   NCCT, NCS, NCT, SQR, DCPL, DPCT, AVSZ3, AVSZ4, RTPT, GPF, GPL
+ */
+
 #include "superpsx.h"
 #include <stdio.h>
+#include <string.h>
 
-/* GTE Register Indices (Data) */
-#define GTE_V0_XY 0x00
-#define GTE_V0_Z  0x01
-#define GTE_V1_XY 0x02
-#define GTE_V1_Z  0x03
-#define GTE_V2_XY 0x04
-#define GTE_V2_Z  0x05
-#define GTE_RGBC  0x06
-#define GTE_OTZ   0x07
-#define GTE_IR0   0x08
-#define GTE_IR1   0x09
-#define GTE_IR2   0x0A
-#define GTE_IR3   0x0B
-#define GTE_SXY0  0x0C
-#define GTE_SXY1  0x0D
-#define GTE_SXY2  0x0E
-#define GTE_SXYP  0x0F
-#define GTE_SZ0   0x10
-#define GTE_SZ1   0x11
-#define GTE_SZ2   0x12
-#define GTE_SZ3   0x13
-#define GTE_RGB0  0x14
-#define GTE_RGB1  0x15
-#define GTE_RGB2  0x16
-#define GTE_RES1  0x17
-#define GTE_MAC0  0x18
-#define GTE_MAC1  0x19
-#define GTE_MAC2  0x1A
-#define GTE_MAC3  0x1B
-#define GTE_IRGB  0x1C
-#define GTE_ORGB  0x1D
-#define GTE_LZCS  0x1E
-#define GTE_LZCR  0x1F
+#ifdef ENABLE_HOST_LOG
+extern FILE *host_log_file;
+#define DBG(...) do { if (host_log_file) { fprintf(host_log_file, __VA_ARGS__); fflush(host_log_file); } } while(0)
+#else
+#define DBG(...)
+#endif
 
-/* GTE Register Indices (Control) */
-#define GTE_R11_R12 0x00
-#define GTE_R13_R21 0x01
-#define GTE_R22_R23 0x02
-#define GTE_R31_R32 0x03
-#define GTE_R33     0x04
-#define GTE_TRX     0x05
-#define GTE_TRY     0x06
-#define GTE_TRZ     0x07
-#define GTE_L11_L12 0x08
-#define GTE_L13_L21 0x09
-#define GTE_L22_L23 0x0A
-#define GTE_L31_L32 0x0B
-#define GTE_L33     0x0C
-#define GTE_RBK     0x0D
-#define GTE_GBK     0x0E
-#define GTE_BBK     0x0F
-#define GTE_LR1_LR2 0x10
-#define GTE_LR3_LG1 0x11
-#define GTE_LG2_LG3 0x12
-#define GTE_LB1_LB2 0x13
-#define GTE_LB3     0x14
-#define GTE_RFC     0x15
-#define GTE_GFC     0x16
-#define GTE_BFC     0x17
-#define GTE_OFX     0x18
-#define GTE_OFY     0x19
-#define GTE_H       0x1A
-#define GTE_DQA     0x1B
-#define GTE_DQB     0x1C
-#define GTE_ZSF3    0x1D
-#define GTE_ZSF4    0x1E
-#define GTE_FLAG    0x1F
+/* ================================================================
+ * UNR Division Table (for RTPS/RTPT)
+ * Generated as: unr_table[i] = min(0, (0x40000/(i+0x100)+1)/2 - 0x101)
+ * ================================================================ */
+static const u8 unr_table[0x101] = {
+    0xFF,0xFD,0xFB,0xF9,0xF7,0xF5,0xF3,0xF1,0xEF,0xEE,0xEC,0xEA,0xE8,0xE6,0xE4,0xE3,
+    0xE1,0xDF,0xDD,0xDC,0xDA,0xD8,0xD6,0xD5,0xD3,0xD1,0xD0,0xCE,0xCD,0xCB,0xC9,0xC8,
+    0xC6,0xC5,0xC3,0xC1,0xC0,0xBE,0xBD,0xBB,0xBA,0xB8,0xB7,0xB5,0xB4,0xB2,0xB1,0xB0,
+    0xAE,0xAD,0xAB,0xAA,0xA9,0xA7,0xA6,0xA4,0xA3,0xA2,0xA0,0x9F,0x9E,0x9C,0x9B,0x9A,
+    0x99,0x97,0x96,0x95,0x94,0x92,0x91,0x90,0x8F,0x8D,0x8C,0x8B,0x8A,0x89,0x87,0x86,
+    0x85,0x84,0x83,0x82,0x81,0x7F,0x7E,0x7D,0x7C,0x7B,0x7A,0x79,0x78,0x77,0x75,0x74,
+    0x73,0x72,0x71,0x70,0x6F,0x6E,0x6D,0x6C,0x6B,0x6A,0x69,0x68,0x67,0x66,0x65,0x64,
+    0x63,0x62,0x61,0x60,0x5F,0x5E,0x5D,0x5D,0x5C,0x5B,0x5A,0x59,0x58,0x57,0x56,0x55,
+    0x54,0x53,0x53,0x52,0x51,0x50,0x4F,0x4E,0x4D,0x4D,0x4C,0x4B,0x4A,0x49,0x48,0x48,
+    0x47,0x46,0x45,0x44,0x43,0x43,0x42,0x41,0x40,0x3F,0x3F,0x3E,0x3D,0x3C,0x3C,0x3B,
+    0x3A,0x39,0x39,0x38,0x37,0x36,0x36,0x35,0x34,0x33,0x33,0x32,0x31,0x31,0x30,0x2F,
+    0x2E,0x2E,0x2D,0x2C,0x2C,0x2B,0x2A,0x2A,0x29,0x28,0x28,0x27,0x26,0x26,0x25,0x24,
+    0x24,0x23,0x22,0x22,0x21,0x20,0x20,0x1F,0x1E,0x1E,0x1D,0x1D,0x1C,0x1B,0x1B,0x1A,
+    0x19,0x19,0x18,0x18,0x17,0x16,0x16,0x15,0x15,0x14,0x14,0x13,0x12,0x12,0x11,0x11,
+    0x10,0x0F,0x0F,0x0E,0x0E,0x0D,0x0D,0x0C,0x0C,0x0B,0x0A,0x0A,0x09,0x09,0x08,0x08,
+    0x07,0x07,0x06,0x06,0x05,0x05,0x04,0x04,0x03,0x03,0x02,0x02,0x01,0x01,0x00,0x00,
+    0x00  /* extra entry for index 0x100 */
+};
 
-/* Signed 16-bit access helpers */
-static s16 S16(u32 val) { return (s16)(val & 0xFFFF); }
-static s32 S32(u32 val) { return (s32)val; } // Usually 32-bit in reg
+/* ================================================================
+ * GTE State  (all fields accessed via cpu->cp2_data / cpu->cp2_ctrl)
+ *
+ * Data registers 0..31  -> cpu->cp2_data[0..31]
+ * Control registers 0..31 -> cpu->cp2_ctrl[0..31]
+ * ================================================================ */
 
-/* ---- GTE Register Read/Write Helpers ---- */
+/* ---- Handy shorter names ---- */
+#define D(n)  cpu->cp2_data[(n)]
+#define C(n)  cpu->cp2_ctrl[(n)]
 
-/* Count leading zeros or leading ones (for LZCS/LZCR) */
+/* Data register indices */
+enum {
+    d_VXY0=0, d_VZ0=1, d_VXY1=2, d_VZ1=3, d_VXY2=4, d_VZ2=5,
+    d_RGBC=6, d_OTZ=7, d_IR0=8, d_IR1=9, d_IR2=10, d_IR3=11,
+    d_SXY0=12, d_SXY1=13, d_SXY2=14, d_SXYP=15,
+    d_SZ0=16, d_SZ1=17, d_SZ2=18, d_SZ3=19,
+    d_RGB0=20, d_RGB1=21, d_RGB2=22, d_RES1=23,
+    d_MAC0=24, d_MAC1=25, d_MAC2=26, d_MAC3=27,
+    d_IRGB=28, d_ORGB=29, d_LZCS=30, d_LZCR=31
+};
+
+/* Control register indices */
+enum {
+    c_RT11RT12=0, c_RT13RT21=1, c_RT22RT23=2, c_RT31RT32=3, c_RT33=4,
+    c_TRX=5, c_TRY=6, c_TRZ=7,
+    c_L11L12=8, c_L13L21=9, c_L22L23=10, c_L31L32=11, c_L33=12,
+    c_RBK=13, c_GBK=14, c_BBK=15,
+    c_LR1LR2=16, c_LR3LG1=17, c_LG2LG3=18, c_LB1LB2=19, c_LB3=20,
+    c_RFC=21, c_GFC=22, c_BFC=23,
+    c_OFX=24, c_OFY=25, c_H=26, c_DQA=27, c_DQB=28,
+    c_ZSF3=29, c_ZSF4=30, c_FLAG=31
+};
+
+/* ================================================================
+ * FLAG register helpers
+ * ================================================================ */
+static u32 gte_flag;
+
+static inline void flag_reset(void) { gte_flag = 0; }
+static inline void flag_set(int bit) { gte_flag |= (1u << bit); }
+
+/* Recompute bit 31 from bits 30-23 and 18-13 */
+static inline void flag_update_bit31(void) {
+    if (gte_flag & 0x7F87E000u)
+        gte_flag |= 0x80000000u;
+}
+
+/* ================================================================
+ * Saturation / Clamping helpers
+ * ================================================================ */
+
+/* Check MAC overflow (44-bit signed, ie +/-2^43) for MAC1/2/3 */
+static inline s64 check_mac_overflow(s64 val, int n) {
+    /* n=1,2,3 -> flag bits 30,29,28 (positive), 27,26,25 (negative) */
+    if (val > 0x7FFFFFFFFFFll)  flag_set(30 + 1 - n);
+    if (val < -0x80000000000ll) flag_set(27 + 1 - n);
+    return val;
+}
+
+/* Check MAC0 overflow (32-bit signed) */
+static inline s64 check_mac0_overflow(s64 val) {
+    if (val > 0x7FFFFFFFll)  flag_set(16);
+    if (val < -0x80000000ll) flag_set(15);
+    return val;
+}
+
+/* Saturate to signed 16-bit, flag bits 24/23/22 for IR1/2/3 */
+static inline s32 saturate_ir(s64 val, int n, int lm) {
+    /* n=1,2,3 -> flag bits 24,23,22 */
+    /* Flag is set if value is outside clamping range [lo..7FFF] */
+    s32 lo = lm ? 0 : -0x8000;
+    if (val < lo || val > 0x7FFF) flag_set(24 + 1 - n);
+    if (val < lo) return lo;
+    if (val > 0x7FFF) return 0x7FFF;
+    return (s32)val;
+}
+
+/* Special IR saturation for RTPS IR3: flag always checked against -8000..7FFF,
+ * but value clamped per lm. */
+static inline s32 saturate_ir_rtps3(s64 val, int lm) {
+    if (val < -0x8000 || val > 0x7FFF) flag_set(22); /* bit 22 = IR3 sat */
+    s32 lo = lm ? 0 : -0x8000;
+    if (val < lo) return lo;
+    if (val > 0x7FFF) return 0x7FFF;
+    return (s32)val;
+}
+
+/* Saturate IR0 to 0..+1000h, flag bit 12 */
+static inline s32 saturate_ir0(s64 val) {
+    if (val < 0)      { flag_set(12); return 0; }
+    if (val > 0x1000) { flag_set(12); return 0x1000; }
+    return (s32)val;
+}
+
+/* Saturate SXY to -0400h..+03FFh, flag bits 14/13 */
+static inline s32 saturate_sx(s64 val) {
+    if (val < -0x400) { flag_set(14); return -0x400; }
+    if (val > 0x3FF)  { flag_set(14); return 0x3FF; }
+    return (s32)val;
+}
+
+static inline s32 saturate_sy(s64 val) {
+    if (val < -0x400) { flag_set(13); return -0x400; }
+    if (val > 0x3FF)  { flag_set(13); return 0x3FF; }
+    return (s32)val;
+}
+
+/* Saturate SZ to 0..+FFFFh, flag bit 18 */
+static inline s32 saturate_sz(s64 val) {
+    if (val < 0)      { flag_set(18); return 0; }
+    if (val > 0xFFFF) { flag_set(18); return 0xFFFF; }
+    return (s32)val;
+}
+
+/* Saturate color to 0..FFh, flag bits 21/20/19 */
+static inline u8 saturate_color(int ch, s32 val) {
+    /* ch=0->R(bit21), 1->G(bit20), 2->B(bit19) */
+    if (val < 0)    { flag_set(21 - ch); return 0; }
+    if (val > 0xFF) { flag_set(21 - ch); return 0xFF; }
+    return (u8)val;
+}
+
+/* ================================================================
+ * Signed 16-bit extraction
+ * ================================================================ */
+static inline s16 lo16(u32 v) { return (s16)(v & 0xFFFF); }
+static inline s16 hi16(u32 v) { return (s16)(v >> 16); }
+
+/* ================================================================
+ * Matrix / Vector accessors
+ * ================================================================ */
+
+static s16 get_matrix(R3000CPU *cpu, int mx, int row, int col) {
+    int base;
+    switch (mx) {
+        case 0: base = 0;  break;  /* Rotation (RT) */
+        case 1: base = 8;  break;  /* Light (L) */
+        case 2: base = 16; break;  /* Color (LCM) */
+        default: {
+            /* mx=3: garbage matrix
+             * Elements: -60h, +60h, IR0, RT13, RT13, RT13, RT22, RT22, RT22 */
+            int idx = row * 3 + col;
+            switch (idx) {
+                case 0: return (s16)-0x60;
+                case 1: return (s16)0x60;
+                case 2: return (s16)(s32)cpu->cp2_data[d_IR0];
+                case 3: return hi16(cpu->cp2_ctrl[c_RT13RT21]);
+                case 4: return hi16(cpu->cp2_ctrl[c_RT13RT21]);
+                case 5: return hi16(cpu->cp2_ctrl[c_RT13RT21]);
+                case 6: return lo16(cpu->cp2_ctrl[c_RT22RT23]);
+                case 7: return lo16(cpu->cp2_ctrl[c_RT22RT23]);
+                case 8: return lo16(cpu->cp2_ctrl[c_RT22RT23]);
+                default: return 0;
+            }
+        }
+    }
+    /* Matrix layout in ctrl regs:
+     * row 0: base+0 lo=m11, base+0 hi=m12, base+1 lo=m13
+     * row 1: base+1 hi=m21, base+2 lo=m22, base+2 hi=m23
+     * row 2: base+3 lo=m31, base+3 hi=m32, base+4 lo=m33
+     * linear: i = row*3 + col, reg = base + i/2, lo if i even, hi if i odd */
+    int i = row * 3 + col;
+    int reg = base + i / 2;
+    if (i & 1)
+        return hi16(cpu->cp2_ctrl[reg]);
+    else
+        return lo16(cpu->cp2_ctrl[reg]);
+}
+
+/* Get vector element [comp] for vector v (0=V0, 1=V1, 2=V2, 3=IR) */
+static s16 get_vector(R3000CPU *cpu, int v, int comp) {
+    switch (v) {
+        case 0:
+            if (comp == 0) return lo16(cpu->cp2_data[d_VXY0]);
+            if (comp == 1) return hi16(cpu->cp2_data[d_VXY0]);
+            return (s16)(s32)cpu->cp2_data[d_VZ0];
+        case 1:
+            if (comp == 0) return lo16(cpu->cp2_data[d_VXY1]);
+            if (comp == 1) return hi16(cpu->cp2_data[d_VXY1]);
+            return (s16)(s32)cpu->cp2_data[d_VZ1];
+        case 2:
+            if (comp == 0) return lo16(cpu->cp2_data[d_VXY2]);
+            if (comp == 1) return hi16(cpu->cp2_data[d_VXY2]);
+            return (s16)(s32)cpu->cp2_data[d_VZ2];
+        case 3:
+            if (comp == 0) return (s16)(s32)cpu->cp2_data[d_IR1];
+            if (comp == 1) return (s16)(s32)cpu->cp2_data[d_IR2];
+            return (s16)(s32)cpu->cp2_data[d_IR3];
+        default: return 0;
+    }
+}
+
+/* Get translation vector for cv: 0=TR, 1=BK, 2=FC (bugged), 3=None */
+static s32 get_translation(R3000CPU *cpu, int cv, int comp) {
+    switch (cv) {
+        case 0: return (s32)cpu->cp2_ctrl[c_TRX + comp];
+        case 1: return (s32)cpu->cp2_ctrl[c_RBK + comp];
+        case 2: return (s32)cpu->cp2_ctrl[c_RFC + comp];
+        case 3: return 0;
+        default: return 0;
+    }
+}
+
+/* ================================================================
+ * Core computation building blocks
+ * ================================================================ */
+
+/* Truncate to 44-bit signed (simulate GTE's 44-bit accumulator).
+ * Values beyond 44 bits wrap, matching hardware behavior after overflow. */
+static inline s64 trunc44(s64 val) {
+    return (val << 20) >> 20;
+}
+
+/* R5900-safe 64-bit right shift by 12. */
+typedef union { s64 full; struct { u32 lo; s32 hi; } p; } split64_t;
+
+static inline s64 mac_shift(s64 val, int sf) {
+    if (sf) return val >> 12;
+    return val;
+}
+
+/* Safe multiply: s16 * s16 -> s64 via s32 intermediate.
+ * Avoids 64x64 multiply on R5900. */
+static inline s64 mul16(s16 a, s16 b) {
+    return (s64)((s32)a * (s32)b);
+}
+
+/* ================================================================
+ * GTE Division (UNR-based, for RTPS/RTPT)
+ * ================================================================ */
+static u32 gte_divide(u16 h, u16 sz3) {
+    if (h < sz3 * 2) {
+        int z = 0;
+        u16 d = sz3;
+        while (z < 16 && !(d & 0x8000)) { z++; d <<= 1; }
+        u64 n = (u64)h << z;
+        u32 du = d;
+        u32 u_val = unr_table[((du - 0x7FC0) >> 7)] + 0x101;
+        du = ((0x2000080u - (du * u_val)) >> 8);
+        du = ((0x0000080u + (du * u_val)) >> 8);
+        n = ((n * du) + 0x8000) >> 16;
+        if (n > 0x1FFFF) n = 0x1FFFF;
+        return (u32)n;
+    } else {
+        flag_set(17);
+        return 0x1FFFF;
+    }
+}
+
+/* ================================================================
+ * Push FIFOs
+ * ================================================================ */
+static void push_sxy(R3000CPU *cpu, s32 sx, s32 sy) {
+    D(d_SXY0) = D(d_SXY1);
+    D(d_SXY1) = D(d_SXY2);
+    sx = saturate_sx(sx);
+    sy = saturate_sy(sy);
+    D(d_SXY2) = ((u32)(u16)sx) | ((u32)(u16)sy << 16);
+}
+
+static void push_sz(R3000CPU *cpu, s64 val) {
+    D(d_SZ0) = D(d_SZ1);
+    D(d_SZ1) = D(d_SZ2);
+    D(d_SZ2) = D(d_SZ3);
+    D(d_SZ3) = (u32)saturate_sz(val);
+}
+
+static void push_color(R3000CPU *cpu) {
+    D(d_RGB0) = D(d_RGB1);
+    D(d_RGB1) = D(d_RGB2);
+    u8 r = saturate_color(0, (s32)D(d_MAC1) >> 4);
+    u8 g = saturate_color(1, (s32)D(d_MAC2) >> 4);
+    u8 b = saturate_color(2, (s32)D(d_MAC3) >> 4);
+    u8 code = (D(d_RGBC) >> 24) & 0xFF;
+    D(d_RGB2) = r | (g << 8) | (b << 16) | (code << 24);
+}
+
+/* ================================================================
+ * Store MAC1/2/3 and IR1/2/3 from 64-bit accumulators
+ * ================================================================ */
+static void store_mac_ir(R3000CPU *cpu, s64 m1, s64 m2, s64 m3, int sf, int lm) {
+    check_mac_overflow(m1, 1);
+    check_mac_overflow(m2, 2);
+    check_mac_overflow(m3, 3);
+    D(d_MAC1) = (u32)(s32)mac_shift(m1, sf);
+    D(d_MAC2) = (u32)(s32)mac_shift(m2, sf);
+    D(d_MAC3) = (u32)(s32)mac_shift(m3, sf);
+    D(d_IR1) = (u32)saturate_ir((s32)D(d_MAC1), 1, lm);
+    D(d_IR2) = (u32)saturate_ir((s32)D(d_MAC2), 2, lm);
+    D(d_IR3) = (u32)saturate_ir((s32)D(d_MAC3), 3, lm);
+}
+
+/* ================================================================
+ * MVMVA core: Multiply Matrix * Vector + Translation
+ * ================================================================ */
+static void gte_mvmva(R3000CPU *cpu, int sf, int lm, int mx, int v, int cv) {
+    s16 vx = get_vector(cpu, v, 0);
+    s16 vy = get_vector(cpu, v, 1);
+    s16 vz = get_vector(cpu, v, 2);
+
+    if (cv == 2) {
+        /* FC/Bugged: flags set as if full computation, result = only last term */
+        s64 fc1 = (s64)(s32)C(c_RFC) << 12;
+        s64 fc2 = (s64)(s32)C(c_GFC) << 12;
+        s64 fc3 = (s64)(s32)C(c_BFC) << 12;
+
+        /* Compute full with overflow checks at each addition step */
+        s64 t;
+        t = fc1 + (s64)get_matrix(cpu, mx, 0, 0) * vx; check_mac_overflow(t, 1);
+        t += (s64)get_matrix(cpu, mx, 0, 1) * vy; check_mac_overflow(t, 1);
+        t += (s64)get_matrix(cpu, mx, 0, 2) * vz; check_mac_overflow(t, 1);
+
+        t = fc2 + (s64)get_matrix(cpu, mx, 1, 0) * vx; check_mac_overflow(t, 2);
+        t += (s64)get_matrix(cpu, mx, 1, 1) * vy; check_mac_overflow(t, 2);
+        t += (s64)get_matrix(cpu, mx, 1, 2) * vz; check_mac_overflow(t, 2);
+
+        t = fc3 + (s64)get_matrix(cpu, mx, 2, 0) * vx; check_mac_overflow(t, 3);
+        t += (s64)get_matrix(cpu, mx, 2, 1) * vy; check_mac_overflow(t, 3);
+        t += (s64)get_matrix(cpu, mx, 2, 2) * vz; check_mac_overflow(t, 3);
+
+        /* Bug: result = last multiplication term only */
+        s64 m1 = (s64)get_matrix(cpu, mx, 0, 2) * vz;
+        s64 m2 = (s64)get_matrix(cpu, mx, 1, 2) * vz;
+        s64 m3 = (s64)get_matrix(cpu, mx, 2, 2) * vz;
+
+        store_mac_ir(cpu, m1, m2, m3, sf, lm);
+        return;
+    }
+
+    s64 tx1, tx2, tx3;
+    if (cv == 3) {
+        tx1 = tx2 = tx3 = 0;
+    } else {
+        tx1 = (s64)get_translation(cpu, cv, 0) << 12;
+        tx2 = (s64)get_translation(cpu, cv, 1) << 12;
+        tx3 = (s64)get_translation(cpu, cv, 2) << 12;
+    }
+
+    s64 m1 = tx1 + (s64)get_matrix(cpu, mx, 0, 0) * vx +
+                    (s64)get_matrix(cpu, mx, 0, 1) * vy +
+                    (s64)get_matrix(cpu, mx, 0, 2) * vz;
+    s64 m2 = tx2 + (s64)get_matrix(cpu, mx, 1, 0) * vx +
+                    (s64)get_matrix(cpu, mx, 1, 1) * vy +
+                    (s64)get_matrix(cpu, mx, 1, 2) * vz;
+    s64 m3 = tx3 + (s64)get_matrix(cpu, mx, 2, 0) * vx +
+                    (s64)get_matrix(cpu, mx, 2, 1) * vy +
+                    (s64)get_matrix(cpu, mx, 2, 2) * vz;
+
+    store_mac_ir(cpu, m1, m2, m3, sf, lm);
+}
+
+/* ================================================================
+ * RTPS / RTPT  (Perspective Transformation)
+ * ================================================================ */
+static void gte_rtps_core(R3000CPU *cpu, int v, int sf, int lm, int last) {
+    s16 vx = get_vector(cpu, v, 0);
+    s16 vy = get_vector(cpu, v, 1);
+    s16 vz = get_vector(cpu, v, 2);
+
+    s64 tx = (s64)(s32)C(c_TRX) << 12;
+    s64 ty = (s64)(s32)C(c_TRY) << 12;
+    s64 tz = (s64)(s32)C(c_TRZ) << 12;
+
+    s64 m1 = tx + mul16(lo16(C(c_RT11RT12)), vx) + mul16(hi16(C(c_RT11RT12)), vy) + mul16(lo16(C(c_RT13RT21)), vz);
+    s64 m2 = ty + mul16(hi16(C(c_RT13RT21)), vx) + mul16(lo16(C(c_RT22RT23)), vy) + mul16(hi16(C(c_RT22RT23)), vz);
+    s64 m3 = tz + mul16(lo16(C(c_RT31RT32)), vx) + mul16(hi16(C(c_RT31RT32)), vy) + mul16(lo16(C(c_RT33)), vz);
+
+    check_mac_overflow(m1, 1);
+    check_mac_overflow(m2, 2);
+    check_mac_overflow(m3, 3);
+
+    D(d_MAC1) = (u32)(s32)mac_shift(m1, sf);
+    D(d_MAC2) = (u32)(s32)mac_shift(m2, sf);
+    D(d_MAC3) = (u32)(s32)mac_shift(m3, sf);
+
+    /* IR1/IR2 saturated. Flag always set per lm range, value clamped per lm. */
+    D(d_IR1) = (u32)saturate_ir((s32)D(d_MAC1), 1, lm);
+    D(d_IR2) = (u32)saturate_ir((s32)D(d_MAC2), 2, lm);
+
+    /* IR3 in RTPS: derived from stored 32-bit MAC3.
+     * For sf=1: MAC3 already >>12. For sf=0: MAC3 is unshifted, so >>12.
+     * Flag Bit22 checked against -8000..7FFF (ignoring lm), value clamped per lm. */
+    {
+        s32 ir3_raw = sf ? (s32)D(d_MAC3) : ((s32)D(d_MAC3) >> 12);
+        D(d_IR3) = (u32)saturate_ir_rtps3(ir3_raw, lm);
+    }
+
+    /* Push SZ FIFO: SZ3 from 44-bit truncated accumulator >> 12 */
+    push_sz(cpu, trunc44(m3) >> 12);
+
+    /* Perspective division using UNR */
+    u32 div_result = gte_divide((u16)(s16)(s32)C(c_H), D(d_SZ3));
+
+    /* SX2 = MAC0/10000h, SY2 = MAC0/10000h */
+    s64 sx_mac = (s64)(s32)div_result * (s16)(s32)D(d_IR1) + (s32)C(c_OFX);
+    s64 sy_mac = (s64)(s32)div_result * (s16)(s32)D(d_IR2) + (s32)C(c_OFY);
+
+    check_mac0_overflow(sx_mac);
+    check_mac0_overflow(sy_mac);
+
+    push_sxy(cpu, (s32)(sx_mac >> 16), (s32)(sy_mac >> 16));
+
+    if (last) {
+        /* Depth cueing: MAC0 = DQA * div_result + DQB */
+        s64 dq_mac = (s64)(s16)(s32)C(c_DQA) * (s32)div_result + (s32)C(c_DQB);
+        check_mac0_overflow(dq_mac);
+        D(d_MAC0) = (u32)(s32)dq_mac;
+        D(d_IR0) = (u32)saturate_ir0(dq_mac >> 12);
+    }
+}
+
+static void gte_cmd_rtps(R3000CPU *cpu, int sf, int lm) {
+    gte_rtps_core(cpu, 0, sf, lm, 1);
+}
+
+static void gte_cmd_rtpt(R3000CPU *cpu, int sf, int lm) {
+    gte_rtps_core(cpu, 0, sf, lm, 0);
+    gte_rtps_core(cpu, 1, sf, lm, 0);
+    gte_rtps_core(cpu, 2, sf, lm, 1);
+}
+
+/* ================================================================
+ * NCLIP  (Normal Clipping)
+ * ================================================================ */
+static void gte_cmd_nclip(R3000CPU *cpu) {
+    s16 sx0 = lo16(D(d_SXY0)), sy0 = hi16(D(d_SXY0));
+    s16 sx1 = lo16(D(d_SXY1)), sy1 = hi16(D(d_SXY1));
+    s16 sx2 = lo16(D(d_SXY2)), sy2 = hi16(D(d_SXY2));
+
+    s64 val = (s64)sx0 * (sy1 - sy2) +
+              (s64)sx1 * (sy2 - sy0) +
+              (s64)sx2 * (sy0 - sy1);
+    check_mac0_overflow(val);
+    D(d_MAC0) = (u32)(s32)val;
+}
+
+/* ================================================================
+ * AVSZ3 / AVSZ4
+ * ================================================================ */
+static void gte_cmd_avsz3(R3000CPU *cpu) {
+    s64 val = (s64)(s16)(s32)C(c_ZSF3) * ((s64)D(d_SZ1) + D(d_SZ2) + D(d_SZ3));
+    check_mac0_overflow(val);
+    D(d_MAC0) = (u32)(s32)val;
+    D(d_OTZ) = (u32)saturate_sz(val >> 12);
+}
+
+static void gte_cmd_avsz4(R3000CPU *cpu) {
+    s64 val = (s64)(s16)(s32)C(c_ZSF4) * ((s64)D(d_SZ0) + D(d_SZ1) + D(d_SZ2) + D(d_SZ3));
+    check_mac0_overflow(val);
+    D(d_MAC0) = (u32)(s32)val;
+    D(d_OTZ) = (u32)saturate_sz(val >> 12);
+}
+
+/* ================================================================
+ * OP(sf, lm) - Cross product of 2 vectors
+ * ================================================================ */
+static void gte_cmd_op(R3000CPU *cpu, int sf, int lm) {
+    s16 d1 = lo16(C(c_RT11RT12));
+    s16 d2 = lo16(C(c_RT22RT23));
+    s16 d3 = lo16(C(c_RT33));
+    s16 ir1 = (s16)(s32)D(d_IR1);
+    s16 ir2 = (s16)(s32)D(d_IR2);
+    s16 ir3 = (s16)(s32)D(d_IR3);
+
+    s64 m1 = (s64)ir3 * d2 - (s64)ir2 * d3;
+    s64 m2 = (s64)ir1 * d3 - (s64)ir3 * d1;
+    s64 m3 = (s64)ir2 * d1 - (s64)ir1 * d2;
+
+    store_mac_ir(cpu, m1, m2, m3, sf, lm);
+}
+
+/* ================================================================
+ * MVMVA command wrapper
+ * ================================================================ */
+static void gte_cmd_mvmva(R3000CPU *cpu, int sf, int lm, int mx, int v, int cv) {
+    gte_mvmva(cpu, sf, lm, mx, v, cv);
+}
+
+/* ================================================================
+ * SQR(sf) - Square of vector IR
+ * ================================================================ */
+static void gte_cmd_sqr(R3000CPU *cpu, int sf, int lm) {
+    s16 ir1 = (s16)(s32)D(d_IR1);
+    s16 ir2 = (s16)(s32)D(d_IR2);
+    s16 ir3 = (s16)(s32)D(d_IR3);
+
+    s64 m1 = (s64)ir1 * ir1;
+    s64 m2 = (s64)ir2 * ir2;
+    s64 m3 = (s64)ir3 * ir3;
+
+    store_mac_ir(cpu, m1, m2, m3, sf, lm);
+}
+
+/* ================================================================
+ * Color calculation helpers
+ * ================================================================ */
+
+/* Interpolate: MAC + (FC - MAC) * IR0 */
+static void interpolate_color(R3000CPU *cpu, int sf, int lm) {
+    s64 fc1 = (s64)(s32)C(c_RFC) << 12;
+    s64 fc2 = (s64)(s32)C(c_GFC) << 12;
+    s64 fc3 = (s64)(s32)C(c_BFC) << 12;
+
+    /* Reconstruct the pre-shift MAC values */
+    s64 mac1_full = (s64)(s32)D(d_MAC1);
+    s64 mac2_full = (s64)(s32)D(d_MAC2);
+    s64 mac3_full = (s64)(s32)D(d_MAC3);
+
+    if (sf) {
+        mac1_full <<= 12;
+        mac2_full <<= 12;
+        mac3_full <<= 12;
+    }
+
+    s64 d1 = fc1 - mac1_full;
+    s64 d2 = fc2 - mac2_full;
+    s64 d3 = fc3 - mac3_full;
+
+    check_mac_overflow(d1, 1);
+    check_mac_overflow(d2, 2);
+    check_mac_overflow(d3, 3);
+
+    /* Saturate to -8000h..+7FFFh (lm=0 for this intermediate step) */
+    s32 tmp_ir1 = saturate_ir(mac_shift(d1, sf), 1, 0);
+    s32 tmp_ir2 = saturate_ir(mac_shift(d2, sf), 2, 0);
+    s32 tmp_ir3 = saturate_ir(mac_shift(d3, sf), 3, 0);
+
+    s16 ir0 = (s16)(s32)D(d_IR0);
+
+    /* [MAC1,MAC2,MAC3] = ([IR1,IR2,IR3] * IR0) + [MAC1,MAC2,MAC3] */
+    s64 r1 = (s64)tmp_ir1 * ir0 + mac1_full;
+    s64 r2 = (s64)tmp_ir2 * ir0 + mac2_full;
+    s64 r3 = (s64)tmp_ir3 * ir0 + mac3_full;
+
+    store_mac_ir(cpu, r1, r2, r3, sf, lm);
+}
+
+/* ================================================================
+ * NCS / NCT  - Normal Color
+ * ================================================================ */
+static void gte_ncs_core(R3000CPU *cpu, int v, int sf, int lm) {
+    /* Step 1: Light matrix * V */
+    gte_mvmva(cpu, sf, lm, 1, v, 3);
+
+    /* Step 2: BK + LCM * IR */
+    gte_mvmva(cpu, sf, lm, 2, 3, 1);
+
+    /* Step 3: [R*IR1, G*IR2, B*IR3] SHL 4 */
+    u8 r = D(d_RGBC) & 0xFF;
+    u8 g = (D(d_RGBC) >> 8) & 0xFF;
+    u8 b = (D(d_RGBC) >> 16) & 0xFF;
+
+    s64 m1 = ((s64)r * (s16)(s32)D(d_IR1)) << 4;
+    s64 m2 = ((s64)g * (s16)(s32)D(d_IR2)) << 4;
+    s64 m3 = ((s64)b * (s16)(s32)D(d_IR3)) << 4;
+
+    store_mac_ir(cpu, m1, m2, m3, sf, lm);
+    push_color(cpu);
+}
+
+static void gte_cmd_ncs(R3000CPU *cpu, int sf, int lm) {
+    gte_ncs_core(cpu, 0, sf, lm);
+}
+
+static void gte_cmd_nct(R3000CPU *cpu, int sf, int lm) {
+    gte_ncs_core(cpu, 0, sf, lm);
+    gte_ncs_core(cpu, 1, sf, lm);
+    gte_ncs_core(cpu, 2, sf, lm);
+}
+
+/* ================================================================
+ * NCCS / NCCT  - Normal Color Color
+ * ================================================================ */
+static void gte_nccs_core(R3000CPU *cpu, int v, int sf, int lm) {
+    gte_mvmva(cpu, sf, lm, 1, v, 3);
+    gte_mvmva(cpu, sf, lm, 2, 3, 1);
+
+    u8 r = D(d_RGBC) & 0xFF;
+    u8 g = (D(d_RGBC) >> 8) & 0xFF;
+    u8 b = (D(d_RGBC) >> 16) & 0xFF;
+
+    s64 m1 = ((s64)r * (s16)(s32)D(d_IR1)) << 4;
+    s64 m2 = ((s64)g * (s16)(s32)D(d_IR2)) << 4;
+    s64 m3 = ((s64)b * (s16)(s32)D(d_IR3)) << 4;
+
+    store_mac_ir(cpu, m1, m2, m3, sf, lm);
+    push_color(cpu);
+}
+
+static void gte_cmd_nccs(R3000CPU *cpu, int sf, int lm) {
+    gte_nccs_core(cpu, 0, sf, lm);
+}
+
+static void gte_cmd_ncct(R3000CPU *cpu, int sf, int lm) {
+    gte_nccs_core(cpu, 0, sf, lm);
+    gte_nccs_core(cpu, 1, sf, lm);
+    gte_nccs_core(cpu, 2, sf, lm);
+}
+
+/* ================================================================
+ * NCDS / NCDT - Normal Color Depth Cue
+ * ================================================================ */
+static void gte_ncds_core(R3000CPU *cpu, int v, int sf, int lm) {
+    gte_mvmva(cpu, sf, lm, 1, v, 3);
+    gte_mvmva(cpu, sf, lm, 2, 3, 1);
+
+    u8 r = D(d_RGBC) & 0xFF;
+    u8 g = (D(d_RGBC) >> 8) & 0xFF;
+    u8 b = (D(d_RGBC) >> 16) & 0xFF;
+
+    s64 m1 = ((s64)r * (s16)(s32)D(d_IR1)) << 4;
+    s64 m2 = ((s64)g * (s16)(s32)D(d_IR2)) << 4;
+    s64 m3 = ((s64)b * (s16)(s32)D(d_IR3)) << 4;
+
+    store_mac_ir(cpu, m1, m2, m3, sf, lm);
+    interpolate_color(cpu, sf, lm);
+    push_color(cpu);
+}
+
+static void gte_cmd_ncds(R3000CPU *cpu, int sf, int lm) {
+    gte_ncds_core(cpu, 0, sf, lm);
+}
+
+static void gte_cmd_ncdt(R3000CPU *cpu, int sf, int lm) {
+    gte_ncds_core(cpu, 0, sf, lm);
+    gte_ncds_core(cpu, 1, sf, lm);
+    gte_ncds_core(cpu, 2, sf, lm);
+}
+
+/* ================================================================
+ * CC - Color Color
+ * ================================================================ */
+static void gte_cmd_cc(R3000CPU *cpu, int sf, int lm) {
+    gte_mvmva(cpu, sf, lm, 2, 3, 1);
+
+    u8 r = D(d_RGBC) & 0xFF;
+    u8 g = (D(d_RGBC) >> 8) & 0xFF;
+    u8 b = (D(d_RGBC) >> 16) & 0xFF;
+
+    s64 m1 = ((s64)r * (s16)(s32)D(d_IR1)) << 4;
+    s64 m2 = ((s64)g * (s16)(s32)D(d_IR2)) << 4;
+    s64 m3 = ((s64)b * (s16)(s32)D(d_IR3)) << 4;
+
+    store_mac_ir(cpu, m1, m2, m3, sf, lm);
+    push_color(cpu);
+}
+
+/* ================================================================
+ * CDP - Color Depth Cue
+ * ================================================================ */
+static void gte_cmd_cdp(R3000CPU *cpu, int sf, int lm) {
+    gte_mvmva(cpu, sf, lm, 2, 3, 1);
+
+    u8 r = D(d_RGBC) & 0xFF;
+    u8 g = (D(d_RGBC) >> 8) & 0xFF;
+    u8 b = (D(d_RGBC) >> 16) & 0xFF;
+
+    s64 m1 = ((s64)r * (s16)(s32)D(d_IR1)) << 4;
+    s64 m2 = ((s64)g * (s16)(s32)D(d_IR2)) << 4;
+    s64 m3 = ((s64)b * (s16)(s32)D(d_IR3)) << 4;
+
+    store_mac_ir(cpu, m1, m2, m3, sf, lm);
+    interpolate_color(cpu, sf, lm);
+    push_color(cpu);
+}
+
+/* ================================================================
+ * DPCS - Depth Cueing (single)
+ * ================================================================ */
+static void gte_cmd_dpcs(R3000CPU *cpu, int sf, int lm) {
+    u8 r = D(d_RGBC) & 0xFF;
+    u8 g = (D(d_RGBC) >> 8) & 0xFF;
+    u8 b = (D(d_RGBC) >> 16) & 0xFF;
+
+    s64 m1 = (s64)r << 16;
+    s64 m2 = (s64)g << 16;
+    s64 m3 = (s64)b << 16;
+
+    store_mac_ir(cpu, m1, m2, m3, sf, lm);
+    interpolate_color(cpu, sf, lm);
+    push_color(cpu);
+}
+
+/* ================================================================
+ * DPCT - Depth Cueing (triple)
+ * ================================================================ */
+static void gte_cmd_dpct(R3000CPU *cpu, int sf, int lm) {
+    int i;
+    for (i = 0; i < 3; i++) {
+        u8 r = D(d_RGB0) & 0xFF;
+        u8 g = (D(d_RGB0) >> 8) & 0xFF;
+        u8 b = (D(d_RGB0) >> 16) & 0xFF;
+
+        s64 m1 = (s64)r << 16;
+        s64 m2 = (s64)g << 16;
+        s64 m3 = (s64)b << 16;
+
+        store_mac_ir(cpu, m1, m2, m3, sf, lm);
+        interpolate_color(cpu, sf, lm);
+        push_color(cpu);
+    }
+}
+
+/* ================================================================
+ * INTPL - Interpolation of a vector and far color
+ * ================================================================ */
+static void gte_cmd_intpl(R3000CPU *cpu, int sf, int lm) {
+    s64 m1 = (s64)(s16)(s32)D(d_IR1) << 12;
+    s64 m2 = (s64)(s16)(s32)D(d_IR2) << 12;
+    s64 m3 = (s64)(s16)(s32)D(d_IR3) << 12;
+
+    store_mac_ir(cpu, m1, m2, m3, sf, lm);
+    interpolate_color(cpu, sf, lm);
+    push_color(cpu);
+}
+
+/* ================================================================
+ * DCPL - Depth Cue Color Light
+ * ================================================================ */
+static void gte_cmd_dcpl(R3000CPU *cpu, int sf, int lm) {
+    u8 r = D(d_RGBC) & 0xFF;
+    u8 g = (D(d_RGBC) >> 8) & 0xFF;
+    u8 b = (D(d_RGBC) >> 16) & 0xFF;
+
+    s64 m1 = ((s64)r * (s16)(s32)D(d_IR1)) << 4;
+    s64 m2 = ((s64)g * (s16)(s32)D(d_IR2)) << 4;
+    s64 m3 = ((s64)b * (s16)(s32)D(d_IR3)) << 4;
+
+    store_mac_ir(cpu, m1, m2, m3, sf, lm);
+    interpolate_color(cpu, sf, lm);
+    push_color(cpu);
+}
+
+/* ================================================================
+ * GPF(sf, lm) - General Purpose Interpolation
+ * ================================================================ */
+static void gte_cmd_gpf(R3000CPU *cpu, int sf, int lm) {
+    s16 ir0 = (s16)(s32)D(d_IR0);
+    s16 ir1 = (s16)(s32)D(d_IR1);
+    s16 ir2 = (s16)(s32)D(d_IR2);
+    s16 ir3 = (s16)(s32)D(d_IR3);
+
+    s64 m1 = (s64)ir1 * ir0;
+    s64 m2 = (s64)ir2 * ir0;
+    s64 m3 = (s64)ir3 * ir0;
+
+    store_mac_ir(cpu, m1, m2, m3, sf, lm);
+    push_color(cpu);
+}
+
+/* ================================================================
+ * GPL(sf, lm) - General Purpose Interpolation with base
+ * ================================================================ */
+static void gte_cmd_gpl(R3000CPU *cpu, int sf, int lm) {
+    s16 ir0 = (s16)(s32)D(d_IR0);
+    s16 ir1 = (s16)(s32)D(d_IR1);
+    s16 ir2 = (s16)(s32)D(d_IR2);
+    s16 ir3 = (s16)(s32)D(d_IR3);
+
+    s64 mac1 = (s64)(s32)D(d_MAC1);
+    s64 mac2 = (s64)(s32)D(d_MAC2);
+    s64 mac3 = (s64)(s32)D(d_MAC3);
+
+    if (sf) {
+        mac1 <<= 12;
+        mac2 <<= 12;
+        mac3 <<= 12;
+    }
+
+    s64 m1 = (s64)ir1 * ir0 + mac1;
+    s64 m2 = (s64)ir2 * ir0 + mac2;
+    s64 m3 = (s64)ir3 * ir0 + mac3;
+
+    store_mac_ir(cpu, m1, m2, m3, sf, lm);
+    push_color(cpu);
+}
+
+/* ================================================================
+ * GTE Register Read/Write
+ * ================================================================ */
+
 static u32 gte_count_leading(u32 val) {
     if (val == 0) return 32;
     u32 target;
@@ -93,248 +843,118 @@ static u32 gte_count_leading(u32 val) {
     return count;
 }
 
-/* Read GTE Data Register (for MFC2 / SWC2) */
 u32 GTE_ReadData(R3000CPU *cpu, int reg) {
     switch (reg) {
-        case 15: /* SXYP reads as SXY2 */
-            return cpu->cp2_data[14];
-        case 28: /* IRGB - computed from IR1/2/3 */
-        case 29: /* ORGB - same as IRGB read */
-        {
-            u32 r = ((s32)cpu->cp2_data[9] >> 7) & 0x1F;
-            u32 g = ((s32)cpu->cp2_data[10] >> 7) & 0x1F;
-            u32 b = ((s32)cpu->cp2_data[11] >> 7) & 0x1F;
-            /* Clamp negative IR values to 0 */
-            if ((s32)cpu->cp2_data[9] < 0) r = 0;
-            if ((s32)cpu->cp2_data[10] < 0) g = 0;
-            if ((s32)cpu->cp2_data[11] < 0) b = 0;
-            return r | (g << 5) | (b << 10);
+        case 15: return D(14);
+        case 28:
+        case 29: {
+            /* Clamp IR/0x80 to 0..0x1F (saturate, not mask) */
+            s32 rv = (s32)D(9) >> 7;
+            s32 gv = (s32)D(10) >> 7;
+            s32 bv = (s32)D(11) >> 7;
+            if (rv < 0) rv = 0; if (rv > 0x1F) rv = 0x1F;
+            if (gv < 0) gv = 0; if (gv > 0x1F) gv = 0x1F;
+            if (bv < 0) bv = 0; if (bv > 0x1F) bv = 0x1F;
+            return (u32)rv | ((u32)gv << 5) | ((u32)bv << 10);
         }
-        default:
-            return cpu->cp2_data[reg & 0x1F];
+        default: return D(reg & 0x1F);
     }
 }
 
-/* Write GTE Data Register (for MTC2 / LWC2) */
 void GTE_WriteData(R3000CPU *cpu, int reg, u32 val) {
     switch (reg) {
-        case 1:  /* V0_Z - sign-extend 16-bit */
-        case 3:  /* V1_Z */
-        case 5:  /* V2_Z */
-        case 8:  /* IR0 */
-        case 9:  /* IR1 */
-        case 10: /* IR2 */
-        case 11: /* IR3 */
-            cpu->cp2_data[reg] = (u32)(s32)(s16)(val & 0xFFFF);
+        case 1: case 3: case 5:
+        case 8: case 9: case 10: case 11:
+            D(reg) = (u32)(s32)(s16)(val & 0xFFFF);
             break;
-        case 7:  /* OTZ - zero-extend 16-bit */
-        case 16: /* SZ0 */
-        case 17: /* SZ1 */
-        case 18: /* SZ2 */
-        case 19: /* SZ3 */
-            cpu->cp2_data[reg] = val & 0xFFFF;
+        case 7: case 16: case 17: case 18: case 19:
+            D(reg) = val & 0xFFFF;
             break;
-        case 15: /* SXYP - push SXY FIFO */
-            cpu->cp2_data[12] = cpu->cp2_data[13]; /* SXY0 <- SXY1 */
-            cpu->cp2_data[13] = cpu->cp2_data[14]; /* SXY1 <- SXY2 */
-            cpu->cp2_data[14] = val;                /* SXY2 <- new */
-            cpu->cp2_data[15] = val;                /* also store in SXYP slot */
+        case 15:
+            D(12) = D(13);
+            D(13) = D(14);
+            D(14) = val;
+            D(15) = val;
             break;
-        case 28: /* IRGB - sets IR1/IR2/IR3 from 5-bit color fields */
-            cpu->cp2_data[9]  = (u32)(s32)(s16)(((val >>  0) & 0x1F) << 7); /* IR1 */
-            cpu->cp2_data[10] = (u32)(s32)(s16)(((val >>  5) & 0x1F) << 7); /* IR2 */
-            cpu->cp2_data[11] = (u32)(s32)(s16)(((val >> 10) & 0x1F) << 7); /* IR3 */
-            /* Note: the raw IRGB value is NOT stored; reads are computed from IR1/2/3 */
+        case 28:
+            D(9)  = (u32)(s32)(s16)(((val >>  0) & 0x1F) << 7);
+            D(10) = (u32)(s32)(s16)(((val >>  5) & 0x1F) << 7);
+            D(11) = (u32)(s32)(s16)(((val >> 10) & 0x1F) << 7);
             break;
-        case 29: /* ORGB - read-only, writes are ignored */
+        case 29: break;
+        case 30:
+            D(30) = val;
+            D(31) = gte_count_leading(val);
             break;
-        case 30: /* LZCS - write stores value and computes LZCR */
-            cpu->cp2_data[30] = val;
-            cpu->cp2_data[31] = gte_count_leading(val);
-            break;
-        case 31: /* LZCR - read-only, writes are ignored */
-            break;
+        case 31: break;
         default:
-            cpu->cp2_data[reg & 0x1F] = val;
+            D(reg & 0x1F) = val;
             break;
     }
 }
 
-/* Read GTE Control Register (for CFC2) */
 u32 GTE_ReadCtrl(R3000CPU *cpu, int reg) {
-    return cpu->cp2_ctrl[reg & 0x1F];
+    return C(reg & 0x1F);
 }
 
-/* Write GTE Control Register (for CTC2) */
 void GTE_WriteCtrl(R3000CPU *cpu, int reg, u32 val) {
     switch (reg) {
-        case 4:  /* R33 - sign-extend 16-bit */
-        case 12: /* L33 */
-        case 20: /* LB3 */
-        case 26: /* H */
-        case 27: /* DQA */
-        case 29: /* ZSF3 */
-        case 30: /* ZSF4 */
-            cpu->cp2_ctrl[reg] = (u32)(s32)(s16)(val & 0xFFFF);
+        case 4: case 12: case 20: case 26: case 27: case 29: case 30:
+            C(reg) = (u32)(s32)(s16)(val & 0xFFFF);
             break;
-        case 31: /* FLAG - clear bits 0-11, recompute bit 31 */
-        {
-            u32 flag = val & 0x7FFFF000; /* clear bits 0-11 and bit 31 */
-            /* bit31 = OR of bits 30-23 and bits 18-13 */
+        case 31: {
+            u32 flag = val & 0x7FFFF000;
             flag |= (flag & 0x7F87E000) ? 0x80000000 : 0;
-            cpu->cp2_ctrl[31] = flag;
+            C(31) = flag;
             break;
         }
         default:
-            cpu->cp2_ctrl[reg & 0x1F] = val;
+            C(reg & 0x1F) = val;
             break;
     }
 }
 
-/* GTE Context Helper */
-static s64 MAC0, MAC1, MAC2, MAC3;
-
-static void GTE_ProcessVertex(R3000CPU *cpu, int v_idx) {
-    // Input Vector
-    s16 vx, vy, vz;
-    if (v_idx == 0) {
-        vx = S16(cpu->cp2_data[GTE_V0_XY]);
-        vy = S16(cpu->cp2_data[GTE_V0_XY] >> 16);
-        vz = S16(cpu->cp2_data[GTE_V0_Z]);
-    } else if (v_idx == 1) {
-        vx = S16(cpu->cp2_data[GTE_V1_XY]);
-        vy = S16(cpu->cp2_data[GTE_V1_XY] >> 16);
-        vz = S16(cpu->cp2_data[GTE_V1_Z]);
-    } else {
-        vx = S16(cpu->cp2_data[GTE_V2_XY]);
-        vy = S16(cpu->cp2_data[GTE_V2_XY] >> 16);
-        vz = S16(cpu->cp2_data[GTE_V2_Z]);
-    }
-
-    // Rotation Matrix
-    s16 r11 = S16(cpu->cp2_ctrl[GTE_R11_R12]);
-    s16 r12 = S16(cpu->cp2_ctrl[GTE_R11_R12] >> 16);
-    s16 r13 = S16(cpu->cp2_ctrl[GTE_R13_R21]);
-    s16 r21 = S16(cpu->cp2_ctrl[GTE_R13_R21] >> 16);
-    s16 r22 = S16(cpu->cp2_ctrl[GTE_R22_R23]);
-    s16 r23 = S16(cpu->cp2_ctrl[GTE_R22_R23] >> 16);
-    s16 r31 = S16(cpu->cp2_ctrl[GTE_R31_R32]);
-    s16 r32 = S16(cpu->cp2_ctrl[GTE_R31_R32] >> 16);
-    s16 r33 = S16(cpu->cp2_ctrl[GTE_R33]);
-
-    // Translation Vector
-    s32 trx = S32(cpu->cp2_ctrl[GTE_TRX]);
-    s32 try = S32(cpu->cp2_ctrl[GTE_TRY]);
-    s32 trz = S32(cpu->cp2_ctrl[GTE_TRZ]);
-
-    // Rotate and Translate
-    s64 mx = ((s64)trx << 12) + (r11 * vx) + (r12 * vy) + (r13 * vz);
-    s64 my = ((s64)try << 12) + (r21 * vx) + (r22 * vy) + (r23 * vz);
-    s64 mz = ((s64)trz << 12) + (r31 * vx) + (r32 * vy) + (r33 * vz);
-
-    // IR1, IR2, IR3 = MAC >> 12
-    s16 ir1 = (mx >> 12);
-    s16 ir2 = (my >> 12);
-    s16 ir3 = (mz >> 12);
-    
-    // Store Intermediate results
-    cpu->cp2_data[GTE_IR1] = ir1;
-    cpu->cp2_data[GTE_IR2] = ir2;
-    cpu->cp2_data[GTE_IR3] = ir3;
-
-    // Perspective Projection
-    u16 h = (u16)cpu->cp2_ctrl[GTE_H];
-    s32 ofx = S32(cpu->cp2_ctrl[GTE_OFX]);
-    s32 ofy = S32(cpu->cp2_ctrl[GTE_OFY]);
-    
-    // Avoid div by zero
-    s32 z = ir3;
-    if (z == 0) z = 1; 
-    
-    s32 sx = (ir1 * h / z) + ofx;
-    s32 sy = (ir2 * h / z) + ofy;
-    
-    // Clamp to 16-bit signed
-    if (sx < -32768) sx = -32768; 
-    if (sx > 32767) sx = 32767;
-    if (sy < -32768) sy = -32768; 
-    if (sy > 32767) sy = 32767;
-    
-    u32 sxy_val = (u16)sx | ((u16)sy << 16);
-
-    // Store Screen Coordinates FIFO
-    // SXY0 <- SXY1, SXY1 <- SXY2, SXY2 <- new
-    // Actually for RTPT:
-    // Call 1 (V0): Result to SXY0
-    // Call 2 (V1): Result to SXY1
-    // Call 3 (V2): Result to SXY2
-    // But RTPS puts result into SXY2 and shifts others?
-    // Let's implement specific target storage.
-    
-    if (v_idx == 0) cpu->cp2_data[GTE_SXY0] = sxy_val;
-    else if (v_idx == 1) cpu->cp2_data[GTE_SXY1] = sxy_val;
-    else cpu->cp2_data[GTE_SXY2] = sxy_val;
-    
-    // Also Store Z
-    if (v_idx == 0) cpu->cp2_data[GTE_SZ0] = (u16)(z >> 2); // Approximation? Otz
-    else if (v_idx == 1) cpu->cp2_data[GTE_SZ1] = (u16)(z >> 2);
-    else cpu->cp2_data[GTE_SZ2] = (u16)(z >> 2);
-    
-    // Average Z (OTZ)
-    // Only updated by RTPS/RTPT?
-    cpu->cp2_data[GTE_OTZ] = (u16)(z >> 2); 
-}
-
-static void GTE_CMD_RTPS(R3000CPU *cpu) {
-    GTE_ProcessVertex(cpu, 0);
-    // RTPS puts result in SXY2
-    cpu->cp2_data[GTE_SXY2] = cpu->cp2_data[GTE_SXY0];
-}
-
-static void GTE_CMD_RTPT(R3000CPU *cpu) {
-    GTE_ProcessVertex(cpu, 0);
-    GTE_ProcessVertex(cpu, 1);
-    GTE_ProcessVertex(cpu, 2);
-}
-
-static void GTE_CMD_NCLIP(R3000CPU *cpu) {
-    // Normal Clip
-    // Calculates cross product of SXY0, SXY1, SXY2 to determine facing/area.
-    // OP = X0*Y1 + X1*Y2 + X2*Y0 - X0*Y2 - X1*Y0 - X2*Y1
-    
-    s16 x0 = S16(cpu->cp2_data[GTE_SXY0]);
-    s16 y0 = S16(cpu->cp2_data[GTE_SXY0] >> 16);
-    s16 x1 = S16(cpu->cp2_data[GTE_SXY1]);
-    s16 y1 = S16(cpu->cp2_data[GTE_SXY1] >> 16);
-    s16 x2 = S16(cpu->cp2_data[GTE_SXY2]);
-    s16 y2 = S16(cpu->cp2_data[GTE_SXY2] >> 16);
-    
-    s32 op = (x0 * y1) + (x1 * y2) + (x2 * y0) - (x0 * y2) - (x1 * y0) - (x2 * y1);
-    
-    cpu->cp2_data[GTE_MAC0] = op;
-}
-
+/* ================================================================
+ * Main GTE Command Dispatcher
+ * ================================================================ */
 void GTE_Execute(u32 opcode, R3000CPU *cpu) {
-    static int log_count = 0;
     u32 func = opcode & 0x3F;
-    
-    if (log_count < 200) {
-        printf("[GTE] Exec: Op=%08X Func=%02X\n", opcode, func);
-        log_count++;
-    }
+    int sf   = (opcode >> 19) & 1;
+    int lm   = (opcode >> 10) & 1;
+    int mx   = (opcode >> 17) & 3;
+    int v    = (opcode >> 15) & 3;
+    int cv   = (opcode >> 13) & 3;
+
+    /* Clear FLAG at start of each command */
+    flag_reset();
 
     switch (func) {
-        case 0x01: // RTPS
-            GTE_CMD_RTPS(cpu);
-            break;
-        case 0x06: // NCLIP
-            GTE_CMD_NCLIP(cpu);
-            break;
-        case 0x30: // RTPT (Triple)
-            GTE_CMD_RTPT(cpu);
-            break;
-        default:
-            if (log_count < 200) printf("[GTE] Unknown Func %02X\n", func);
-            break;
+        case 0x01: gte_cmd_rtps(cpu, sf, lm); break;
+        case 0x06: gte_cmd_nclip(cpu);         break;
+        case 0x0C: gte_cmd_op(cpu, sf, lm);    break;
+        case 0x10: gte_cmd_dpcs(cpu, sf, lm);  break;
+        case 0x11: gte_cmd_intpl(cpu, sf, lm); break;
+        case 0x12: gte_cmd_mvmva(cpu, sf, lm, mx, v, cv); break;
+        case 0x13: gte_cmd_ncds(cpu, sf, lm);  break;
+        case 0x14: gte_cmd_cdp(cpu, sf, lm);   break;
+        case 0x16: gte_cmd_ncdt(cpu, sf, lm);  break;
+        case 0x1B: gte_cmd_nccs(cpu, sf, lm);  break;
+        case 0x1C: gte_cmd_cc(cpu, sf, lm);    break;
+        case 0x1E: gte_cmd_ncs(cpu, sf, lm);   break;
+        case 0x20: gte_cmd_nct(cpu, sf, lm);   break;
+        case 0x28: gte_cmd_sqr(cpu, sf, lm);   break;
+        case 0x29: gte_cmd_dcpl(cpu, sf, lm);  break;
+        case 0x2A: gte_cmd_dpct(cpu, sf, lm);  break;
+        case 0x2D: gte_cmd_avsz3(cpu);         break;
+        case 0x2E: gte_cmd_avsz4(cpu);         break;
+        case 0x30: gte_cmd_rtpt(cpu, sf, lm);  break;
+        case 0x3D: gte_cmd_gpf(cpu, sf, lm);   break;
+        case 0x3E: gte_cmd_gpl(cpu, sf, lm);   break;
+        case 0x3F: gte_cmd_ncct(cpu, sf, lm);  break;
+        default: break;
     }
+
+    /* Update FLAG register */
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
 }
