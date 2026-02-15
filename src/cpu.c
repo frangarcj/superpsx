@@ -28,8 +28,10 @@ void PSX_Exception(u32 cause_code)
     /* Save EPC and set Cause */
     cpu.cop0[PSX_COP0_EPC] = cpu.pc;
 
-    /* Set ExcCode in Cause register bits [6:2] */
-    u32 cause = cpu.cop0[PSX_COP0_CAUSE] & ~0x7C;
+    /* Set ExcCode in Cause register bits [6:2].
+     * Clear BD bit (bit 31) since we don't currently track branch delay
+     * slot exceptions. Preserve only IP bits [15:8]. */
+    u32 cause = cpu.cop0[PSX_COP0_CAUSE] & 0x0000FF00; /* Keep only IP bits */
     cause |= ((cause_code & 0x1F) << 2);
 
     /* For hardware interrupts (cause_code == 0), set IP2 (bit 10)
@@ -83,6 +85,65 @@ void PSX_Exception(u32 cause_code)
     {
         longjmp(psx_block_jmp, 1);
     }
+}
+
+/* ---- Exception helpers for dynarec ---- */
+/* SYSCALL: always triggers exception code 8 */
+void Helper_Syscall_Exception(u32 pc)
+{
+    cpu.pc = pc;
+    PSX_Exception(0x08);
+}
+
+/* BREAK: always triggers exception code 9 */
+void Helper_Break_Exception(u32 pc)
+{
+    cpu.pc = pc;
+    PSX_Exception(0x09);
+}
+
+/* ADD with overflow detection: if overflow, trigger exception 0x0C */
+void Helper_ADD(u32 rs_val, u32 rt_val, u32 rd, u32 pc)
+{
+    u32 result = rs_val + rt_val;
+    /* Overflow if: operands have same sign but result has different sign */
+    if (!((rs_val ^ rt_val) & 0x80000000) && ((result ^ rs_val) & 0x80000000))
+    {
+        cpu.pc = pc;
+        PSX_Exception(0x0C); /* Overflow */
+        return; /* Won't reach here - longjmp fires */
+    }
+    if (rd != 0)
+        cpu.regs[rd] = result;
+}
+
+/* SUB with overflow detection */
+void Helper_SUB(u32 rs_val, u32 rt_val, u32 rd, u32 pc)
+{
+    u32 result = rs_val - rt_val;
+    /* Overflow if: operands have different signs and result sign != rs sign */
+    if (((rs_val ^ rt_val) & 0x80000000) && ((result ^ rs_val) & 0x80000000))
+    {
+        cpu.pc = pc;
+        PSX_Exception(0x0C); /* Overflow */
+        return;
+    }
+    if (rd != 0)
+        cpu.regs[rd] = result;
+}
+
+/* ADDI with overflow detection */
+void Helper_ADDI(u32 rs_val, u32 imm_sext, u32 rt, u32 pc)
+{
+    u32 result = rs_val + imm_sext;
+    if (!((rs_val ^ imm_sext) & 0x80000000) && ((result ^ rs_val) & 0x80000000))
+    {
+        cpu.pc = pc;
+        PSX_Exception(0x0C); /* Overflow */
+        return;
+    }
+    if (rt != 0)
+        cpu.regs[rt] = result;
 }
 
 /* ---- PSX Syscall Handler ---- */
