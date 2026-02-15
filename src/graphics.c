@@ -416,19 +416,23 @@ static void Start_VRAM_Transfer(int x, int y, int w, int h)
 
 // -- Helper: Emit a single line segment using A+D mode GIF packets --
 static void Emit_Line_Segment_AD(s16 x0, s16 y0, u32 color0,
-                                  s16 x1, s16 y1, u32 color1,
-                                  int is_shaded, int is_semi_trans)
+                                 s16 x1, s16 y1, u32 color1,
+                                 int is_shaded, int is_semi_trans)
 {
     u64 prim_reg = 1; // LINE
-    if (is_shaded) prim_reg |= (1 << 3); // IIP=1 (Gouraud)
-    if (is_semi_trans) prim_reg |= (1 << 6); // ABE=1
+    if (is_shaded)
+        prim_reg |= (1 << 3); // IIP=1 (Gouraud)
+    if (is_semi_trans)
+        prim_reg |= (1 << 6); // ABE=1
 
     int nregs = 5; // PRIM + 2*(RGBAQ + XYZ2)
-    if (is_semi_trans) nregs++;
+    if (is_semi_trans)
+        nregs++;
 
     Push_GIF_Tag(nregs, 1, 0, 0, 0, 1, 0xE); // A+D mode
 
-    if (is_semi_trans) {
+    if (is_semi_trans)
+    {
         Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), 0x42); // ALPHA_1
     }
 
@@ -436,14 +440,16 @@ static void Emit_Line_Segment_AD(s16 x0, s16 y0, u32 color0,
 
     // Vertex 0
     Push_GIF_Data(GS_set_RGBAQ(color0 & 0xFF, (color0 >> 8) & 0xFF,
-                                (color0 >> 16) & 0xFF, 0x80, 0x3F800000), 0x01);
+                               (color0 >> 16) & 0xFF, 0x80, 0x3F800000),
+                  0x01);
     s32 gx0 = ((s32)x0 + draw_offset_x + 2048) << 4;
     s32 gy0 = ((s32)y0 + draw_offset_y + 2048) << 4;
     Push_GIF_Data(GS_set_XYZ(gx0, gy0, 0), 0x05);
 
     // Vertex 1
     Push_GIF_Data(GS_set_RGBAQ(color1 & 0xFF, (color1 >> 8) & 0xFF,
-                                (color1 >> 16) & 0xFF, 0x80, 0x3F800000), 0x01);
+                               (color1 >> 16) & 0xFF, 0x80, 0x3F800000),
+                  0x01);
     s32 gx1 = ((s32)x1 + draw_offset_x + 2048) << 4;
     s32 gy1 = ((s32)y1 + draw_offset_y + 2048) << 4;
     Push_GIF_Data(GS_set_XYZ(gx1, gy1, 0), 0x05);
@@ -451,15 +457,19 @@ static void Emit_Line_Segment_AD(s16 x0, s16 y0, u32 color0,
 
 // Apply PSX texture window formula to a texture coordinate
 // texcoord = (texcoord AND NOT(Mask*8)) OR ((Offset AND Mask)*8)
-static u32 Apply_Tex_Window_U(u32 u) {
-    if (tex_win_mask_x == 0) return u;
+static u32 Apply_Tex_Window_U(u32 u)
+{
+    if (tex_win_mask_x == 0)
+        return u;
     u32 mask = tex_win_mask_x * 8;
     u32 off = (tex_win_off_x & tex_win_mask_x) * 8;
     return (u & ~mask) | off;
 }
 
-static u32 Apply_Tex_Window_V(u32 v) {
-    if (tex_win_mask_y == 0) return v;
+static u32 Apply_Tex_Window_V(u32 v)
+{
+    if (tex_win_mask_y == 0)
+        return v;
     u32 mask = tex_win_mask_y * 8;
     u32 off = (tex_win_off_y & tex_win_mask_y) * 8;
     return (v & ~mask) | off;
@@ -490,7 +500,10 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
         if (is_shaded)
             prim_reg |= (1 << 3); // IIP=1 (Gouraud)
         if (is_textured)
+        {
             prim_reg |= (1 << 4); // TME=1 (Texture On)
+            prim_reg |= (1 << 8); // FST=1 (use UV register, not STQ)
+        }
         if (cmd & 0x02)
             prim_reg |= (1 << 6); // ABE=1
 
@@ -673,33 +686,28 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
             // Sync cursor to gif_packet_ptr
             gif_packet_ptr = *gif_cursor - gif_packet_buf;
 
+            if (gpu_debug_log)
+            {
+                fprintf(gpu_debug_log, "[GPU] TexRect: Cmd=%02X (%d,%d) %dx%d UV_CLUT=%08X TexPage(%d,%d) fmt=%d flipXY=(%d,%d)\n",
+                        cmd, x, y, w, h, uv_clut, tex_page_x, tex_page_y, tex_page_format, tex_flip_x, tex_flip_y);
+                fflush(gpu_debug_log);
+            }
+
             u32 u0_raw = Apply_Tex_Window_U(uv_clut & 0xFF);
             u32 v0_raw = Apply_Tex_Window_V((uv_clut >> 8) & 0xFF);
-            u32 u1_raw = Apply_Tex_Window_U(((uv_clut & 0xFF) + w) & 0xFF);
-            u32 v1_raw = Apply_Tex_Window_V((((uv_clut >> 8) & 0xFF) + h) & 0xFF);
+            u32 v1_raw = v0_raw + h;
 
-            u32 u0 = u0_raw + tex_page_x;
-            u32 v0 = v0_raw + tex_page_y;
-            u32 u1 = u1_raw + tex_page_x;
-            u32 v1 = v1_raw + tex_page_y;
-
-            // Apply texture flip for rectangles (E1 bits 12-13)
-            if (tex_flip_x)
-            {
-                u32 tmp = u0;
-                u0 = u1;
-                u1 = tmp;
-            }
+            // V coordinates with Y-flip (Y-flip uses simple swap, works perfectly)
+            u32 v0_gs = v0_raw + tex_page_y;
+            u32 v1_gs = v1_raw + tex_page_y;
             if (tex_flip_y)
             {
-                u32 tmp = v0;
-                v0 = v1;
-                v1 = tmp;
+                u32 tmp = v0_gs;
+                v0_gs = v1_gs;
+                v1_gs = tmp;
             }
 
-            s32 gx0 = ((s32)x + draw_offset_x + 2048) << 4;
             s32 gy0 = ((s32)y + draw_offset_y + 2048) << 4;
-            s32 gx1 = ((s32)(x + w) + draw_offset_x + 2048) << 4;
             s32 gy1 = ((s32)(y + h) + draw_offset_y + 2048) << 4;
 
             u64 rgbaq = GS_set_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0x3F800000);
@@ -707,7 +715,58 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
             // Check raw texture bit (bit 0): 1=Decal (raw texture), 0=Modulate (texture*color)
             int is_raw_texture = (cmd & 0x01) != 0;
             int is_semi_trans = (cmd & 0x02) != 0;
-            int nregs = 7; // PRIM + 2*(UV + RGBAQ + XYZ2)
+
+            // --- X-flip SPRITE splitting ---
+            // PSX X-flip formula: u = (u_start + 1 - column) & 0xFF
+            // The +1 comes from the hardware mirroring around u_start + 0.5.
+            // This creates a discontinuity when u wraps from 0 to 255.
+            // GS SPRITE uses linear UV interpolation which cannot reproduce this wrap.
+            // Solution: split into 2 SPRITEs at the wrap point.
+            // Part A: columns from u_eff down to 0 (monotonically decreasing)
+            // Part B: columns from 255 down to (256-n_b) (monotonically decreasing)
+            // Each part: N texels across N pixels = exact -16 step in 10.4 fixed point.
+            int num_sprites;
+            s32 sp_gx0[2], sp_gx1[2];
+            u32 sp_u0[2], sp_u1[2];
+
+            if (tex_flip_x && w > 1)
+            {
+                int u_start = (int)u0_raw;
+                int u_eff = (u_start + 1) & 0xFF; // Effective first UV (PSX mirrors around u_start + 0.5)
+                int k_at_zero = u_eff; // Column index where u reaches 0
+                int n_a = (k_at_zero + 1 < (int)w) ? (k_at_zero + 1) : (int)w;
+                int n_b = (int)w - n_a;
+
+                num_sprites = (n_b > 0) ? 2 : 1;
+
+                // Sprite A: first n_a columns, UV from u_eff down to 0
+                sp_gx0[0] = ((s32)x + draw_offset_x + 2048) << 4;
+                sp_gx1[0] = ((s32)(x + n_a) + draw_offset_x + 2048) << 4;
+                sp_u0[0] = u_eff + tex_page_x;
+                // V1.u = V0.u - n_a (gives exact -16/pixel step in 10.4 fixed point)
+                // For 1-pixel sprite, V1.u doesn't affect output, use V0.u+1
+                sp_u1[0] = (n_a == 1) ? (sp_u0[0] + 1) : (sp_u0[0] - n_a);
+
+                if (n_b > 0)
+                {
+                    // Sprite B: remaining n_b columns, UV from 255 down to (256-n_b)
+                    sp_gx0[1] = sp_gx1[0];
+                    sp_gx1[1] = ((s32)(x + w) + draw_offset_x + 2048) << 4;
+                    sp_u0[1] = 255 + tex_page_x;
+                    sp_u1[1] = sp_u0[1] - n_b;
+                }
+            }
+            else
+            {
+                // Normal (no X-flip or w<=1): single sprite
+                num_sprites = 1;
+                sp_gx0[0] = ((s32)x + draw_offset_x + 2048) << 4;
+                sp_gx1[0] = ((s32)(x + w) + draw_offset_x + 2048) << 4;
+                sp_u0[0] = u0_raw + tex_page_x;
+                sp_u1[0] = u0_raw + w + tex_page_x;
+            }
+
+            int nregs = 1 + num_sprites * 6; // PRIM + N*(UV+RGBAQ+XYZ2)*2
             nregs += 2;    // +DTHE=0 before, +DTHE=restore after (PSX rects never dither)
             if (is_raw_texture)
                 nregs += 4; // +2 TEX0 before, +2 TEX0 after
@@ -741,15 +800,17 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
 
             Push_GIF_Data(prim_reg, 0x00); // PRIM register
 
-            // Vertex 0 (top-left)
-            Push_GIF_Data(GS_set_XYZ(u0 << 4, v0 << 4, 0), 0x03); // UV
-            Push_GIF_Data(rgbaq, 0x01);                           // RGBAQ
-            Push_GIF_Data(GS_set_XYZ(gx0, gy0, 0), 0x05);         // XYZ2
+            // Emit vertex pairs for each sprite
+            for (int si = 0; si < num_sprites; si++)
+            {
+                Push_GIF_Data(GS_set_XYZ(sp_u0[si] << 4, v0_gs << 4, 0), 0x03); // UV
+                Push_GIF_Data(rgbaq, 0x01);                                       // RGBAQ
+                Push_GIF_Data(GS_set_XYZ(sp_gx0[si], gy0, 0), 0x05);             // XYZ2
 
-            // Vertex 1 (bottom-right)
-            Push_GIF_Data(GS_set_XYZ(u1 << 4, v1 << 4, 0), 0x03); // UV
-            Push_GIF_Data(rgbaq, 0x01);                           // RGBAQ
-            Push_GIF_Data(GS_set_XYZ(gx1, gy1, 0), 0x05);         // XYZ2
+                Push_GIF_Data(GS_set_XYZ(sp_u1[si] << 4, v1_gs << 4, 0), 0x03); // UV
+                Push_GIF_Data(rgbaq, 0x01);                                       // RGBAQ
+                Push_GIF_Data(GS_set_XYZ(sp_gx1[si], gy1, 0), 0x05);             // XYZ2
+            }
 
             // Restore TEX0 to TFX=0 (Modulate) after raw texture draw
             if (is_raw_texture)
@@ -1254,12 +1315,12 @@ void GPU_WriteGP0(u32 data)
                     if (polyline_shaded)
                     {
                         polyline_prev_color = gpu_cmd_buffer[2] & 0xFFFFFF; // color1
-                        polyline_expect_color = 1; // Next word is a color
+                        polyline_expect_color = 1;                          // Next word is a color
                     }
                     else
                     {
                         polyline_prev_color = gpu_cmd_buffer[0] & 0xFFFFFF; // Original flat color
-                        polyline_expect_color = 0; // Next word is a vertex
+                        polyline_expect_color = 0;                          // Next word is a vertex
                     }
                 }
             }
@@ -1359,6 +1420,12 @@ void GPU_WriteGP0(u32 data)
         }
 
         // printf("[GPU] E1: TexPage(%d,%d) fmt=%d\n", tex_page_x, tex_page_y, tpf);
+        if (gpu_debug_log)
+        {
+            fprintf(gpu_debug_log, "[GPU] E1: TexPage(%d,%d) fmt=%d trans=%d dither=%d flipX=%d flipY=%d\n",
+                    tex_page_x, tex_page_y, tpf, trans_mode, dither_enable, tex_flip_x, tex_flip_y);
+            fflush(gpu_debug_log);
+        }
         Flush_GIF(); // Ensure ALPHA_1 and other settings reach GS immediately
     }
     break;
@@ -1825,8 +1892,9 @@ void Init_Graphics()
     printf("Initializing Graphics (GS)...\n");
 
     // Uncomment for GPU debug logging:
-    // gpu_debug_log = fopen("gpu_debug.log", "w");
-    // if (gpu_debug_log) fprintf(gpu_debug_log, "GPU Debug Log\n");
+    // gpu_debug_log = fopen("host:gpu_debug.log", "w");
+    // if (gpu_debug_log)
+    //     fprintf(gpu_debug_log, "GPU Debug Log\n");
 
     dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
     dma_channel_fast_waits(DMA_CHANNEL_GIF);
