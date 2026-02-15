@@ -1633,7 +1633,7 @@ void Run_CPU(void)
             if (!binary_loaded)
             {
                 printf("DYNAREC: Reached BIOS Shell Entry (0xBFC06FF0). Loading binary...\n");
-                if (Load_PSX_EXE("test.exe", &cpu) == 0)
+                if (Load_PSX_EXE(psx_exe_filename, &cpu) == 0)
                 {
                     printf("DYNAREC: Binary loaded successfully. Jump to PC=0x%08X\n", (unsigned)cpu.pc);
 #ifdef ENABLE_HOST_LOG
