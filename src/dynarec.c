@@ -194,6 +194,14 @@ static u32 emit_current_psx_pc = 0;
  */
 static int dynarec_load_defer = 0;
 
+/* LWL/LWR pending load forwarding:
+ * On R3000A, when LWL/LWR is in the load delay slot of another load targeting
+ * the same register, the merge source is the PENDING load value (hardware
+ * forwarding), not the old register file value. This flag tells LWL/LWR
+ * emission to read from CPU_LOAD_DELAY_VAL instead of the register bank.
+ */
+static int dynarec_lwx_pending = 0;
+
 /* Check if instruction reads a given GPR as source operand */
 static int instruction_reads_gpr(u32 opcode, int reg)
 {
@@ -366,7 +374,13 @@ static u32 *compile_block(u32 psx_pc)
 
             /* Emit the delay slot instruction (no load deferral in branch delay slots) */
             dynarec_load_defer = 0;
+            /* LWL/LWR forwarding: use pending load value for merge */
+            dynarec_lwx_pending = 0;
+            if (pending_load_reg != 0 && (OP(opcode) == 0x22 || OP(opcode) == 0x26) &&
+                pending_load_reg == RT(opcode))
+                dynarec_lwx_pending = 1;
             emit_instruction(opcode, cur_pc);
+            dynarec_lwx_pending = 0;
             cur_pc += 4;
             total_instructions++;
 
@@ -661,7 +675,13 @@ static u32 *compile_block(u32 psx_pc)
 
             /* STEP 3: Emit the instruction (deferred loads leave value in REG_V0) */
             dynarec_load_defer = this_is_load;
+            /* LWL/LWR forwarding: use pending load value for merge */
+            dynarec_lwx_pending = 0;
+            if (pending_load_reg != 0 && (OP(opcode) == 0x22 || OP(opcode) == 0x26) &&
+                pending_load_reg == RT(opcode))
+                dynarec_lwx_pending = 1;
             emit_instruction(opcode, cur_pc);
+            dynarec_lwx_pending = 0;
             dynarec_load_defer = 0;
 
             /* STEP 3.5: If the instruction just emitted WRITES to the pending
@@ -1375,10 +1395,13 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
     /* LWL/LWR/SWL/SWR - unaligned access via C helpers */
     case 0x22: /* LWL */
     {
-        /* $a0 = address, $a1 = current rt value */
+        /* $a0 = address, $a1 = current rt value (or pending load value) */
         emit_load_psx_reg(REG_A0, rs);
         EMIT_ADDIU(REG_A0, REG_A0, imm);
-        emit_load_psx_reg(REG_A1, rt);
+        if (dynarec_lwx_pending)
+            EMIT_LW(REG_A1, CPU_LOAD_DELAY_VAL, REG_S0);
+        else
+            emit_load_psx_reg(REG_A1, rt);
         EMIT_JAL_ABS((u32)Helper_LWL);
         EMIT_NOP();
         if (!dynarec_load_defer)
@@ -1387,10 +1410,13 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
     }
     case 0x26: /* LWR */
     {
-        /* $a0 = address, $a1 = current rt value */
+        /* $a0 = address, $a1 = current rt value (or pending load value) */
         emit_load_psx_reg(REG_A0, rs);
         EMIT_ADDIU(REG_A0, REG_A0, imm);
-        emit_load_psx_reg(REG_A1, rt);
+        if (dynarec_lwx_pending)
+            EMIT_LW(REG_A1, CPU_LOAD_DELAY_VAL, REG_S0);
+        else
+            emit_load_psx_reg(REG_A1, rt);
         EMIT_JAL_ABS((u32)Helper_LWR);
         EMIT_NOP();
         if (!dynarec_load_defer)
