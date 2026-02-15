@@ -73,6 +73,124 @@
 static s16 S16(u32 val) { return (s16)(val & 0xFFFF); }
 static s32 S32(u32 val) { return (s32)val; } // Usually 32-bit in reg
 
+/* ---- GTE Register Read/Write Helpers ---- */
+
+/* Count leading zeros or leading ones (for LZCS/LZCR) */
+static u32 gte_count_leading(u32 val) {
+    if (val == 0) return 32;
+    u32 target;
+    if ((s32)val < 0) {
+        target = ~val;
+        if (target == 0) return 32;
+    } else {
+        target = val;
+    }
+    u32 count = 0;
+    while (!(target & 0x80000000)) {
+        count++;
+        target <<= 1;
+    }
+    return count;
+}
+
+/* Read GTE Data Register (for MFC2 / SWC2) */
+u32 GTE_ReadData(R3000CPU *cpu, int reg) {
+    switch (reg) {
+        case 15: /* SXYP reads as SXY2 */
+            return cpu->cp2_data[14];
+        case 28: /* IRGB - computed from IR1/2/3 */
+        case 29: /* ORGB - same as IRGB read */
+        {
+            u32 r = ((s32)cpu->cp2_data[9] >> 7) & 0x1F;
+            u32 g = ((s32)cpu->cp2_data[10] >> 7) & 0x1F;
+            u32 b = ((s32)cpu->cp2_data[11] >> 7) & 0x1F;
+            /* Clamp negative IR values to 0 */
+            if ((s32)cpu->cp2_data[9] < 0) r = 0;
+            if ((s32)cpu->cp2_data[10] < 0) g = 0;
+            if ((s32)cpu->cp2_data[11] < 0) b = 0;
+            return r | (g << 5) | (b << 10);
+        }
+        default:
+            return cpu->cp2_data[reg & 0x1F];
+    }
+}
+
+/* Write GTE Data Register (for MTC2 / LWC2) */
+void GTE_WriteData(R3000CPU *cpu, int reg, u32 val) {
+    switch (reg) {
+        case 1:  /* V0_Z - sign-extend 16-bit */
+        case 3:  /* V1_Z */
+        case 5:  /* V2_Z */
+        case 8:  /* IR0 */
+        case 9:  /* IR1 */
+        case 10: /* IR2 */
+        case 11: /* IR3 */
+            cpu->cp2_data[reg] = (u32)(s32)(s16)(val & 0xFFFF);
+            break;
+        case 7:  /* OTZ - zero-extend 16-bit */
+        case 16: /* SZ0 */
+        case 17: /* SZ1 */
+        case 18: /* SZ2 */
+        case 19: /* SZ3 */
+            cpu->cp2_data[reg] = val & 0xFFFF;
+            break;
+        case 15: /* SXYP - push SXY FIFO */
+            cpu->cp2_data[12] = cpu->cp2_data[13]; /* SXY0 <- SXY1 */
+            cpu->cp2_data[13] = cpu->cp2_data[14]; /* SXY1 <- SXY2 */
+            cpu->cp2_data[14] = val;                /* SXY2 <- new */
+            cpu->cp2_data[15] = val;                /* also store in SXYP slot */
+            break;
+        case 28: /* IRGB - sets IR1/IR2/IR3 from 5-bit color fields */
+            cpu->cp2_data[9]  = (u32)(s32)(s16)(((val >>  0) & 0x1F) << 7); /* IR1 */
+            cpu->cp2_data[10] = (u32)(s32)(s16)(((val >>  5) & 0x1F) << 7); /* IR2 */
+            cpu->cp2_data[11] = (u32)(s32)(s16)(((val >> 10) & 0x1F) << 7); /* IR3 */
+            /* Note: the raw IRGB value is NOT stored; reads are computed from IR1/2/3 */
+            break;
+        case 29: /* ORGB - read-only, writes are ignored */
+            break;
+        case 30: /* LZCS - write stores value and computes LZCR */
+            cpu->cp2_data[30] = val;
+            cpu->cp2_data[31] = gte_count_leading(val);
+            break;
+        case 31: /* LZCR - read-only, writes are ignored */
+            break;
+        default:
+            cpu->cp2_data[reg & 0x1F] = val;
+            break;
+    }
+}
+
+/* Read GTE Control Register (for CFC2) */
+u32 GTE_ReadCtrl(R3000CPU *cpu, int reg) {
+    return cpu->cp2_ctrl[reg & 0x1F];
+}
+
+/* Write GTE Control Register (for CTC2) */
+void GTE_WriteCtrl(R3000CPU *cpu, int reg, u32 val) {
+    switch (reg) {
+        case 4:  /* R33 - sign-extend 16-bit */
+        case 12: /* L33 */
+        case 20: /* LB3 */
+        case 26: /* H */
+        case 27: /* DQA */
+        case 29: /* ZSF3 */
+        case 30: /* ZSF4 */
+            cpu->cp2_ctrl[reg] = (u32)(s32)(s16)(val & 0xFFFF);
+            break;
+        case 31: /* FLAG - clear bits 0-11, recompute bit 31 */
+        {
+            u32 flag = val & 0x7FFFF000; /* clear bits 0-11 and bit 31 */
+            /* bit31 = OR of bits 30-23 and bits 18-13 */
+            flag |= (flag & 0x7F87E000) ? 0x80000000 : 0;
+            cpu->cp2_ctrl[31] = flag;
+            break;
+        }
+        default:
+            cpu->cp2_ctrl[reg & 0x1F] = val;
+            break;
+    }
+}
+
 /* GTE Context Helper */
 static s64 MAC0, MAC1, MAC2, MAC3;
 
