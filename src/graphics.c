@@ -1692,8 +1692,8 @@ void GPU_WriteGP1(u32 data)
         dispfb |= (u64)x << 32;           // DBX
         dispfb |= (u64)y << 43;           // DBY
 
-        *((volatile u64 *)0xB2000070) = dispfb; // DISPFB1
-        *((volatile u64 *)0xB2000090) = dispfb; // DISPFB2
+        *((volatile u64 *)0x12000070) = dispfb; // DISPFB1
+        *((volatile u64 *)0x12000090) = dispfb; // DISPFB2
     }
     break;
     case 0x06: // Horizontal Display Range
@@ -2050,8 +2050,8 @@ void Init_Graphics()
         dispfb |= (u64)GS_PSM_16S << 15;        // PSM (CT16S - matches PSX 15-bit VRAM)
         dispfb |= (u64)0 << 32;                 // DBX
         dispfb |= (u64)0 << 43;                 // DBY
-        *((volatile u64 *)0xB2000070) = dispfb; // DISPFB1
-        *((volatile u64 *)0xB2000090) = dispfb; // DISPFB2
+        *((volatile u64 *)0x12000070) = dispfb; // DISPFB1
+        *((volatile u64 *)0x12000090) = dispfb; // DISPFB2
     }
 
     // Setup GS environment for rendering
