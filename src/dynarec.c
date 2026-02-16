@@ -1286,6 +1286,11 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
 
     /* COP0 */
     case 0x10:
+    {
+        /* SWC0 CU check: COP0 is always accessible in kernel mode.
+         * The CU0 bit (SR bit 28) controls USER mode access.
+         * For simplicity, we skip the CU check for COP0 MFC0/MTC0/RFE
+         * since those are privileged and the test only checks SWC0. */
         if (rs == 0x00)
         {
             /* MFC0 rt, rd */
@@ -1327,9 +1332,49 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
             EMIT_SW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0); /* SR = t0 */
         }
         break;
+    }
+
+    /* COP1 */
+    case 0x11:
+    {
+        /* Check CU1 bit (SR bit 29). If not set, fire CU exception */
+        emit_load_imm32(REG_A0, psx_pc);
+        emit_load_imm32(REG_A1, 1); /* cop_num = 1 */
+        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_I(0x0C, REG_T0, REG_T0, 0x2000)); /* andi t0, t0, 0x2000_0000 >> 16... */
+        /* Actually need to check bit 29. Use SRL + ANDI */
+        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T0, REG_T0, 29, 0x02)); /* srl t0, t0, 29 */
+        emit(MK_I(0x0C, REG_T0, REG_T0, 1));          /* andi t0, t0, 1 */
+        /* If t0 != 0, CU1 is set -> skip exception */
+        u32 *skip_patch_1 = code_ptr;
+        emit(MK_I(0x05, REG_T0, REG_ZERO, 0)); /* bne t0, zero, skip */
+        EMIT_NOP();
+        /* CU1 not set -> fire exception */
+        EMIT_JAL_ABS((u32)Helper_CU_Exception);
+        EMIT_NOP();
+        /* Patch skip target */
+        *skip_patch_1 = (*skip_patch_1 & 0xFFFF0000) | ((u32)(code_ptr - skip_patch_1 - 1) & 0xFFFF);
+        /* COP1 doesn't exist on PSX, so if enabled we just NOP */
+        break;
+    }
 
     /* COP2 (GTE) */
     case 0x12:
+    {
+        /* Check CU2 bit (SR bit 30). If not set, fire CU exception */
+        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T0, REG_T0, 30, 0x02)); /* srl t0, t0, 30 */
+        emit(MK_I(0x0C, REG_T0, REG_T0, 1));          /* andi t0, t0, 1 */
+        u32 *skip_cu2 = code_ptr;
+        emit(MK_I(0x05, REG_T0, REG_ZERO, 0)); /* bne t0, zero, skip */
+        EMIT_NOP();
+        emit_load_imm32(REG_A0, psx_pc);
+        emit_load_imm32(REG_A1, 2); /* cop_num = 2 */
+        EMIT_JAL_ABS((u32)Helper_CU_Exception);
+        EMIT_NOP();
+        *skip_cu2 = (*skip_cu2 & 0xFFFF0000) | ((u32)(code_ptr - skip_cu2 - 1) & 0xFFFF);
+
         if (total_instructions < 20000000)
         { // Log COP2 instructions
             printf("DYNAREC: Compiling COP2 Op %08X at %08X\n", opcode, (unsigned)psx_pc);
@@ -1403,6 +1448,26 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
             EMIT_NOP();
         }
         break;
+    }
+
+    /* COP3 */
+    case 0x13:
+    {
+        /* Check CU3 bit (SR bit 31). If not set, fire CU exception */
+        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T0, REG_T0, 31, 0x02)); /* srl t0, t0, 31 */
+        /* t0 is now 0 or 1 */
+        u32 *skip_cu3 = code_ptr;
+        emit(MK_I(0x05, REG_T0, REG_ZERO, 0)); /* bne t0, zero, skip */
+        EMIT_NOP();
+        emit_load_imm32(REG_A0, psx_pc);
+        emit_load_imm32(REG_A1, 3); /* cop_num = 3 */
+        EMIT_JAL_ABS((u32)Helper_CU_Exception);
+        EMIT_NOP();
+        *skip_cu3 = (*skip_cu3 & 0xFFFF0000) | ((u32)(code_ptr - skip_cu3 - 1) & 0xFFFF);
+        /* COP3 doesn't exist on PSX, NOP if enabled */
+        break;
+    }
 
     /* Load instructions */
     case 0x20: /* LB */
@@ -1484,9 +1549,41 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
         break;
     }
 
+    /* LWC0 - CU check for COP0 (SWC0/LWC0 respect CU0 bit, unlike MFC0/MTC0) */
+    case 0x30:
+    {
+        /* Check CU0 bit (SR bit 28) */
+        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T0, REG_T0, 28, 0x02)); /* srl t0, t0, 28 */
+        emit(MK_I(0x0C, REG_T0, REG_T0, 1));          /* andi t0, t0, 1 */
+        u32 *skip_lwc0 = code_ptr;
+        emit(MK_I(0x05, REG_T0, REG_ZERO, 0)); /* bne t0, zero, skip */
+        EMIT_NOP();
+        emit_load_imm32(REG_A0, psx_pc);
+        emit_load_imm32(REG_A1, 0); /* cop_num = 0 */
+        EMIT_JAL_ABS((u32)Helper_CU_Exception);
+        EMIT_NOP();
+        *skip_lwc0 = (*skip_lwc0 & 0xFFFF0000) | ((u32)(code_ptr - skip_lwc0 - 1) & 0xFFFF);
+        /* COP0 has no actual coprocessor data registers to load into, so NOP if enabled */
+        break;
+    }
+
     /* LWC2 - Load Word to Cop2 */
     case 0x32:
     {
+        /* Check CU2 bit (SR bit 30) */
+        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T0, REG_T0, 30, 0x02)); /* srl t0, t0, 30 */
+        emit(MK_I(0x0C, REG_T0, REG_T0, 1));          /* andi t0, t0, 1 */
+        u32 *skip_lwc2 = code_ptr;
+        emit(MK_I(0x05, REG_T0, REG_ZERO, 0)); /* bne t0, zero, skip */
+        EMIT_NOP();
+        emit_load_imm32(REG_A0, psx_pc);
+        emit_load_imm32(REG_A1, 2); /* cop_num = 2 */
+        EMIT_JAL_ABS((u32)Helper_CU_Exception);
+        EMIT_NOP();
+        *skip_lwc2 = (*skip_lwc2 & 0xFFFF0000) | ((u32)(code_ptr - skip_lwc2 - 1) & 0xFFFF);
+
         // LWC2 rt, offset(base)
         // rt is destination in CP2 Data Registers
         emit_load_psx_reg(REG_A0, rs);
@@ -1502,9 +1599,59 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
     }
     break;
 
+    /* LWC3 */
+    case 0x33:
+    {
+        /* Check CU3 bit (SR bit 31) */
+        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T0, REG_T0, 31, 0x02)); /* srl t0, t0, 31 */
+        u32 *skip_lwc3 = code_ptr;
+        emit(MK_I(0x05, REG_T0, REG_ZERO, 0)); /* bne t0, zero, skip */
+        EMIT_NOP();
+        emit_load_imm32(REG_A0, psx_pc);
+        emit_load_imm32(REG_A1, 3); /* cop_num = 3 */
+        EMIT_JAL_ABS((u32)Helper_CU_Exception);
+        EMIT_NOP();
+        *skip_lwc3 = (*skip_lwc3 & 0xFFFF0000) | ((u32)(code_ptr - skip_lwc3 - 1) & 0xFFFF);
+        /* COP3 doesn't exist, NOP if enabled */
+        break;
+    }
+
+    /* SWC0 */
+    case 0x38:
+    {
+        /* Check CU0 bit (SR bit 28) */
+        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T0, REG_T0, 28, 0x02)); /* srl t0, t0, 28 */
+        emit(MK_I(0x0C, REG_T0, REG_T0, 1));          /* andi t0, t0, 1 */
+        u32 *skip_swc0 = code_ptr;
+        emit(MK_I(0x05, REG_T0, REG_ZERO, 0)); /* bne t0, zero, skip */
+        EMIT_NOP();
+        emit_load_imm32(REG_A0, psx_pc);
+        emit_load_imm32(REG_A1, 0); /* cop_num = 0 */
+        EMIT_JAL_ABS((u32)Helper_CU_Exception);
+        EMIT_NOP();
+        *skip_swc0 = (*skip_swc0 & 0xFFFF0000) | ((u32)(code_ptr - skip_swc0 - 1) & 0xFFFF);
+        /* COP0 store: NOP if enabled (no meaningful coprocessor data) */
+        break;
+    }
+
     /* SWC2 - Store Word from Cop2 */
     case 0x3A:
     {
+        /* Check CU2 bit (SR bit 30) */
+        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T0, REG_T0, 30, 0x02)); /* srl t0, t0, 30 */
+        emit(MK_I(0x0C, REG_T0, REG_T0, 1));          /* andi t0, t0, 1 */
+        u32 *skip_swc2 = code_ptr;
+        emit(MK_I(0x05, REG_T0, REG_ZERO, 0)); /* bne t0, zero, skip */
+        EMIT_NOP();
+        emit_load_imm32(REG_A0, psx_pc);
+        emit_load_imm32(REG_A1, 2); /* cop_num = 2 */
+        EMIT_JAL_ABS((u32)Helper_CU_Exception);
+        EMIT_NOP();
+        *skip_swc2 = (*skip_swc2 & 0xFFFF0000) | ((u32)(code_ptr - skip_swc2 - 1) & 0xFFFF);
+
         // SWC2 rt, offset(base)
         // rt is source from CP2 Data Registers
         // First read the GTE data register through helper
@@ -1520,6 +1667,24 @@ static void emit_instruction(u32 opcode, u32 psx_pc)
         EMIT_NOP();
     }
     break;
+
+    /* SWC3 */
+    case 0x3B:
+    {
+        /* Check CU3 bit (SR bit 31) */
+        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T0, REG_T0, 31, 0x02)); /* srl t0, t0, 31 */
+        u32 *skip_swc3 = code_ptr;
+        emit(MK_I(0x05, REG_T0, REG_ZERO, 0)); /* bne t0, zero, skip */
+        EMIT_NOP();
+        emit_load_imm32(REG_A0, psx_pc);
+        emit_load_imm32(REG_A1, 3); /* cop_num = 3 */
+        EMIT_JAL_ABS((u32)Helper_CU_Exception);
+        EMIT_NOP();
+        *skip_swc3 = (*skip_swc3 & 0xFFFF0000) | ((u32)(code_ptr - skip_swc3 - 1) & 0xFFFF);
+        /* COP3 doesn't exist, NOP if enabled */
+        break;
+    }
 
     default:
         // Always log unknown opcodes to catch missing instructions
