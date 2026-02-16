@@ -86,15 +86,26 @@ static struct
     uint8_t seek_error;     /* 1 = last seek failed */
     uint8_t reading;        /* 1 = ReadN/ReadS in progress */
     uint8_t mode;           /* SetMode value */
+    uint8_t disc_present;   /* 0 = no disc (ShellOpen), 1 = disc inserted */
     int32_t read_delay;     /* Cycles until next INT1 delivery */
     int32_t pending_delay;  /* Cycles until pending response delivery */
 } cdrom;
+
+/* ---- Update stat preserving ShellOpen when no disc ---- */
+static void cdrom_set_stat(uint8_t new_stat)
+{
+    if (!cdrom.disc_present)
+        cdrom.stat = new_stat | 0x10; /* Preserve ShellOpen */
+    else
+        cdrom.stat = new_stat;
+}
 
 /* ---- Initialization ---- */
 void CDROM_Init(void)
 {
     memset(&cdrom, 0, sizeof(cdrom));
-    cdrom.stat = 0x10; /* ShellOpen = no disc inserted */
+    cdrom.disc_present = 0; /* No disc inserted */
+    cdrom.stat = 0x10;      /* ShellOpen = no disc inserted */
     DLOG("Initialized (no disc)\n");
 }
 
@@ -170,7 +181,7 @@ static void cdrom_execute_command(uint8_t cmd)
         cdrom.reading = 1;
         cdrom.has_loc_header = 1;
         cdrom.seek_error = 0;
-        cdrom.stat = 0x42;           /* Seeking + Motor On */
+        cdrom_set_stat(0x42);        /* Seeking + Motor On */
         cdrom.read_delay = 10000000; /* ~300ms: long enough for test to observe stat=0x42 */
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 acknowledge */
@@ -181,7 +192,7 @@ static void cdrom_execute_command(uint8_t cmd)
     case 0x09: /* Pause */
         DLOG("Cmd 09h Pause\n");
         cdrom.reading = 0;
-        cdrom.stat = 0x02; /* Motor On, idle */
+        cdrom_set_stat(0x02); /* Motor On, idle */
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
         resp[0] = cdrom.stat;
@@ -194,7 +205,7 @@ static void cdrom_execute_command(uint8_t cmd)
         uint8_t had_header = cdrom.has_loc_header;
         cdrom.reading = 0;
         cdrom.seek_error = 0;
-        cdrom.stat = 0x02; /* Motor On, idle */
+        cdrom_set_stat(0x02); /* Motor On, idle (preserves ShellOpen if no disc) */
         if (had_header)
         {
             /* Head moves to inner area but header data still available */
@@ -301,7 +312,7 @@ static void cdrom_execute_command(uint8_t cmd)
         {
             /* Out of range - seek error */
             cdrom.seek_error = 1;
-            cdrom.stat = 0x04; /* Seek Error */
+            cdrom_set_stat(0x04); /* Seek Error */
             resp[0] = cdrom.stat;
             cdrom_queue_response(resp, 1, 3); /* INT3 */
             resp[0] = cdrom.stat;
@@ -314,7 +325,7 @@ static void cdrom_execute_command(uint8_t cmd)
             cdrom.cur_lba = cdrom.setloc_lba;
             cdrom.has_loc_header = 1;
             cdrom.seek_error = 0;
-            cdrom.stat = 0x02; /* Motor On */
+            cdrom_set_stat(0x02); /* Motor On */
             resp[0] = cdrom.stat;
             cdrom_queue_response(resp, 1, 3); /* INT3 */
             resp[0] = cdrom.stat;
@@ -377,7 +388,7 @@ static void cdrom_execute_command(uint8_t cmd)
         cdrom.reading = 1;
         cdrom.has_loc_header = 1;
         cdrom.seek_error = 0;
-        cdrom.stat = 0x42; /* Seeking + Motor On */
+        cdrom_set_stat(0x42); /* Seeking + Motor On */
         cdrom.read_delay = 10000000;
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
@@ -499,6 +510,13 @@ void CDROM_Update(uint32_t cycles)
         }
     }
 
+    /* Re-assert I_STAT if CD-ROM still has an active interrupt.
+     * This prevents edge-loss when I_STAT is acknowledged while
+     * the CD-ROM interrupt line is still active (e.g. new commands
+     * issued from within an ISR). */
+    if (cdrom.int_flag != 0)
+        SignalInterrupt(2);
+
     if (!cdrom.reading)
         return;
 
@@ -509,7 +527,7 @@ void CDROM_Update(uint32_t cycles)
         if (cdrom.read_delay <= 0)
         {
             /* Seek complete, now in reading state */
-            cdrom.stat = 0x22; /* Reading + Motor On */
+            cdrom_set_stat(0x22); /* Reading + Motor On */
         }
         return;
     }
