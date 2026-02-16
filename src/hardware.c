@@ -51,7 +51,7 @@ void SignalInterrupt(u32 irq)
 
 int CheckInterrupts(void)
 {
-    return (i_stat & i_mask);
+    return (i_stat & i_mask & 0x7FF); /* Only bits 0-10 are IRQ sources */
 }
 
 /* DMA Controller */
@@ -153,9 +153,9 @@ u32 ReadHardware(u32 addr)
 
     /* Interrupt Controller */
     if (phys == 0x1F801070)
-        return i_stat & 0x7FF; /* Only 11 IRQ sources, bits 0-10 */
+        return i_stat;
     if (phys == 0x1F801074)
-        return i_mask & 0x7FF; /* Only 11 IRQ sources, bits 0-10 */
+        return i_mask;
 
     /* DMA registers */
     if (phys >= 0x1F801080 && phys < 0x1F801100)
@@ -539,12 +539,12 @@ void WriteHardware(u32 addr, u32 data)
     /* Interrupt Controller */
     if (phys == 0x1F801070)
     {
-        i_stat &= data & 0x7FF; /* Only 11 bits, write-to-acknowledge */
+        i_stat &= data; /* Write-to-acknowledge (AND with written value) */
         return;
     }
     if (phys == 0x1F801074)
     {
-        i_mask = data & 0x7FF; /* Only 11 bits writable */
+        i_mask = data & 0xFFFF07FF; /* Bits 11-15 always 0; rest preserved */
         return;
     }
 
