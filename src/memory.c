@@ -4,6 +4,8 @@
 #include <malloc.h>
 #include "superpsx.h"
 
+#define LOG_TAG "MEM"
+
 /* PSX Memory Map:
  *   0x00000000-0x001FFFFF: kuseg RAM (2MB, mirrored)
  *   0x80000000-0x801FFFFF: kseg0 RAM (cached)
@@ -74,7 +76,7 @@ int Load_BIOS(const char *filename)
     int i;
     for (i = 0; i < 4; i++)
     {
-        printf("  BIOS[%d]: 0x%08X\n", i, (unsigned)bios32[i]);
+        DLOG("  BIOS[%d]: 0x%08X\n", i, (unsigned)bios32[i]);
     }
     return 0;
 }

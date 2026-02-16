@@ -13,6 +13,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define LOG_TAG "CDROM"
+
 /* ---- FIFOs ---- */
 #define PARAM_FIFO_SIZE 16
 #define RESPONSE_FIFO_SIZE 16
@@ -93,7 +95,7 @@ void CDROM_Init(void)
 {
     memset(&cdrom, 0, sizeof(cdrom));
     cdrom.stat = 0x10; /* ShellOpen = no disc inserted */
-    printf("[CDROM] Initialized (no disc)\n");
+    DLOG("Initialized (no disc)\n");
 }
 
 /* ---- Queue a response ---- */
@@ -111,13 +113,13 @@ static void cdrom_queue_response(const uint8_t *data, int count, uint8_t irq_typ
      * The CD-ROM int_enable only controls which INT types
      * trigger the IRQ, but we always assert it to be safe.
      * The BIOS checks I_STAT/I_MASK at the CPU level. */
-    // printf("[CDROM] Queue response: %d bytes, INT%d, int_en=%02X\n",
+    // DLOG("Queue response: %d bytes, INT%d, int_en=%02X\n",
     //        count, irq_type, cdrom.int_enable);
     SignalInterrupt(2);
     /* Debug: check if IRQ2 will be delivered */
     //{
     //    extern uint32_t ReadHardware(uint32_t);
-    //    printf("[CDROM] After signal: I_STAT has bit2=%d\n",
+    //    DLOG("After signal: I_STAT has bit2=%d\n",
     //           (CheckInterrupts() >> 2) & 1);
     //}
 }
@@ -154,7 +156,7 @@ static void cdrom_execute_command(uint8_t cmd)
         uint8_t ss = (cdrom.param_count > 1) ? cdrom.param_fifo[1] : 0;
         uint8_t ff = (cdrom.param_count > 2) ? cdrom.param_fifo[2] : 0;
         cdrom.setloc_lba = msf_to_lba(mm, ss, ff);
-        printf("[CDROM] Cmd 02h Setloc(%02X:%02X:%02X) -> LBA %" PRIu32 "\n",
+        DLOG("Cmd 02h Setloc(%02X:%02X:%02X) -> LBA %" PRIu32 "\n",
                mm, ss, ff, cdrom.setloc_lba);
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
@@ -163,7 +165,7 @@ static void cdrom_execute_command(uint8_t cmd)
 
     case 0x06: /* ReadN - Read with retry */
     {
-        printf("[CDROM] Cmd 06h ReadN from LBA %" PRIu32 "\n", cdrom.setloc_lba);
+        DLOG("Cmd 06h ReadN from LBA %" PRIu32 "\n", cdrom.setloc_lba);
         cdrom.cur_lba = cdrom.setloc_lba;
         cdrom.reading = 1;
         cdrom.has_loc_header = 1;
@@ -177,7 +179,7 @@ static void cdrom_execute_command(uint8_t cmd)
     }
 
     case 0x09: /* Pause */
-        printf("[CDROM] Cmd 09h Pause\n");
+        DLOG("Cmd 09h Pause\n");
         cdrom.reading = 0;
         cdrom.stat = 0x02; /* Motor On, idle */
         resp[0] = cdrom.stat;
@@ -188,7 +190,7 @@ static void cdrom_execute_command(uint8_t cmd)
 
     case 0x0A: /* Init / Reset */
     {
-        printf("[CDROM] Cmd 0Ah Init\n");
+        DLOG("Cmd 0Ah Init\n");
         uint8_t had_header = cdrom.has_loc_header;
         cdrom.reading = 0;
         cdrom.seek_error = 0;
@@ -207,14 +209,14 @@ static void cdrom_execute_command(uint8_t cmd)
     }
 
     case 0x0C: /* Demute */
-        printf("[CDROM] Cmd 0Ch Demute\n");
+        DLOG("Cmd 0Ch Demute\n");
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
         break;
 
     case 0x0E: /* SetMode */
         cdrom.mode = (cdrom.param_count > 0) ? cdrom.param_fifo[0] : 0;
-        printf("[CDROM] Cmd 0Eh SetMode(%02X)\n", cdrom.mode);
+        DLOG("Cmd 0Eh SetMode(%02X)\n", cdrom.mode);
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
         break;
@@ -222,7 +224,7 @@ static void cdrom_execute_command(uint8_t cmd)
     case 0x10: /* GetlocL - Get logical position (sector header) */
         if (!cdrom.has_loc_header || cdrom.seek_error)
         {
-            printf("[CDROM] Cmd 10h GetlocL -> FAIL (no header)\n");
+            DLOG("Cmd 10h GetlocL -> FAIL (no header)\n");
             resp[0] = cdrom.stat;
             resp[1] = 0x80;                   /* Invalid argument / no data */
             cdrom_queue_response(resp, 2, 5); /* INT5 error */
@@ -231,7 +233,7 @@ static void cdrom_execute_command(uint8_t cmd)
         {
             uint8_t mm, ss, ff;
             lba_to_bcd(cdrom.cur_lba, &mm, &ss, &ff);
-            printf("[CDROM] Cmd 10h GetlocL -> %02X:%02X:%02X mode 2\n",
+            DLOG("Cmd 10h GetlocL -> %02X:%02X:%02X mode 2\n",
                    mm, ss, ff);
             resp[0] = mm;                     /* Absolute minute (BCD) */
             resp[1] = ss;                     /* Absolute second (BCD) */
@@ -248,7 +250,7 @@ static void cdrom_execute_command(uint8_t cmd)
     case 0x11: /* GetlocP - Get physical position (subchannel Q) */
         if (cdrom.seek_error)
         {
-            printf("[CDROM] Cmd 11h GetlocP -> FAIL (seek error)\n");
+            DLOG("Cmd 11h GetlocP -> FAIL (seek error)\n");
             resp[0] = cdrom.stat;
             resp[1] = 0x80;
             cdrom_queue_response(resp, 2, 5); /* INT5 error */
@@ -277,7 +279,7 @@ static void cdrom_execute_command(uint8_t cmd)
                 lba_to_bcd(rem, &rmm, &rss, &rff);
             }
 
-            printf("[CDROM] Cmd 11h GetlocP -> T%02X I%02X [%02X:%02X:%02X] abs [%02X:%02X:%02X]\n",
+            DLOG("Cmd 11h GetlocP -> T%02X I%02X [%02X:%02X:%02X] abs [%02X:%02X:%02X]\n",
                    track, index, rmm, rss, rff, amm, ass, aff);
             resp[0] = track;
             resp[1] = index;
@@ -294,7 +296,7 @@ static void cdrom_execute_command(uint8_t cmd)
     case 0x15: /* SeekL - Seek (data mode) */
     case 0x16: /* SeekP - Seek (audio mode) */
     {
-        printf("[CDROM] Cmd %02Xh Seek to LBA %" PRIu32 "\n", cmd, cdrom.setloc_lba);
+        DLOG("Cmd %02Xh Seek to LBA %" PRIu32 "\n", cmd, cdrom.setloc_lba);
         if (cdrom.setloc_lba >= DISC_MAX_LBA)
         {
             /* Out of range - seek error */
@@ -324,7 +326,7 @@ static void cdrom_execute_command(uint8_t cmd)
     case 0x19: /* Test - sub-function in param[0] */
     {
         uint8_t sub = (cdrom.param_count > 0) ? cdrom.param_fifo[0] : 0;
-        printf("[CDROM] Cmd 19h Test(%02X)\n", sub);
+        DLOG("Cmd 19h Test(%02X)\n", sub);
         switch (sub)
         {
         case 0x20:                            /* Get CD-ROM BIOS date/version */
@@ -350,7 +352,7 @@ static void cdrom_execute_command(uint8_t cmd)
 
     case 0x1A: /* GetID - Disc identification */
     {
-        printf("[CDROM] Cmd 1Ah GetID (no disc)\n");
+        DLOG("Cmd 1Ah GetID (no disc)\n");
         /* First response: INT3 */
         resp[0] = cdrom.stat;
         resp[1] = 0x00;
@@ -370,7 +372,7 @@ static void cdrom_execute_command(uint8_t cmd)
 
     case 0x1B: /* ReadS - Read without retry */
     {
-        printf("[CDROM] Cmd 1Bh ReadS from LBA %" PRIu32 "\n", cdrom.setloc_lba);
+        DLOG("Cmd 1Bh ReadS from LBA %" PRIu32 "\n", cdrom.setloc_lba);
         cdrom.cur_lba = cdrom.setloc_lba;
         cdrom.reading = 1;
         cdrom.has_loc_header = 1;
@@ -383,7 +385,7 @@ static void cdrom_execute_command(uint8_t cmd)
     }
 
     case 0x1E: /* ReadTOC */
-        printf("[CDROM] Cmd 1Eh ReadTOC\n");
+        DLOG("Cmd 1Eh ReadTOC\n");
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
         resp[0] = cdrom.stat;
@@ -391,7 +393,7 @@ static void cdrom_execute_command(uint8_t cmd)
         break;
 
     default:
-        printf("[CDROM] Unknown Cmd %02Xh\n", cmd);
+        DLOG("Unknown Cmd %02Xh\n", cmd);
         /* Return INT5 error for unknown commands */
         resp[0] = cdrom.stat | 0x01;
         resp[1] = 0x40;                   /* Invalid command */
@@ -410,7 +412,7 @@ static void cdrom_deliver_pending(void)
         return;
     if (cdrom.int_flag != 0)
     {
-        // printf("[CDROM] Pending delivery blocked: int_flag=%02X (need 0)\n", cdrom.int_flag);
+        // DLOG("Pending delivery blocked: int_flag=%02X (need 0)\n", cdrom.int_flag);
         return; /* Wait for current INT to be acknowledged */
     }
 
@@ -477,7 +479,7 @@ uint32_t CDROM_Read(uint32_t addr)
     /* Log non-status reads (avoid flooding from status polling) */
     // if (reg != 0)
     //{
-    //     printf("[CDROM] Read reg%d (idx=%d) = %02X\n", reg, cdrom.index, result);
+    //     DLOG("Read reg%d (idx=%d) = %02X\n", reg, cdrom.index, result);
     // }
     return result;
 }
@@ -541,7 +543,7 @@ void CDROM_Write(uint32_t addr, uint32_t data)
     uint32_t reg = addr & 3;
     uint8_t val = data & 0xFF;
 
-    // printf("[CDROM] Write reg%d (idx=%d) val=%02X\n", reg, cdrom.index, val);
+    // DLOG("Write reg%d (idx=%d) val=%02X\n", reg, cdrom.index, val);
 
     switch (reg)
     {

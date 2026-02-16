@@ -2,7 +2,17 @@
 #define SUPERPSX_H
 
 #include <inttypes.h>
+#include <stdio.h>
 #include <setjmp.h>
+
+/*=== Debug logging macro ===*/
+#ifdef ENABLE_DEBUG_LOG
+#define DLOG(fmt, ...) printf("[" LOG_TAG "] " fmt, ##__VA_ARGS__)
+#define DLOG_RAW(fmt, ...) printf(fmt, ##__VA_ARGS__)
+#else
+#define DLOG(...) do {} while (0)
+#define DLOG_RAW(...) do {} while (0)
+#endif
 
 /*=== CPU State ===*/
 typedef struct

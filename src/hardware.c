@@ -355,7 +355,7 @@ static void GPU_DMA6(uint32_t madr, uint32_t bcr, uint32_t chcr)
     // "Decrement MADR in 4."
     // "Repeat BCR times."
 
-    // printf("[DMA] Starting DMA6 (OTC) Addr=%08X Count=%d\n", addr, length);
+    // DLOG("Starting DMA6 (OTC) Addr=%08X Count=%d\n", addr, length);
 
     while (length > 0)
     {
@@ -373,7 +373,7 @@ static void GPU_DMA6(uint32_t madr, uint32_t bcr, uint32_t chcr)
     uint32_t last_written = (addr + 4) & 0x1FFFFC;
     WriteWord(last_written, 0xFFFFFF);
 
-    // printf("[DMA] DMA6 Complete. Terminator at %08X\n", last_written);
+    // DLOG("DMA6 Complete. Terminator at %08X\n", last_written);
 }
 
 /* ---- Write ---- */

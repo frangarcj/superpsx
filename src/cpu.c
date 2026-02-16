@@ -3,6 +3,8 @@
 #include <kernel.h>
 #include "superpsx.h"
 
+#define LOG_TAG "EXC"
+
 R3000CPU cpu;
 
 /* Exception support for dynarec mid-block exceptions */
@@ -19,7 +21,7 @@ void PSX_Exception(uint32_t cause_code)
         uint32_t istat = CheckInterrupts();
         if (istat & 0x04)
         {
-            printf("[EXC] Delivering CD-ROM interrupt! PC=%08X SR=%08X\n",
+            DLOG("Delivering CD-ROM interrupt! PC=%08X SR=%08X\n",
                    (unsigned)cpu.pc, (unsigned)cpu.cop0[PSX_COP0_SR]);
             cdrom_irq_logged = 1;
         }
@@ -68,7 +70,7 @@ void PSX_Exception(uint32_t cause_code)
             static int exc_warn = 0;
             if (exc_warn < 5)
             {
-                printf("[EXC] WARNING: No exception handler at 0x80000080! (word=0x%08X) Ignoring IRQ.\n",
+                DLOG("WARNING: No exception handler at 0x80000080! (word=0x%08X) Ignoring IRQ.\n",
                        (unsigned)handler_word);
                 exc_warn++;
             }
@@ -199,7 +201,7 @@ void Handle_Syscall(void)
 
     if (syscall_log_count < 50)
     {
-        //        printf("[SYSCALL] func=%u PC=%08X SR=%08X\n",
+        //        DLOG("[SYSCALL] func=%u PC=%08X SR=%08X\n",
         //               (unsigned)func, (unsigned)cpu.pc,
         //               (unsigned)cpu.cop0[PSX_COP0_SR]);
         syscall_log_count++;
@@ -220,7 +222,7 @@ void Handle_Syscall(void)
         cpu.pc += 4;
         if (syscall_log_count < 100)
         {
-            //                printf("[SYSCALL] EnterCriticalSection: SR %08X -> %08X, old_IEc=%d\n",
+            //                DLOG("EnterCriticalSection: SR %08X -> %08X, old_IEc=%d\n",
             //                       (unsigned)sr, (unsigned)cpu.cop0[PSX_COP0_SR],
             //                       (int)cpu.regs[2]);
         }
@@ -235,7 +237,7 @@ void Handle_Syscall(void)
         cpu.pc += 4;
         if (syscall_log_count < 100)
         {
-            //                printf("[SYSCALL] ExitCriticalSection: SR -> %08X (IEc=%d IM2=%d)\n",
+            //                DLOG("ExitCriticalSection: SR -> %08X (IEc=%d IM2=%d)\n",
             //                       (unsigned)sr, (int)(sr & 1), (int)((sr >> 10) & 1));
         }
     }

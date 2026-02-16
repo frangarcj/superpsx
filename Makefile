@@ -5,6 +5,7 @@ EE_LIBS = -lpatches -lps2_drivers -ldebug -lgraph -ldma -ldraw -lmath3d
 # Remove -DENABLE_VRAM_DUMP to disable VRAM dumping (improves performance)
 ENABLE_VRAM_DUMP ?= 1
 ENABLE_HOST_LOG ?= 1
+ENABLE_DEBUG_LOG ?= 1
 
 EE_CFLAGS = -I$(PS2SDK)/ee/include -I$(PS2SDK)/common/include -I$(PS2SDK)/ports/include -Iinclude -O2 -G0 -Wall
 EE_LDFLAGS = -L$(PS2SDK)/ee/lib -L$(PS2SDK)/ports/lib
@@ -25,6 +26,10 @@ endif
 
 ifeq ($(ENABLE_HOST_LOG), 1)
 	EE_CFLAGS += -DENABLE_HOST_LOG
+endif
+
+ifeq ($(ENABLE_DEBUG_LOG), 1)
+	EE_CFLAGS += -DENABLE_DEBUG_LOG
 endif
 
 ifeq ($(ENABLE_VRAM_DUMP), 1)
