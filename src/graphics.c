@@ -613,6 +613,11 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
             u32 uv;
         } verts[4];
 
+        // Per-polygon texture page: for textured polygons, the PSX reads
+        // the texpage from the 2nd vertex's UV word (bits 16-31).
+        int poly_tex_page_x = tex_page_x;
+        int poly_tex_page_y = tex_page_y;
+
         for (int i = 0; i < num_psx_verts; i++)
         {
             if (i == 0)
@@ -629,11 +634,75 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
             verts[i].y = (s16)(xy >> 16);
 
             if (is_textured)
+            {
                 verts[i].uv = psx_cmd[idx++];
+                // 2nd vertex (i==1) UV word bits 16-31 contain texpage
+                if (i == 1)
+                {
+                    u32 tpage = verts[i].uv >> 16;
+                    poly_tex_page_x = (tpage & 0xF) * 64;
+                    poly_tex_page_y = ((tpage >> 4) & 0x1) * 256;
+                }
+            }
         }
 
         if (is_quad)
         {
+            // Check if we can use GS SPRITE for axis-aligned textured quads.
+            // SPRITE gives linear UV interpolation matching PSX quad rasterization,
+            // avoiding the seam artifact from triangle decomposition.
+            int use_sprite = 0;
+            if (is_textured && !is_shaded)
+            {
+                // PSX quad vertex order: 0=TL, 1=TR, 2=BL, 3=BR
+                int quad_w = verts[1].x - verts[0].x;
+                int quad_h = verts[2].y - verts[0].y;
+                if (quad_w > 0 && quad_h > 0 &&
+                    verts[0].y == verts[1].y && verts[2].y == verts[3].y &&
+                    verts[0].x == verts[2].x && verts[1].x == verts[3].x)
+                {
+                    use_sprite = 1;
+                }
+            }
+
+            if (use_sprite)
+            {
+                gif_packet_ptr = *gif_cursor - gif_packet_buf;
+
+                u64 sprite_prim = 6; // SPRITE
+                sprite_prim |= (1 << 4); // TME
+                sprite_prim |= (1 << 8); // FST=1 (UV register mode)
+                if (cmd & 0x02)
+                    sprite_prim |= (1 << 6); // ABE
+
+                u32 u0 = Apply_Tex_Window_U(verts[0].uv & 0xFF) + poly_tex_page_x;
+                u32 v0 = Apply_Tex_Window_V((verts[0].uv >> 8) & 0xFF) + poly_tex_page_y;
+                // Exclusive end: +1 past the last texel
+                u32 u1 = Apply_Tex_Window_U(verts[3].uv & 0xFF) + 1 + poly_tex_page_x;
+                u32 v1 = Apply_Tex_Window_V((verts[3].uv >> 8) & 0xFF) + 1 + poly_tex_page_y;
+
+                s32 gx0 = ((s32)verts[0].x + draw_offset_x + 2048) << 4;
+                s32 gy0 = ((s32)verts[0].y + draw_offset_y + 2048) << 4;
+                s32 gx1 = ((s32)(verts[3].x + 1) + draw_offset_x + 2048) << 4;
+                s32 gy1 = ((s32)(verts[3].y + 1) + draw_offset_y + 2048) << 4;
+
+                u32 c = verts[0].color;
+                u64 rgbaq = GS_set_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000);
+
+                // PRIM + 2*(UV+RGBAQ+XYZ2) = 7 AD registers
+                Push_GIF_Tag(7, 1, 0, 0, 0, 1, 0xE);
+                Push_GIF_Data(sprite_prim, 0x00);
+                Push_GIF_Data(GS_set_XYZ(u0 << 4, v0 << 4, 0), 0x03); // UV TL
+                Push_GIF_Data(rgbaq, 0x01);
+                Push_GIF_Data(GS_set_XYZ(gx0, gy0, 0), 0x05); // XYZ2 TL
+                Push_GIF_Data(GS_set_XYZ(u1 << 4, v1 << 4, 0), 0x03); // UV BR
+                Push_GIF_Data(rgbaq, 0x01);
+                Push_GIF_Data(GS_set_XYZ(gx1, gy1, 0), 0x05); // XYZ2 BR (kick)
+
+                *gif_cursor = &gif_packet_buf[gif_packet_ptr];
+            }
+            else
+            {
             // Emit two triangles: 0-1-2 and 1-3-2 using A+D mode
             int tris[2][3] = {{0, 1, 2}, {1, 3, 2}};
             // Sync cursor to gif_packet_ptr first
@@ -652,8 +721,8 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
                     int i = tris[t][v];
                     if (is_textured)
                     {
-                        u32 u = Apply_Tex_Window_U(verts[i].uv & 0xFF) + tex_page_x;
-                        u32 v_coord = Apply_Tex_Window_V((verts[i].uv >> 8) & 0xFF) + tex_page_y;
+                        u32 u = Apply_Tex_Window_U(verts[i].uv & 0xFF) + poly_tex_page_x;
+                        u32 v_coord = Apply_Tex_Window_V((verts[i].uv >> 8) & 0xFF) + poly_tex_page_y;
                         Push_GIF_Data(GS_set_XYZ(u << 4, v_coord << 4, 0), 0x03); // ST
                     }
                     u32 c = verts[i].color;
@@ -665,6 +734,7 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
                 }
             }
             *gif_cursor = &gif_packet_buf[gif_packet_ptr];
+            } // end else (triangle decomposition fallback)
         }
         else
         {
@@ -681,8 +751,8 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
             {
                 if (is_textured)
                 {
-                    u32 u = Apply_Tex_Window_U(verts[i].uv & 0xFF) + tex_page_x;
-                    u32 v_coord = Apply_Tex_Window_V((verts[i].uv >> 8) & 0xFF) + tex_page_y;
+                    u32 u = Apply_Tex_Window_U(verts[i].uv & 0xFF) + poly_tex_page_x;
+                    u32 v_coord = Apply_Tex_Window_V((verts[i].uv >> 8) & 0xFF) + poly_tex_page_y;
                     Push_GIF_Data(GS_set_XYZ(u << 4, v_coord << 4, 0), 0x03); // ST
                 }
                 u32 c = verts[i].color;

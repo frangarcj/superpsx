@@ -46,7 +46,11 @@ for ref in refs:
     cmd = f"source ../ps2dev_env.sh >/dev/null 2>&1 || true; make run GAMEARGS='{exefile}'"
     p = subprocess.Popen(['bash', '-lc', cmd],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(25)
+
+    if (exefile.endswith('texture-flip.exe')):
+        time.sleep(23)  # texture-flip needs extra time for the X-flip test
+    else:
+        time.sleep(15)
     # Stop emulator
     subprocess.run(['pkill', '-f', 'PCSX2'],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
