@@ -246,9 +246,9 @@ u32 ReadHardware(u32 addr)
         return spu_regs[idx & 0x1FF];
     }
 
-    /* Expansion 2 */
+    /* Expansion 2 - open bus returns all 1s when no device responds */
     if (phys >= 0x1F802000 && phys < 0x1F803000)
-        return 0;
+        return 0xFFFFFFFF;
 
     /* Cache control */
     if (phys == 0x1FFE0130 || addr == 0xFFFE0130)
