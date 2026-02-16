@@ -1,4 +1,4 @@
-#include <tamtypes.h>
+#include <stdint.h>
 #include <kernel.h>
 #include <sifrpc.h>
 #include <debug.h>
@@ -15,27 +15,32 @@
 #include <string.h>
 
 // Helper to dump qwords
-static void dump_qwords(const char* label, qword_t* start, qword_t* end) {
+static void dump_qwords(const char *label, qword_t *start, qword_t *end)
+{
     printf("\n=== %s ===\n", label);
     printf("Size: %d qwords (%d bytes)\n", (int)(end - start), (int)((end - start) * 16));
-    qword_t* q = start;
+    qword_t *q = start;
     int index = 0;
-    while (q < end) {
-        u64 lo = ((u64*)q)[0];
-        u64 hi = ((u64*)q)[1];
+    while (q < end)
+    {
+        uint64_t lo = ((uint64_t *)q)[0];
+        uint64_t hi = ((uint64_t *)q)[1];
         printf("QW[%02d]: %016llX %016llX\n", index++, hi, lo);
         q++;
     }
 }
 
 // Compare two packet buffers
-static int compare_packets(qword_t* a, qword_t* b, int n) {
-    for (int i = 0; i < n; ++i) {
-        u64 alo = ((u64*)a)[i*2+0];
-        u64 ahi = ((u64*)a)[i*2+1];
-        u64 blo = ((u64*)b)[i*2+0];
-        u64 bhi = ((u64*)b)[i*2+1];
-        if (alo != blo || ahi != bhi) {
+static int compare_packets(qword_t *a, qword_t *b, int n)
+{
+    for (int i = 0; i < n; ++i)
+    {
+        uint64_t alo = ((uint64_t *)a)[i * 2 + 0];
+        uint64_t ahi = ((uint64_t *)a)[i * 2 + 1];
+        uint64_t blo = ((uint64_t *)b)[i * 2 + 0];
+        uint64_t bhi = ((uint64_t *)b)[i * 2 + 1];
+        if (alo != blo || ahi != bhi)
+        {
             printf("Mismatch at QW[%d]:\n  A: %016llX %016llX\n  B: %016llX %016llX\n", i, ahi, alo, bhi, blo);
             return 0;
         }
@@ -43,10 +48,13 @@ static int compare_packets(qword_t* a, qword_t* b, int n) {
     return 1;
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
     SifInitRpc(0);
-    while (!SifIopReset("", 0));
-    while (!SifIopSync());
+    while (!SifIopReset("", 0))
+        ;
+    while (!SifIopSync())
+        ;
     SifInitRpc(0);
     printf("[TEST] Packet equivalence: libdraw vs manual\n");
 
@@ -79,9 +87,9 @@ int main(int argc, char *argv[]) {
     rect.color.b = 0;
     rect.color.a = 128;
     rect.color.q = 1.0f;
-    qword_t* before_rect = q1;
+    qword_t *before_rect = q1;
     q1 = draw_rect_filled(q1, 0, &rect);
-    qword_t* after_rect = q1;
+    qword_t *after_rect = q1;
     q1 = draw_finish(q1);
     int libdraw_n = after_rect - before_rect;
 
@@ -90,33 +98,36 @@ int main(int argc, char *argv[]) {
     qword_t *q2 = packet2;
     // Build GIFTAG manually to match libdraw exactly
     // GIFTAG: NLOOP=1, EOP=0, PRE=0, PRIM=0, FLG=0, NREG=4, REGS=0x5510, id=0x44
-    u64 giftag_lo = 0x4400000000000001ULL; // id=0x44, NLOOP=1, EOP=0
-    u64 giftag_hi = 0x0000000000005510ULL; // REGS=0x5510
-    ((u64*)q2)[0] = giftag_lo;
-    ((u64*)q2)[1] = giftag_hi;
+    uint64_t giftag_lo = 0x4400000000000001ULL; // id=0x44, NLOOP=1, EOP=0
+    uint64_t giftag_hi = 0x0000000000005510ULL; // REGS=0x5510
+    ((uint64_t *)q2)[0] = giftag_lo;
+    ((uint64_t *)q2)[1] = giftag_hi;
     q2++;
-    u64* data = (u64*)q2;
+    uint64_t *data = (uint64_t *)q2;
     *data++ = 6; // PRIM_SPRITE
     // RGBAQ: R=255, G=0, B=0, A=128, Q=1.0 (0x3F800000)
-    *data++ = (u64)255 | ((u64)0 << 8) | ((u64)0 << 16) | ((u64)128 << 24) | ((u64)0x3F800000 << 32);
+    *data++ = (uint64_t)255 | ((uint64_t)0 << 8) | ((uint64_t)0 << 16) | ((uint64_t)128 << 24) | ((uint64_t)0x3F800000 << 32);
     float start_off = 2047.5625f;
     float end_off = 2048.5625f;
     // Use float multiplication to match libdraw precision
-    s32 x1 = (s32)((100.0f + start_off) * 16.0f);
-    s32 y1 = (s32)((100.0f + start_off) * 16.0f);
-    s32 x2 = (s32)((300.0f + end_off) * 16.0f);
-    s32 y2 = (s32)((300.0f + end_off) * 16.0f);
-    *data++ = (u64)(x1 & 0xFFFF) | ((u64)(y1 & 0xFFFF) << 16) | ((u64)0 << 32);
-    *data++ = (u64)(x2 & 0xFFFF) | ((u64)(y2 & 0xFFFF) << 16) | ((u64)0 << 32);
-    q2 = (qword_t*)data;
+    int32_t x1 = (int32_t)((100.0f + start_off) * 16.0f);
+    int32_t y1 = (int32_t)((100.0f + start_off) * 16.0f);
+    int32_t x2 = (int32_t)((300.0f + end_off) * 16.0f);
+    int32_t y2 = (int32_t)((300.0f + end_off) * 16.0f);
+    *data++ = (uint64_t)(x1 & 0xFFFF) | ((uint64_t)(y1 & 0xFFFF) << 16) | ((uint64_t)0 << 32);
+    *data++ = (uint64_t)(x2 & 0xFFFF) | ((uint64_t)(y2 & 0xFFFF) << 16) | ((uint64_t)0 << 32);
+    q2 = (qword_t *)data;
     int manual_n = q2 - packet2;
 
     // --- TEST ---
     printf("\nComparando %d qwords (libdraw) vs %d qwords (manual)\n", libdraw_n, manual_n);
     int ok = (libdraw_n == manual_n) && compare_packets(before_rect, packet2, libdraw_n);
-    if (ok) {
+    if (ok)
+    {
         printf("\n[TEST] OK: Los paquetes son equivalentes.\n");
-    } else {
+    }
+    else
+    {
         printf("\n[TEST] ERROR: Los paquetes NO son equivalentes.\n");
         dump_qwords("LIBDRAW", before_rect, after_rect);
         dump_qwords("MANUAL", packet2, q2);

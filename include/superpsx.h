@@ -1,22 +1,22 @@
 #ifndef SUPERPSX_H
 #define SUPERPSX_H
 
-#include <tamtypes.h>
+#include <inttypes.h>
 #include <setjmp.h>
 
 /*=== CPU State ===*/
 typedef struct
 {
-    u32 regs[32];       /* 0x00: GPR */
-    u32 pc;             /* 0x80: Program Counter */
-    u32 hi;             /* 0x84 */
-    u32 lo;             /* 0x88 */
-    u32 cop0[32];       /* 0x8C: COP0 registers */
-    u32 cp2_data[32];   /* 0x10C: GTE Data Registers (V0, V1, V2, etc.) */
-    u32 cp2_ctrl[32];   /* 0x18C: GTE Control Registers (Matrices, etc.) */
-    u32 current_pc;     /* PC of the currently executing instruction (for exceptions) */
-    u32 load_delay_reg; /* Load delay slot: target register index (0=none) */
-    u32 load_delay_val; /* Load delay slot: pending value */
+    uint32_t regs[32];       /* 0x00: GPR */
+    uint32_t pc;             /* 0x80: Program Counter */
+    uint32_t hi;             /* 0x84 */
+    uint32_t lo;             /* 0x88 */
+    uint32_t cop0[32];       /* 0x8C: COP0 registers */
+    uint32_t cp2_data[32];   /* 0x10C: GTE Data Registers (V0, V1, V2, etc.) */
+    uint32_t cp2_ctrl[32];   /* 0x18C: GTE Control Registers (Matrices, etc.) */
+    uint32_t current_pc;     /* PC of the currently executing instruction (for exceptions) */
+    uint32_t load_delay_reg; /* Load delay slot: target register index (0=none) */
+    uint32_t load_delay_val; /* Load delay slot: pending value */
 } R3000CPU;
 
 /* Struct offsets for asm code generation */
@@ -44,53 +44,53 @@ extern R3000CPU cpu;
 #define PSX_RAM_SIZE 0x200000 /* 2MB */
 #define PSX_BIOS_SIZE 0x80000 /* 512KB */
 
-extern u8 *psx_ram;
-extern u8 *psx_bios;
+extern uint8_t *psx_ram;
+extern uint8_t *psx_bios;
 
 void Init_Memory(void);
 int Load_BIOS(const char *filename);
-u32 ReadWord(u32 addr);
-u16 ReadHalf(u32 addr);
-u8 ReadByte(u32 addr);
-void WriteWord(u32 addr, u32 data);
-void WriteHalf(u32 addr, u16 data);
-void WriteByte(u32 addr, u8 data);
+uint32_t ReadWord(uint32_t addr);
+uint16_t ReadHalf(uint32_t addr);
+uint8_t ReadByte(uint32_t addr);
+void WriteWord(uint32_t addr, uint32_t data);
+void WriteHalf(uint32_t addr, uint16_t data);
+void WriteByte(uint32_t addr, uint8_t data);
 
 /*=== Hardware ===*/
-u32 ReadHardware(u32 addr);
-void WriteHardware(u32 addr, u32 data);
-void SignalInterrupt(u32 irq);
+uint32_t ReadHardware(uint32_t addr);
+void WriteHardware(uint32_t addr, uint32_t data);
+void SignalInterrupt(uint32_t irq);
 int CheckInterrupts(void);
 void Init_Interrupts(void);
-void UpdateTimers(u32 cycles);
+void UpdateTimers(uint32_t cycles);
 
 /*=== Dynarec ===*/
 void Init_Dynarec(void);
 void Run_CPU(void);
-void GTE_Execute(u32 opcode, R3000CPU *cpu);
-u32 GTE_ReadData(R3000CPU *cpu, int reg);
-void GTE_WriteData(R3000CPU *cpu, int reg, u32 val);
-u32 GTE_ReadCtrl(R3000CPU *cpu, int reg);
-void GTE_WriteCtrl(R3000CPU *cpu, int reg, u32 val);
+void GTE_Execute(uint32_t opcode, R3000CPU *cpu);
+uint32_t GTE_ReadData(R3000CPU *cpu, int reg);
+void GTE_WriteData(R3000CPU *cpu, int reg, uint32_t val);
+uint32_t GTE_ReadCtrl(R3000CPU *cpu, int reg);
+void GTE_WriteCtrl(R3000CPU *cpu, int reg, uint32_t val);
 
 /*=== CPU Helper Functions (called from dynarec) ===*/
-u32 Helper_LWL(u32 addr, u32 cur_rt);
-u32 Helper_LWR(u32 addr, u32 cur_rt);
-void Helper_SWL(u32 addr, u32 rt_val);
-void Helper_SWR(u32 addr, u32 rt_val);
-void Helper_DIV(s32 rs, s32 rt, u32 *lo_out, u32 *hi_out);
-void Helper_DIVU(u32 rs, u32 rt, u32 *lo_out, u32 *hi_out);
+uint32_t Helper_LWL(uint32_t addr, uint32_t cur_rt);
+uint32_t Helper_LWR(uint32_t addr, uint32_t cur_rt);
+void Helper_SWL(uint32_t addr, uint32_t rt_val);
+void Helper_SWR(uint32_t addr, uint32_t rt_val);
+void Helper_DIV(int32_t rs, int32_t rt, uint32_t *lo_out, uint32_t *hi_out);
+void Helper_DIVU(uint32_t rs, uint32_t rt, uint32_t *lo_out, uint32_t *hi_out);
 
 /*=== CPU / COP0 ===*/
 void Init_CPU(void);
-void PSX_Exception(u32 cause_code);
+void PSX_Exception(uint32_t cause_code);
 void Handle_Syscall(void);
-void Helper_Syscall_Exception(u32 pc);
-void Helper_Break_Exception(u32 pc);
-void Helper_CU_Exception(u32 pc, u32 cop_num);
-void Helper_ADD(u32 rs_val, u32 rt_val, u32 rd, u32 pc);
-void Helper_SUB(u32 rs_val, u32 rt_val, u32 rd, u32 pc);
-void Helper_ADDI(u32 rs_val, u32 imm_sext, u32 rt, u32 pc);
+void Helper_Syscall_Exception(uint32_t pc);
+void Helper_Break_Exception(uint32_t pc);
+void Helper_CU_Exception(uint32_t pc, uint32_t cop_num);
+void Helper_ADD(uint32_t rs_val, uint32_t rt_val, uint32_t rd, uint32_t pc);
+void Helper_SUB(uint32_t rs_val, uint32_t rt_val, uint32_t rd, uint32_t pc);
+void Helper_ADDI(uint32_t rs_val, uint32_t imm_sext, uint32_t rt, uint32_t pc);
 
 /*=== Exception support for dynarec ===*/
 extern jmp_buf psx_block_jmp;
@@ -98,19 +98,19 @@ extern volatile int psx_block_exception;
 
 /*=== CD-ROM ===*/
 void CDROM_Init(void);
-u32 CDROM_Read(u32 addr);
-void CDROM_Write(u32 addr, u32 data);
-void CDROM_Update(u32 cycles);
+uint32_t CDROM_Read(uint32_t addr);
+void CDROM_Write(uint32_t addr, uint32_t data);
+void CDROM_Update(uint32_t cycles);
 
 /*=== Graphics ===*/
 void Init_Graphics(void);
-void GPU_WriteGP0(u32 data);
-void GPU_WriteGP1(u32 data);
-u32 GPU_Read(void);
-u32 GPU_ReadStatus(void);
+void GPU_WriteGP0(uint32_t data);
+void GPU_WriteGP1(uint32_t data);
+uint32_t GPU_Read(void);
+uint32_t GPU_ReadStatus(void);
 void GPU_VBlank(void);
 void GPU_Flush(void);
-void GPU_DMA2(u32 madr, u32 bcr, u32 chcr);
+void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr);
 
 /*=== Main ===*/
 void Init_SuperPSX(void);

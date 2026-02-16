@@ -14,13 +14,13 @@
  */
 
 /* Memory Control */
-static u32 mem_ctrl[9];           /* 0x1F801000-0x1F801020 */
-static u32 ram_size = 0x00000B88; /* 0x1F801060 */
+static uint32_t mem_ctrl[9];           /* 0x1F801000-0x1F801020 */
+static uint32_t ram_size = 0x00000B88; /* 0x1F801060 */
 
 /* Interrupt Controller */
 /* Interrupt Controller */
-static volatile u32 i_stat = 0;
-static u32 i_mask = 0;
+static volatile uint32_t i_stat = 0;
+static uint32_t i_mask = 0;
 
 static int VBlankHandler(int cause)
 {
@@ -38,7 +38,7 @@ void Init_Interrupts(void)
     printf("Native PS2 VBlank Interrupt enabled.\n");
 }
 
-void SignalInterrupt(u32 irq)
+void SignalInterrupt(uint32_t irq)
 {
     if (irq > 10)
         return;
@@ -55,53 +55,53 @@ int CheckInterrupts(void)
 }
 
 /* DMA Controller */
-static u32 dma_dpcr = 0x07654321; /* DMA priority control */
-static u32 dma_dicr = 0;
+static uint32_t dma_dpcr = 0x07654321; /* DMA priority control */
+static uint32_t dma_dicr = 0;
 typedef struct
 {
-    u32 madr; /* Base address */
-    u32 bcr;  /* Block control */
-    u32 chcr; /* Channel control */
+    uint32_t madr; /* Base address */
+    uint32_t bcr;  /* Block control */
+    uint32_t chcr; /* Channel control */
 } DmaChannel;
 static DmaChannel dma_channels[7];
 
 /* Timers */
 typedef struct
 {
-    u32 value;
-    u32 mode;
-    u32 target;
+    uint32_t value;
+    uint32_t mode;
+    uint32_t target;
 } PsxTimer;
 static PsxTimer timers[3];
 
 /* SIO (Joypad/Memcard) - PSX controller protocol state machine */
-static u32 sio_data = 0xFF;       /* RX Data register */
-static u32 sio_stat = 0x00000005; /* TX Ready 1+2 */
-static u16 sio_mode = 0;
-static u16 sio_ctrl = 0;
-static u16 sio_baud = 0;
-static int sio_tx_pending = 0;    /* 1 = RX data available */
+static uint32_t sio_data = 0xFF;       /* RX Data register */
+static uint32_t sio_stat = 0x00000005; /* TX Ready 1+2 */
+static uint16_t sio_mode = 0;
+static uint16_t sio_ctrl = 0;
+static uint16_t sio_baud = 0;
+static int sio_tx_pending = 0; /* 1 = RX data available */
 
 /* Controller protocol state machine */
-static int sio_state = 0;         /* Current byte index in protocol */
-static uint8_t sio_response[5];   /* Pre-built response buffer */
-static int sio_selected = 0;      /* 1 = JOY SELECT is asserted */
+static int sio_state = 0;       /* Current byte index in protocol */
+static uint8_t sio_response[5]; /* Pre-built response buffer */
+static int sio_selected = 0;    /* 1 = JOY SELECT is asserted */
 
 /* SIO Serial Port (0x1F801050-0x1F80105E) */
-static u16 serial_mode = 0;
-static u16 serial_ctrl = 0;
-static u16 serial_baud = 0;
+static uint16_t serial_mode = 0;
+static uint16_t serial_ctrl = 0;
+static uint16_t serial_baud = 0;
 
 /* SPU */
-static u16 spu_regs[512]; /* 0x1F801C00-0x1F801DFF */
+static uint16_t spu_regs[512]; /* 0x1F801C00-0x1F801DFF */
 
 /* Cache control */
-static u32 cache_control = 0;
+static uint32_t cache_control = 0;
 
 /* ---- Read ---- */
-u32 ReadHardware(u32 addr)
+uint32_t ReadHardware(uint32_t addr)
 {
-    u32 phys = addr & 0x1FFFFFFF;
+    uint32_t phys = addr & 0x1FFFFFFF;
 
     /* Memory Control */
     if (phys >= 0x1F801000 && phys < 0x1F801024)
@@ -113,19 +113,19 @@ u32 ReadHardware(u32 addr)
     if (phys == 0x1F801040)
     {
         /* JOY_DATA - Return RX data from controller */
-        u32 val = sio_data;
+        uint32_t val = sio_data;
         sio_tx_pending = 0;
         return val;
     }
     if (phys == 0x1F801044)
     {
         /* JOY_STAT: bit0=TX Ready1, bit1=RX Not Empty, bit2=TX Ready2, bit7=/ACK */
-        u32 stat = 0x00000005; /* TX Ready 1 + 2 always set */
+        uint32_t stat = 0x00000005; /* TX Ready 1 + 2 always set */
         if (sio_tx_pending)
-            stat |= 0x02;     /* RX Not Empty */
+            stat |= 0x02; /* RX Not Empty */
         /* Report /ACK low (active) during active transfer (bytes 0-3) */
         if (sio_selected && sio_state > 0 && sio_state < 5)
-            stat |= 0x80;     /* /ACK input level */
+            stat |= 0x80; /* /ACK input level */
         return stat;
     }
     if (phys == 0x1F801048)
@@ -190,13 +190,13 @@ u32 ReadHardware(u32 addr)
          *   Bits 24-30: IRQ Flags per channel (R/W1C - write 1 to clear)
          *   Bit 31:     IRQ Master Flag (Read-only, computed)
          */
-        u32 read_val = dma_dicr & 0x7F000000; /* flags bits 24-30 */
-        read_val |= dma_dicr & 0x00FF803F;     /* enable, master en, force, bits 0-5 */
+        uint32_t read_val = dma_dicr & 0x7F000000; /* flags bits 24-30 */
+        read_val |= dma_dicr & 0x00FF803F;         /* enable, master en, force, bits 0-5 */
         /* Bit 31 = force || (master_en && (en & flg) != 0) */
-        u32 force = (dma_dicr >> 15) & 1;
-        u32 master_en = (dma_dicr >> 23) & 1;
-        u32 en = (dma_dicr >> 16) & 0x7F;
-        u32 flg = (dma_dicr >> 24) & 0x7F;
+        uint32_t force = (dma_dicr >> 15) & 1;
+        uint32_t master_en = (dma_dicr >> 23) & 1;
+        uint32_t en = (dma_dicr >> 16) & 0x7F;
+        uint32_t flg = (dma_dicr >> 24) & 0x7F;
         if (force || (master_en && (en & flg)))
             read_val |= 0x80000000;
         return read_val;
@@ -226,7 +226,7 @@ u32 ReadHardware(u32 addr)
     /* CD-ROM (0x1F801800-0x1F801803) - byte-wide controller */
     if (phys >= 0x1F801800 && phys <= 0x1F801803)
     {
-        u32 byte_val = CDROM_Read(phys) & 0xFF;
+        uint32_t byte_val = CDROM_Read(phys) & 0xFF;
         /* Mirror byte to all 4 lanes for wider reads */
         return byte_val | (byte_val << 8) | (byte_val << 16) | (byte_val << 24);
     }
@@ -261,26 +261,26 @@ u32 ReadHardware(u32 addr)
     return 0;
 }
 
-void UpdateTimers(u32 cycles)
+void UpdateTimers(uint32_t cycles)
 {
     int i;
     for (i = 0; i < 3; i++)
     {
-        u32 mode = timers[i].mode;
-        u32 target = timers[i].target;
-        u32 val = timers[i].value;
+        uint32_t mode = timers[i].mode;
+        uint32_t target = timers[i].target;
+        uint32_t val = timers[i].value;
 
-        u32 inc = cycles;
-        
+        uint32_t inc = cycles;
+
         // Timer clock sources (bits 8-9):
         // Timer 0: 0/2=sysclk, 1=dotclock
         // Timer 1: 0/2=sysclk, 1=hblank
         // Timer 2: 0/1=sysclk, 2=sysclk/8
-        
+
         // Timer 1 hblank mode (more accurate for boot logo timing)
         if (i == 1 && ((mode >> 8) & 3) == 1)
         {
-            static u32 t1_accumulator = 0;
+            static uint32_t t1_accumulator = 0;
             t1_accumulator += cycles;
             // PSX CPU: 33.8688 MHz, NTSC hblank: ~15734 Hz
             // Cycles per hblank ≈ 33868800 / 15734 ≈ 2152
@@ -293,7 +293,7 @@ void UpdateTimers(u32 cycles)
         // 2 = Sys/8.
         else if (i == 2 && ((mode >> 8) & 3) == 2)
         {
-            static u32 t2_accumulator = 0;
+            static uint32_t t2_accumulator = 0;
             t2_accumulator += cycles;
             inc = t2_accumulator / 8;
             t2_accumulator %= 8; // Keep remainder
@@ -304,7 +304,7 @@ void UpdateTimers(u32 cycles)
         val += inc;
 
         // Check Target (only lower 16 bits meaningful)
-        u32 target16 = target & 0xFFFF;
+        uint32_t target16 = target & 0xFFFF;
         if (val >= target16 && target16 > 0)
         { // Target match
             // Bit 4: IRQ on Target
@@ -341,13 +341,13 @@ void UpdateTimers(u32 cycles)
     }
 }
 
-static void GPU_DMA6(u32 madr, u32 bcr, u32 chcr)
+static void GPU_DMA6(uint32_t madr, uint32_t bcr, uint32_t chcr)
 {
     // OTC - Clear Ordering Table (Reverse Clear)
     // Writes pointers to form a linked list from Top to Bottom
 
-    u32 addr = madr & 0x1FFFFC;
-    u32 length = bcr;
+    uint32_t addr = madr & 0x1FFFFC;
+    uint32_t length = bcr;
     if (length == 0)
         length = 0x10000; // 0 means max words? usually on PSX DMA
 
@@ -359,7 +359,7 @@ static void GPU_DMA6(u32 madr, u32 bcr, u32 chcr)
 
     while (length > 0)
     {
-        u32 next_addr = (addr - 4) & 0x1FFFFC;
+        uint32_t next_addr = (addr - 4) & 0x1FFFFC;
 
         // Write pointer to previous entry
         WriteWord(addr, next_addr);
@@ -370,16 +370,16 @@ static void GPU_DMA6(u32 madr, u32 bcr, u32 chcr)
 
     // "At the end, must write terminator 0xFFFFFF in the last processed address."
     // The last address we WROTE to was 'addr + 4'
-    u32 last_written = (addr + 4) & 0x1FFFFC;
+    uint32_t last_written = (addr + 4) & 0x1FFFFC;
     WriteWord(last_written, 0xFFFFFF);
 
     // printf("[DMA] DMA6 Complete. Terminator at %08X\n", last_written);
 }
 
 /* ---- Write ---- */
-void WriteHardware(u32 addr, u32 data)
+void WriteHardware(uint32_t addr, uint32_t data)
 {
-    u32 phys = addr & 0x1FFFFFFF;
+    uint32_t phys = addr & 0x1FFFFFFF;
 
     /* Memory Control */
     if (phys >= 0x1F801000 && phys < 0x1F801024)
@@ -394,28 +394,31 @@ void WriteHardware(u32 addr, u32 data)
         /* JOY_DATA - TX byte: PSX controller protocol state machine */
         uint8_t tx = (uint8_t)(data & 0xFF);
 
-        if (!sio_selected) {
+        if (!sio_selected)
+        {
             /* No device selected, respond with 0xFF (hi-z) */
             sio_data = 0xFF;
             sio_tx_pending = 1;
             return;
         }
 
-        switch (sio_state) {
+        switch (sio_state)
+        {
         case 0:
             /* Byte 0: Host sends 0x01 to select controller */
-            if (tx == 0x01) {
+            if (tx == 0x01)
+            {
                 /* Snapshot the buttons now for this entire transfer */
                 Joystick_GetPSXDigitalResponse(sio_response + 1);
                 sio_response[0] = 0xFF; /* hi-z during address byte */
                 /* response[1]=0x41  response[2]=0x5A  put button bytes after */
                 /* Rearrange: [0]=0xFF [1]=0x41 [2]=0x5A [3]=btnLo [4]=btnHi */
                 {
-                    uint8_t id  = sio_response[1]; /* 0x41 */
-                    uint8_t lo  = sio_response[2]; /* buttons low */
-                    uint8_t hi  = sio_response[3]; /* buttons high */
-                    sio_response[1] = id;   /* 0x41 */
-                    sio_response[2] = 0x5A; /* data-start marker */
+                    uint8_t id = sio_response[1]; /* 0x41 */
+                    uint8_t lo = sio_response[2]; /* buttons low */
+                    uint8_t hi = sio_response[3]; /* buttons high */
+                    sio_response[1] = id;         /* 0x41 */
+                    sio_response[2] = 0x5A;       /* data-start marker */
                     sio_response[3] = lo;
                     sio_response[4] = hi;
                 }
@@ -423,7 +426,9 @@ void WriteHardware(u32 addr, u32 data)
                 sio_state = 1;
                 sio_tx_pending = 1;
                 SignalInterrupt(7); /* IRQ7 - controller */
-            } else {
+            }
+            else
+            {
                 /* Not addressing controller - ignore */
                 sio_data = 0xFF;
                 sio_tx_pending = 1;
@@ -467,12 +472,12 @@ void WriteHardware(u32 addr, u32 data)
     }
     if (phys == 0x1F801048)
     {
-        sio_mode = (u16)(data & 0x003F); /* Only bits 0-5 valid */
+        sio_mode = (uint16_t)(data & 0x003F); /* Only bits 0-5 valid */
         return;
     }
     if (phys == 0x1F80104A)
     {
-        sio_ctrl = (u16)data;
+        sio_ctrl = (uint16_t)data;
         if (data & 0x40)
         {
             /* Reset - clear all state including JOY_CTRL itself */
@@ -491,13 +496,17 @@ void WriteHardware(u32 addr, u32 data)
             sio_stat &= ~(1 << 9); /* Clear IRQ flag */
         }
         /* Bit 1: JOYn output select - directly controls /SEL line */
-        if (data & 0x02) {
-            if (!sio_selected) {
+        if (data & 0x02)
+        {
+            if (!sio_selected)
+            {
                 /* Freshly asserted: reset protocol state */
                 sio_state = 0;
             }
             sio_selected = 1;
-        } else {
+        }
+        else
+        {
             sio_selected = 0;
             sio_state = 0;
         }
@@ -505,19 +514,19 @@ void WriteHardware(u32 addr, u32 data)
     }
     if (phys == 0x1F80104E)
     {
-        sio_baud = (u16)data;
+        sio_baud = (uint16_t)data;
         return;
     }
 
     /* SIO Serial Port writes */
     if (phys == 0x1F801058)
     {
-        serial_mode = (u16)(data & 0xFF);
+        serial_mode = (uint16_t)(data & 0xFF);
         return;
     }
     if (phys == 0x1F80105A)
     {
-        serial_ctrl = (u16)data;
+        serial_ctrl = (uint16_t)data;
         if (data & 0x40)
         {
             /* Reset serial port */
@@ -529,7 +538,7 @@ void WriteHardware(u32 addr, u32 data)
     }
     if (phys == 0x1F80105E)
     {
-        serial_baud = (u16)data;
+        serial_baud = (uint16_t)data;
         return;
     }
 
@@ -624,8 +633,8 @@ void WriteHardware(u32 addr, u32 data)
          *   Bits 24-30: Write-1-to-clear (acknowledge flags)
          *   Bit 31:     Read-only (ignored on write)
          */
-        u32 rw_mask = 0x00FF803F; /* bits 0-5, 15-23 */
-        u32 ack_bits = data & 0x7F000000; /* bits 24-30 written as 1 clear the flag */
+        uint32_t rw_mask = 0x00FF803F;         /* bits 0-5, 15-23 */
+        uint32_t ack_bits = data & 0x7F000000; /* bits 24-30 written as 1 clear the flag */
         dma_dicr = (data & rw_mask) | ((dma_dicr & 0x7F000000) & ~ack_bits);
         return;
     }
@@ -682,7 +691,7 @@ void WriteHardware(u32 addr, u32 data)
     if (phys >= 0x1F801C00 && phys < 0x1F801E00)
     {
         int idx = (phys - 0x1F801C00) >> 1;
-        spu_regs[idx & 0x1FF] = (u16)data;
+        spu_regs[idx & 0x1FF] = (uint16_t)data;
         return;
     }
 

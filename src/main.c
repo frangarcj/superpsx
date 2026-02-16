@@ -1,4 +1,4 @@
-#include <tamtypes.h>
+#include <stdint.h>
 #include <kernel.h>
 #include <sifrpc.h>
 #include <debug.h>

@@ -1,4 +1,4 @@
-#include <tamtypes.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <malloc.h>
@@ -15,22 +15,22 @@
  *   0xFFFE0130:            Cache Control
  */
 
-u8 *psx_ram;
-u8 *psx_bios;
-static u8 scratchpad_buf[1024] __attribute__((aligned(128)));
+uint8_t *psx_ram;
+uint8_t *psx_bios;
+static uint8_t scratchpad_buf[1024] __attribute__((aligned(128)));
 
 /* Memory control regs the BIOS writes during init */
-static u32 mem_ctrl[16];
-static u32 ram_size_reg = 0x00000B88;
-static u32 cache_ctrl = 0;
+static uint32_t mem_ctrl[16];
+static uint32_t ram_size_reg = 0x00000B88;
+static uint32_t cache_ctrl = 0;
 
 void Init_Memory(void)
 {
     printf("Initializing Memory Map...\n");
 
     /* Allocate PSX RAM and BIOS dynamically to avoid ELF overlap */
-    psx_ram = (u8 *)memalign(128, PSX_RAM_SIZE);
-    psx_bios = (u8 *)memalign(128, PSX_BIOS_SIZE);
+    psx_ram = (uint8_t *)memalign(128, PSX_RAM_SIZE);
+    psx_bios = (uint8_t *)memalign(128, PSX_BIOS_SIZE);
 
     if (!psx_ram || !psx_bios)
     {
@@ -70,7 +70,7 @@ int Load_BIOS(const char *filename)
     printf("  BIOS loaded: %lu bytes at %p\n", (unsigned long)rd, psx_bios);
 
     /* Print first 4 instructions for verification */
-    u32 *bios32 = (u32 *)psx_bios;
+    uint32_t *bios32 = (uint32_t *)psx_bios;
     int i;
     for (i = 0; i < 4; i++)
     {
@@ -80,16 +80,16 @@ int Load_BIOS(const char *filename)
 }
 
 /* ---- Address translation ---- */
-static inline u32 translate_addr(u32 addr)
+static inline uint32_t translate_addr(uint32_t addr)
 {
     /* Strip segment bits to get physical address */
     return addr & 0x1FFFFFFF;
 }
 
 /* ---- Read functions ---- */
-u8 ReadByte(u32 addr)
+uint8_t ReadByte(uint32_t addr)
 {
-    u32 phys = translate_addr(addr);
+    uint32_t phys = translate_addr(addr);
 
     if (phys < PSX_RAM_SIZE)
         return psx_ram[phys];
@@ -98,11 +98,11 @@ u8 ReadByte(u32 addr)
     if (phys >= 0x1F800000 && phys < 0x1F800400)
         return scratchpad_buf[phys - 0x1F800000];
     if (phys >= 0x1F801000 && phys < 0x1F803000)
-        return (u8)ReadHardware(addr);
+        return (uint8_t)ReadHardware(addr);
     return 0;
 }
 
-u16 ReadHalf(u32 addr)
+uint16_t ReadHalf(uint32_t addr)
 {
     /* Alignment check: halfword must be 2-byte aligned */
     if (addr & 1)
@@ -112,20 +112,20 @@ u16 ReadHalf(u32 addr)
         PSX_Exception(4); /* AdEL */
         return 0;
     }
-    u32 phys = translate_addr(addr);
+    uint32_t phys = translate_addr(addr);
 
     if (phys < PSX_RAM_SIZE)
-        return *(u16 *)(psx_ram + phys);
+        return *(uint16_t *)(psx_ram + phys);
     if (phys >= 0x1FC00000 && phys < 0x1FC00000 + PSX_BIOS_SIZE)
-        return *(u16 *)(psx_bios + (phys - 0x1FC00000));
+        return *(uint16_t *)(psx_bios + (phys - 0x1FC00000));
     if (phys >= 0x1F800000 && phys < 0x1F800400)
-        return *(u16 *)(scratchpad_buf + (phys - 0x1F800000));
+        return *(uint16_t *)(scratchpad_buf + (phys - 0x1F800000));
     if (phys >= 0x1F801000 && phys < 0x1F803000)
-        return (u16)ReadHardware(addr);
+        return (uint16_t)ReadHardware(addr);
     return 0;
 }
 
-u32 ReadWord(u32 addr)
+uint32_t ReadWord(uint32_t addr)
 {
     /* Alignment check: word must be 4-byte aligned */
     if (addr & 3)
@@ -135,14 +135,14 @@ u32 ReadWord(u32 addr)
         PSX_Exception(4); /* AdEL */
         return 0;
     }
-    u32 phys = translate_addr(addr);
+    uint32_t phys = translate_addr(addr);
 
     if (phys < PSX_RAM_SIZE)
-        return *(u32 *)(psx_ram + phys);
+        return *(uint32_t *)(psx_ram + phys);
     if (phys >= 0x1FC00000 && phys < 0x1FC00000 + PSX_BIOS_SIZE)
-        return *(u32 *)(psx_bios + (phys - 0x1FC00000));
+        return *(uint32_t *)(psx_bios + (phys - 0x1FC00000));
     if (phys >= 0x1F800000 && phys < 0x1F800400)
-        return *(u32 *)(scratchpad_buf + (phys - 0x1F800000));
+        return *(uint32_t *)(scratchpad_buf + (phys - 0x1F800000));
     if (phys >= 0x1F801000 && phys < 0x1F803000)
         return ReadHardware(addr);
     /* Memory control registers */
@@ -157,7 +157,7 @@ u32 ReadWord(u32 addr)
 }
 
 /* ---- Write functions ---- */
-void WriteByte(u32 addr, u8 data)
+void WriteByte(uint32_t addr, uint8_t data)
 {
     /* Cache Isolation: If SR bit 16 is set, ignore writes to KUSEG/KSEG0 */
     if (cpu.cop0[PSX_COP0_SR] & 0x10000)
@@ -168,7 +168,7 @@ void WriteByte(u32 addr, u8 data)
         }
     }
 
-    u32 phys = translate_addr(addr);
+    uint32_t phys = translate_addr(addr);
 
     if (phys < PSX_RAM_SIZE)
     {
@@ -187,7 +187,7 @@ void WriteByte(u32 addr, u8 data)
     }
 }
 
-void WriteHalf(u32 addr, u16 data)
+void WriteHalf(uint32_t addr, uint16_t data)
 {
     /* Alignment check */
     if (addr & 1)
@@ -206,16 +206,16 @@ void WriteHalf(u32 addr, u16 data)
         }
     }
 
-    u32 phys = translate_addr(addr);
+    uint32_t phys = translate_addr(addr);
 
     if (phys < PSX_RAM_SIZE)
     {
-        *(u16 *)(psx_ram + phys) = data;
+        *(uint16_t *)(psx_ram + phys) = data;
         return;
     }
     if (phys >= 0x1F800000 && phys < 0x1F800400)
     {
-        *(u16 *)(scratchpad_buf + (phys - 0x1F800000)) = data;
+        *(uint16_t *)(scratchpad_buf + (phys - 0x1F800000)) = data;
         return;
     }
     if (phys >= 0x1F801000 && phys < 0x1F803000)
@@ -225,7 +225,7 @@ void WriteHalf(u32 addr, u16 data)
     }
 }
 
-void WriteWord(u32 addr, u32 data)
+void WriteWord(uint32_t addr, uint32_t data)
 {
     /* Alignment check */
     if (addr & 3)
@@ -244,16 +244,16 @@ void WriteWord(u32 addr, u32 data)
         }
     }
 
-    u32 phys = translate_addr(addr);
+    uint32_t phys = translate_addr(addr);
 
     if (phys < PSX_RAM_SIZE)
     {
-        *(u32 *)(psx_ram + phys) = data;
+        *(uint32_t *)(psx_ram + phys) = data;
         return;
     }
     if (phys >= 0x1F800000 && phys < 0x1F800400)
     {
-        *(u32 *)(scratchpad_buf + (phys - 0x1F800000)) = data;
+        *(uint32_t *)(scratchpad_buf + (phys - 0x1F800000)) = data;
         return;
     }
     if (phys >= 0x1F801000 && phys < 0x1F803000)
@@ -283,10 +283,10 @@ void WriteWord(u32 addr, u32 data)
 
 /* ---- LWL/LWR/SWL/SWR helpers (little-endian PSX) ---- */
 
-u32 Helper_LWL(u32 addr, u32 cur_rt)
+uint32_t Helper_LWL(uint32_t addr, uint32_t cur_rt)
 {
-    u32 aligned = addr & ~3;
-    u32 word = ReadWord(aligned);
+    uint32_t aligned = addr & ~3;
+    uint32_t word = ReadWord(aligned);
     switch (addr & 3)
     {
     case 0:
@@ -301,10 +301,10 @@ u32 Helper_LWL(u32 addr, u32 cur_rt)
     return cur_rt; /* unreachable */
 }
 
-u32 Helper_LWR(u32 addr, u32 cur_rt)
+uint32_t Helper_LWR(uint32_t addr, uint32_t cur_rt)
 {
-    u32 aligned = addr & ~3;
-    u32 word = ReadWord(aligned);
+    uint32_t aligned = addr & ~3;
+    uint32_t word = ReadWord(aligned);
     switch (addr & 3)
     {
     case 0:
@@ -319,11 +319,11 @@ u32 Helper_LWR(u32 addr, u32 cur_rt)
     return cur_rt; /* unreachable */
 }
 
-void Helper_SWL(u32 addr, u32 rt_val)
+void Helper_SWL(uint32_t addr, uint32_t rt_val)
 {
-    u32 aligned = addr & ~3;
-    u32 word = ReadWord(aligned);
-    u32 result;
+    uint32_t aligned = addr & ~3;
+    uint32_t word = ReadWord(aligned);
+    uint32_t result;
     switch (addr & 3)
     {
     case 0:
@@ -344,11 +344,11 @@ void Helper_SWL(u32 addr, u32 rt_val)
     WriteWord(aligned, result);
 }
 
-void Helper_SWR(u32 addr, u32 rt_val)
+void Helper_SWR(uint32_t addr, uint32_t rt_val)
 {
-    u32 aligned = addr & ~3;
-    u32 word = ReadWord(aligned);
-    u32 result;
+    uint32_t aligned = addr & ~3;
+    uint32_t word = ReadWord(aligned);
+    uint32_t result;
     switch (addr & 3)
     {
     case 0:
@@ -371,15 +371,15 @@ void Helper_SWR(u32 addr, u32 rt_val)
 
 /* ---- DIV/DIVU helpers (correct edge cases) ---- */
 
-void Helper_DIV(s32 rs, s32 rt, u32 *lo_out, u32 *hi_out)
+void Helper_DIV(int32_t rs, int32_t rt, uint32_t *lo_out, uint32_t *hi_out)
 {
     if (rt == 0)
     {
         /* Division by zero: R3000A behavior */
-        *hi_out = (u32)rs;
-        *lo_out = (rs >= 0) ? (u32)(s32)-1 : (u32)1;
+        *hi_out = (uint32_t)rs;
+        *lo_out = (rs >= 0) ? (uint32_t)(int32_t)-1 : (uint32_t)1;
     }
-    else if ((u32)rs == 0x80000000 && rt == -1)
+    else if ((uint32_t)rs == 0x80000000 && rt == -1)
     {
         /* MIN_INT / -1: overflow, R3000A gives LO=MIN_INT, HI=0 */
         *lo_out = 0x80000000;
@@ -387,12 +387,12 @@ void Helper_DIV(s32 rs, s32 rt, u32 *lo_out, u32 *hi_out)
     }
     else
     {
-        *lo_out = (u32)(rs / rt);
-        *hi_out = (u32)(rs % rt);
+        *lo_out = (uint32_t)(rs / rt);
+        *hi_out = (uint32_t)(rs % rt);
     }
 }
 
-void Helper_DIVU(u32 rs, u32 rt, u32 *lo_out, u32 *hi_out)
+void Helper_DIVU(uint32_t rs, uint32_t rt, uint32_t *lo_out, uint32_t *hi_out)
 {
     if (rt == 0)
     {

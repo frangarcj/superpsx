@@ -1,4 +1,4 @@
-#include <tamtypes.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <kernel.h>
 #include "superpsx.h"
@@ -11,12 +11,12 @@ volatile int psx_block_exception = 0;
 
 /* ---- PSX Exception Handling ---- */
 static int cdrom_irq_logged = 0;
-void PSX_Exception(u32 cause_code)
+void PSX_Exception(uint32_t cause_code)
 {
     /* Debug: log CD-ROM interrupt delivery */
     if (cause_code == 0 && !cdrom_irq_logged)
     {
-        u32 istat = CheckInterrupts();
+        uint32_t istat = CheckInterrupts();
         if (istat & 0x04)
         {
             printf("[EXC] Delivering CD-ROM interrupt! PC=%08X SR=%08X\n",
@@ -31,7 +31,7 @@ void PSX_Exception(u32 cause_code)
     /* Set ExcCode in Cause register bits [6:2].
      * Clear BD bit (bit 31) since we don't currently track branch delay
      * slot exceptions. Preserve only IP bits [15:8]. */
-    u32 cause = cpu.cop0[PSX_COP0_CAUSE] & 0x0000FF00; /* Keep only IP bits */
+    uint32_t cause = cpu.cop0[PSX_COP0_CAUSE] & 0x0000FF00; /* Keep only IP bits */
     cause |= ((cause_code & 0x1F) << 2);
 
     /* For hardware interrupts (cause_code == 0), set IP2 (bit 10)
@@ -46,8 +46,8 @@ void PSX_Exception(u32 cause_code)
     /* Push exception mode: shift Status bits [5:0] left by 2
      * This pushes IEc→IEp→IEo, KUc→KUp→KUo
      * New IEc=0, KUc=0 (kernel mode, interrupts disabled) */
-    u32 sr = cpu.cop0[PSX_COP0_SR];
-    u32 mode_bits = sr & 0x3F;
+    uint32_t sr = cpu.cop0[PSX_COP0_SR];
+    uint32_t mode_bits = sr & 0x3F;
     sr = (sr & ~0x3F) | ((mode_bits << 2) & 0x3F);
     /* IEc=0, KUc=0 already from the shift (bits 0,1 are 0) */
     cpu.cop0[PSX_COP0_SR] = sr;
@@ -62,7 +62,7 @@ void PSX_Exception(u32 cause_code)
     {
         /* BEV=0: vector in RAM */
         /* Verify exception handler is installed */
-        u32 handler_word = *(u32 *)(psx_ram + 0x80);
+        uint32_t handler_word = *(uint32_t *)(psx_ram + 0x80);
         if (handler_word == 0 && cause_code == 0)
         {
             static int exc_warn = 0;
@@ -89,34 +89,34 @@ void PSX_Exception(u32 cause_code)
 
 /* ---- Exception helpers for dynarec ---- */
 /* SYSCALL: always triggers exception code 8 */
-void Helper_Syscall_Exception(u32 pc)
+void Helper_Syscall_Exception(uint32_t pc)
 {
     cpu.pc = pc;
     PSX_Exception(0x08);
 }
 
 /* BREAK: always triggers exception code 9 */
-void Helper_Break_Exception(u32 pc)
+void Helper_Break_Exception(uint32_t pc)
 {
     cpu.pc = pc;
     PSX_Exception(0x09);
 }
 
 /* Coprocessor Unusable: exception code 11, with CE field in Cause bits 28-29 */
-void Helper_CU_Exception(u32 pc, u32 cop_num)
+void Helper_CU_Exception(uint32_t pc, uint32_t cop_num)
 {
     cpu.pc = pc;
     /* Set CE field (bits 28-29) in Cause BEFORE calling PSX_Exception.
      * PSX_Exception preserves IP bits [15:8] and sets ExcCode [6:2].
      * We need to also set CE, so we pre-set it in Cause. */
-    u32 cause = cpu.cop0[PSX_COP0_CAUSE] & 0x0000FF00; /* Keep IP bits */
-    cause |= ((0x0B & 0x1F) << 2);                      /* ExcCode = 11 (CpU) */
-    cause |= ((cop_num & 0x3) << 28);                    /* CE field */
+    uint32_t cause = cpu.cop0[PSX_COP0_CAUSE] & 0x0000FF00; /* Keep IP bits */
+    cause |= ((0x0B & 0x1F) << 2);                          /* ExcCode = 11 (CpU) */
+    cause |= ((cop_num & 0x3) << 28);                       /* CE field */
     cpu.cop0[PSX_COP0_CAUSE] = cause;
 
     /* Push exception mode stack (same as PSX_Exception) */
-    u32 sr = cpu.cop0[PSX_COP0_SR];
-    u32 mode_bits = sr & 0x3F;
+    uint32_t sr = cpu.cop0[PSX_COP0_SR];
+    uint32_t mode_bits = sr & 0x3F;
     sr = (sr & ~0x3F) | ((mode_bits << 2) & 0x3F);
     cpu.cop0[PSX_COP0_SR] = sr;
 
@@ -134,24 +134,24 @@ void Helper_CU_Exception(u32 pc, u32 cop_num)
 }
 
 /* ADD with overflow detection: if overflow, trigger exception 0x0C */
-void Helper_ADD(u32 rs_val, u32 rt_val, u32 rd, u32 pc)
+void Helper_ADD(uint32_t rs_val, uint32_t rt_val, uint32_t rd, uint32_t pc)
 {
-    u32 result = rs_val + rt_val;
+    uint32_t result = rs_val + rt_val;
     /* Overflow if: operands have same sign but result has different sign */
     if (!((rs_val ^ rt_val) & 0x80000000) && ((result ^ rs_val) & 0x80000000))
     {
         cpu.pc = pc;
         PSX_Exception(0x0C); /* Overflow */
-        return; /* Won't reach here - longjmp fires */
+        return;              /* Won't reach here - longjmp fires */
     }
     if (rd != 0)
         cpu.regs[rd] = result;
 }
 
 /* SUB with overflow detection */
-void Helper_SUB(u32 rs_val, u32 rt_val, u32 rd, u32 pc)
+void Helper_SUB(uint32_t rs_val, uint32_t rt_val, uint32_t rd, uint32_t pc)
 {
-    u32 result = rs_val - rt_val;
+    uint32_t result = rs_val - rt_val;
     /* Overflow if: operands have different signs and result sign != rs sign */
     if (((rs_val ^ rt_val) & 0x80000000) && ((result ^ rs_val) & 0x80000000))
     {
@@ -164,9 +164,9 @@ void Helper_SUB(u32 rs_val, u32 rt_val, u32 rd, u32 pc)
 }
 
 /* ADDI with overflow detection */
-void Helper_ADDI(u32 rs_val, u32 imm_sext, u32 rt, u32 pc)
+void Helper_ADDI(uint32_t rs_val, uint32_t imm_sext, uint32_t rt, uint32_t pc)
 {
-    u32 result = rs_val + imm_sext;
+    uint32_t result = rs_val + imm_sext;
     if (!((rs_val ^ imm_sext) & 0x80000000) && ((result ^ rs_val) & 0x80000000))
     {
         cpu.pc = pc;
@@ -194,7 +194,7 @@ void Handle_Syscall(void)
      * Syscall 3 = ChangeThreadSubFunction
      * Others are handled by the BIOS exception handler.
      */
-    u32 func = cpu.regs[4]; /* $a0 = function number */
+    uint32_t func = cpu.regs[4]; /* $a0 = function number */
     static int syscall_log_count = 0;
 
     if (syscall_log_count < 50)
@@ -214,7 +214,7 @@ void Handle_Syscall(void)
 
     case 1: /* EnterCriticalSection */
     {
-        u32 sr = cpu.cop0[PSX_COP0_SR];
+        uint32_t sr = cpu.cop0[PSX_COP0_SR];
         cpu.regs[2] = sr & 1;            /* $v0 = old IEc bit */
         cpu.cop0[PSX_COP0_SR] = sr & ~1; /* Clear IEc */
         cpu.pc += 4;
@@ -229,7 +229,7 @@ void Handle_Syscall(void)
 
     case 2: /* ExitCriticalSection */
     {
-        u32 sr = cpu.cop0[PSX_COP0_SR];
+        uint32_t sr = cpu.cop0[PSX_COP0_SR];
         sr |= 0x00000401; /* IEc=1 (bit 0) + IM2=1 (bit 10) for HW interrupts */
         cpu.cop0[PSX_COP0_SR] = sr;
         cpu.pc += 4;
@@ -255,9 +255,9 @@ void Handle_Syscall(void)
 /* ---- EE Exception Handler (for catching native faults) ---- */
 static void EE_ExceptionHandler(int cause)
 {
-    u32 epc;
+    uint32_t epc;
     asm volatile("mfc0 %0, $14" : "=r"(epc));
-    u32 badvaddr;
+    uint32_t badvaddr;
     asm volatile("mfc0 %0, $8" : "=r"(badvaddr));
 
     printf("EE EXCEPTION: cause=%d EPC=0x%08X BadVAddr=0x%08X\n",

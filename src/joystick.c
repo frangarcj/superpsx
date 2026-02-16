@@ -11,22 +11,22 @@
 #define PS2_MAX_SLOT 4 /* maximum - 4 slots in one multitap */
 #define MAX_CONTROLLERS (PS2_MAX_PORT * PS2_MAX_SLOT)
 
-#define PAD_SELECT  0x0001
-#define PAD_L3      0x0002
-#define PAD_R3      0x0004
-#define PAD_START   0x0008
-#define PAD_UP      0x0010
-#define PAD_RIGHT   0x0020
-#define PAD_DOWN    0x0040
-#define PAD_LEFT    0x0080
-#define PAD_L2      0x0100
-#define PAD_R2      0x0200
-#define PAD_L1      0x0400
-#define PAD_R1      0x0800
+#define PAD_SELECT 0x0001
+#define PAD_L3 0x0002
+#define PAD_R3 0x0004
+#define PAD_START 0x0008
+#define PAD_UP 0x0010
+#define PAD_RIGHT 0x0020
+#define PAD_DOWN 0x0040
+#define PAD_LEFT 0x0080
+#define PAD_L2 0x0100
+#define PAD_R2 0x0200
+#define PAD_L1 0x0400
+#define PAD_R1 0x0800
 #define PAD_TRIANGLE 0x1000
-#define PAD_CIRCLE  0x2000
-#define PAD_CROSS   0x4000
-#define PAD_SQUARE  0x8000
+#define PAD_CIRCLE 0x2000
+#define PAD_CROSS 0x4000
+#define PAD_SQUARE 0x8000
 
 struct JoyInfo
 {
@@ -45,7 +45,8 @@ static uint8_t enabled_pads;
 // Button mapping: https://problemkaputt.de/psx-spx.htm#controllersioports
 // PS2 padButtonStatus: https://ps2dev.github.io/ps2sdk/ps2sdk/libpad_8h.html
 // This function fills a 3-byte buffer with the PSX controller response
-void Joystick_GetPSXDigitalResponse(uint8_t response[3]) {
+void Joystick_GetPSXDigitalResponse(uint8_t response[3])
+{
     uint32_t ps2 = Joystick_Poll();
     response[0] = 0x41; // Digital pad ID
     response[1] = 0xFF;
@@ -54,23 +55,39 @@ void Joystick_GetPSXDigitalResponse(uint8_t response[3]) {
     // PSX low byte: 0x01=Select, 0x02=L3, 0x04=R3, 0x08=Start, 0x10=Up, 0x20=Right, 0x40=Down, 0x80=Left
     // PSX high byte: 0x01=L2, 0x02=R2, 0x04=L1, 0x08=R1, 0x10=Triangle, 0x20=Circle, 0x40=Cross, 0x80=Square
 
-    if (ps2 & PAD_SELECT)   response[1] &= ~0x01;
-    if (ps2 & PAD_L3)       response[1] &= ~0x02;
-    if (ps2 & PAD_R3)       response[1] &= ~0x04;
-    if (ps2 & PAD_START)    response[1] &= ~0x08;
-    if (ps2 & PAD_UP)       response[1] &= ~0x10;
-    if (ps2 & PAD_RIGHT)    response[1] &= ~0x20;
-    if (ps2 & PAD_DOWN)     response[1] &= ~0x40;
-    if (ps2 & PAD_LEFT)     response[1] &= ~0x80;
+    if (ps2 & PAD_SELECT)
+        response[1] &= ~0x01;
+    if (ps2 & PAD_L3)
+        response[1] &= ~0x02;
+    if (ps2 & PAD_R3)
+        response[1] &= ~0x04;
+    if (ps2 & PAD_START)
+        response[1] &= ~0x08;
+    if (ps2 & PAD_UP)
+        response[1] &= ~0x10;
+    if (ps2 & PAD_RIGHT)
+        response[1] &= ~0x20;
+    if (ps2 & PAD_DOWN)
+        response[1] &= ~0x40;
+    if (ps2 & PAD_LEFT)
+        response[1] &= ~0x80;
 
-    if (ps2 & PAD_L2)       response[2] &= ~0x01;
-    if (ps2 & PAD_R2)       response[2] &= ~0x02;
-    if (ps2 & PAD_L1)       response[2] &= ~0x04;
-    if (ps2 & PAD_R1)       response[2] &= ~0x08;
-    if (ps2 & PAD_TRIANGLE) response[2] &= ~0x10;
-    if (ps2 & PAD_CIRCLE)   response[2] &= ~0x20;
-    if (ps2 & PAD_CROSS)    response[2] &= ~0x40;
-    if (ps2 & PAD_SQUARE)   response[2] &= ~0x80;
+    if (ps2 & PAD_L2)
+        response[2] &= ~0x01;
+    if (ps2 & PAD_R2)
+        response[2] &= ~0x02;
+    if (ps2 & PAD_L1)
+        response[2] &= ~0x04;
+    if (ps2 & PAD_R1)
+        response[2] &= ~0x08;
+    if (ps2 & PAD_TRIANGLE)
+        response[2] &= ~0x10;
+    if (ps2 & PAD_CIRCLE)
+        response[2] &= ~0x20;
+    if (ps2 & PAD_CROSS)
+        response[2] &= ~0x40;
+    if (ps2 & PAD_SQUARE)
+        response[2] &= ~0x80;
 }
 
 void Joystick_Init(void)
