@@ -1,0 +1,65 @@
+# SuperPSX Project Status
+# PS1 Emulator on PS2 hardware via native MIPS dynarec
+
+## Project Overview
+SuperPSX is a PlayStation 1 emulator running on PlayStation 2 hardware using native MIPS-to-MIPS dynamic recompilation.
+
+## Current Status (15 de febrero de 2026)
+
+### GTE (Geometry Transformation Engine) Implementation
+- **Status**: COMPLETED ✅
+- **Test Results**: 1150/1150 tests passing
+- **Coverage**: All 22 GTE opcodes fully implemented and tested
+- **Key Features**:
+  - Accurate 44-bit accumulator wrapping for overflow detection
+  - Per-step overflow checking in MVMVA and RTPS
+  - Proper A1/A2/A3 truncation to 32-bit before IR saturation
+  - Correct interpolation precision using full accumulators
+  - Fixed garbage matrix (mx=3) implementation
+  - RTPS IR3 saturation following Lm_B3_sf logic
+  - NCS opcode corrected (removed erroneous R*IR<<4 step)
+
+### CPU Core (R3000A)
+- **Status**: IMPLEMENTED
+- **Features**: MIPS R3000A emulation with dynarec
+- **COP2**: GTE integration complete
+
+### GPU Emulation
+- **Status**: IN PROGRESS
+- **Current Focus**: Graphics primitive rendering
+- **Test Coverage**: Basic rectangle and line drawing implemented
+- **Known Issues**: Some advanced features pending
+
+### Memory Management
+- **Status**: IMPLEMENTED
+- **Features**: PS1 memory mapping, BIOS HLE
+
+### CD-ROM
+- **Status**: BASIC IMPLEMENTATION
+- **Features**: ISO loading, basic I/O
+
+### Input/Output
+- **Status**: BASIC IMPLEMENTATION
+- **Features**: Controller input, basic peripherals
+
+### Build System
+- **Status**: STABLE
+- **Toolchain**: PS2SDK (mips64r5900el-ps2-elf-gcc)
+- **Dependencies**: gsKit, dmaKit, libcdvd
+
+## Recent Commits
+- GTE: Fix NCS, RTPS IR3 Lm_B3_sf, and RTPS 44-bit wrapping (1150/1150 tests)
+- GTE: 44-bit accumulator wrapping for overflow detection (600/1150 tests)
+- GTE: Fix DPCS/INTPL/MVMVA + per-step overflow + precision (389/1150 tests)
+
+## Next Steps
+- Complete GPU emulation refinements
+- Add more PS1 game compatibility
+- Performance optimizations
+- Additional peripheral support
+
+## Contributors
+- Main developer: [Current user]
+
+---
+Last updated: 15 de febrero de 2026

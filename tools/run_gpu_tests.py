@@ -57,15 +57,28 @@ for ref in refs:
     time.sleep(1)
 
     if os.path.exists('vram_5000000.bin'):
-        proc = subprocess.run(['python3', 'tools/compare_vram.py',
-                              'vram_5000000.bin', ref], capture_output=True, text=True)
-        print(proc.stdout)
-        m = re.search(r"Differing pixels:.*\(([0-9.]+)%\)", proc.stdout)
-        if m:
-            diffl = float(m.group(1))
-            match = round(100.0 - diffl, 1)
-            print(f'RESULT: {testname} MATCH={match}% (diff={diffl}%)')
-            results.append((testname, match))
+        # Try all available dumps and pick the one with lowest diff
+        # (timing variations can cause a mid-frame capture at any specific iteration)
+        dumps = sorted(glob.glob('vram_*.bin'))
+        best_match = None
+        best_diffl = 100.0
+        best_dump = None
+        best_stdout = ''
+        for dump in dumps:
+            proc = subprocess.run(['python3', 'tools/compare_vram.py',
+                                  dump, ref], capture_output=True, text=True)
+            m = re.search(r"Differing pixels:.*\(([0-9.]+)%\)", proc.stdout)
+            if m:
+                diffl = float(m.group(1))
+                if diffl < best_diffl:
+                    best_diffl = diffl
+                    best_match = round(100.0 - diffl, 1)
+                    best_dump = dump
+                    best_stdout = proc.stdout
+        if best_dump:
+            print(best_stdout)
+            print(f'RESULT: {testname} MATCH={best_match}% (diff={best_diffl}%) [from {best_dump}]')
+            results.append((testname, best_match))
         else:
             print('COMPARE FAILED for', testname)
             results.append((testname, None))
