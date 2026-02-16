@@ -223,9 +223,13 @@ u32 ReadHardware(u32 addr)
         }
     }
 
-    /* CD-ROM (0x1F801800-0x1F801803) */
+    /* CD-ROM (0x1F801800-0x1F801803) - byte-wide controller */
     if (phys >= 0x1F801800 && phys <= 0x1F801803)
-        return CDROM_Read(phys);
+    {
+        u32 byte_val = CDROM_Read(phys) & 0xFF;
+        /* Mirror byte to all 4 lanes for wider reads */
+        return byte_val | (byte_val << 8) | (byte_val << 16) | (byte_val << 24);
+    }
 
     /* GPU */
     if (phys == 0x1F801810)
