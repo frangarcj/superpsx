@@ -582,21 +582,21 @@ void WriteHardware(u32 addr, u32 data)
 
                     /* Handle DMA Interrupts */
                     /* DICR (0x1F8010F4) */
-                    /* Bits 16-22: IM (Interrupt Mask) for Ch 0-6 */
+                    /* Bits 16-22: IM (Interrupt Mask/Enable) for Ch 0-6 */
                     /* Bits 23: Master Enable */
                     /* Bits 24-30: IP (Interrupt Pending) for Ch 0-6 */
 
-                    /* Set IP bit for this channel */
-                    dma_dicr |= (1 << (24 + ch));
-
-                    /* Check for IRQ generation */
-                    /* IRQ triggered if (IP & IM) is non-zero OR force bit?
-                       Actually: MasterEnable && ((IP & IM) != 0) */
-                    if ((dma_dicr & 0x00800000) && (dma_dicr & (1 << (16 + ch))))
+                    /* Set IP bit only if this channel's IRQ is enabled (IM bit) */
+                    if (dma_dicr & (1 << (16 + ch)))
                     {
-                        // Bit 31 is "IRQ Master Flag". It reflects the IRQ line state?
-                        dma_dicr |= 0x80000000;
-                        SignalInterrupt(3); /* DMA IRQ */
+                        dma_dicr |= (1 << (24 + ch));
+
+                        /* Check for master IRQ generation */
+                        if (dma_dicr & 0x00800000)
+                        {
+                            dma_dicr |= 0x80000000;
+                            SignalInterrupt(3); /* DMA IRQ */
+                        }
                     }
                 }
                 break;
