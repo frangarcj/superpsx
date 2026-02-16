@@ -102,6 +102,37 @@ void Helper_Break_Exception(u32 pc)
     PSX_Exception(0x09);
 }
 
+/* Coprocessor Unusable: exception code 11, with CE field in Cause bits 28-29 */
+void Helper_CU_Exception(u32 pc, u32 cop_num)
+{
+    cpu.pc = pc;
+    /* Set CE field (bits 28-29) in Cause BEFORE calling PSX_Exception.
+     * PSX_Exception preserves IP bits [15:8] and sets ExcCode [6:2].
+     * We need to also set CE, so we pre-set it in Cause. */
+    u32 cause = cpu.cop0[PSX_COP0_CAUSE] & 0x0000FF00; /* Keep IP bits */
+    cause |= ((0x0B & 0x1F) << 2);                      /* ExcCode = 11 (CpU) */
+    cause |= ((cop_num & 0x3) << 28);                    /* CE field */
+    cpu.cop0[PSX_COP0_CAUSE] = cause;
+
+    /* Push exception mode stack (same as PSX_Exception) */
+    u32 sr = cpu.cop0[PSX_COP0_SR];
+    u32 mode_bits = sr & 0x3F;
+    sr = (sr & ~0x3F) | ((mode_bits << 2) & 0x3F);
+    cpu.cop0[PSX_COP0_SR] = sr;
+
+    /* Save EPC */
+    cpu.cop0[PSX_COP0_EPC] = pc;
+
+    /* Jump to exception vector */
+    if (sr & 0x00400000)
+        cpu.pc = 0xBFC00180;
+    else
+        cpu.pc = 0x80000080;
+
+    if (psx_block_exception)
+        longjmp(psx_block_jmp, 1);
+}
+
 /* ADD with overflow detection: if overflow, trigger exception 0x0C */
 void Helper_ADD(u32 rs_val, u32 rt_val, u32 rd, u32 pc)
 {

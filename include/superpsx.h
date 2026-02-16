@@ -87,6 +87,7 @@ void PSX_Exception(u32 cause_code);
 void Handle_Syscall(void);
 void Helper_Syscall_Exception(u32 pc);
 void Helper_Break_Exception(u32 pc);
+void Helper_CU_Exception(u32 pc, u32 cop_num);
 void Helper_ADD(u32 rs_val, u32 rt_val, u32 rd, u32 pc);
 void Helper_SUB(u32 rs_val, u32 rt_val, u32 rd, u32 pc);
 void Helper_ADDI(u32 rs_val, u32 imm_sext, u32 rt, u32 pc);
