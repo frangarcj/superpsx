@@ -17,6 +17,11 @@ ifneq ($(strip $(GAMEARGS)),)
 else
 	PCSX2_GAMEARGS =
 endif
+# Enable unlimited speed when running in PCSX2, which is useful for testing and debugging
+ENABLE_UNLIMITED_SPEED ?= 1
+ifeq ($(ENABLE_UNLIMITED_SPEED), 1)
+	PCSX2_UNLIMITED += -unlimited
+endif
 
 ifeq ($(ENABLE_HOST_LOG), 1)
 	EE_CFLAGS += -DENABLE_HOST_LOG
@@ -32,7 +37,7 @@ clean:
 	rm -f $(EE_BIN) $(EE_OBJS)
 
 run: $(EE_BIN)
-	/Applications/PCSX2.app/Contents/MacOS/PCSX2 -batch -earlyconsolelog -elf "$(shell pwd)/$(EE_BIN)" $(PCSX2_GAMEARGS)
+	/Applications/PCSX2.app/Contents/MacOS/PCSX2 -batch -earlyconsolelog $(PCSX2_UNLIMITED) -elf "$(shell pwd)/$(EE_BIN)" $(PCSX2_GAMEARGS)
 
 reset:
 	ps2client reset
