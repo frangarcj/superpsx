@@ -364,8 +364,9 @@ u32 GPU_Read(void)
 
 u32 GPU_ReadStatus(void)
 {
-    // Force Bit 27 (Ready to Send DMA) to 1 to unblock BIOS
-    return gpu_stat | 0x1C802000;
+    /* Force bits: 28 (ready DMA), 26 (ready CMD), 21, 13 */
+    /* Bit 27 (ready VRAM-to-CPU) is dynamic, set only during C0h transfer */
+    return gpu_stat | 0x14802000;
 }
 
 void GPU_VBlank(void)
