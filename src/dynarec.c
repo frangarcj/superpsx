@@ -22,6 +22,8 @@
 #include "superpsx.h"
 #include "loader.h"
 
+#define LOG_TAG "DYNAREC"
+
 #ifdef ENABLE_HOST_LOG
 FILE *host_log_file = NULL;
 #endif
@@ -339,7 +341,7 @@ static uint32_t *compile_block(uint32_t psx_pc)
     uint32_t *psx_code = get_psx_code_ptr(psx_pc);
     if (!psx_code)
     {
-        printf("DYNAREC: Cannot fetch code at PC=0x%08X\n", (unsigned)psx_pc);
+        DLOG("Cannot fetch code at PC=0x%08X\n", (unsigned)psx_pc);
         return NULL;
     }
 
@@ -347,7 +349,7 @@ static uint32_t *compile_block(uint32_t psx_pc)
     uint32_t used = (uint32_t)((uint8_t *)code_ptr - (uint8_t *)code_buffer);
     if (used > CODE_BUFFER_SIZE - 65536)
     {
-        printf("DYNAREC: Code buffer nearly full (%u/%u), flushing cache\n",
+        DLOG("Code buffer nearly full (%u/%u), flushing cache\n",
                (unsigned)used, CODE_BUFFER_SIZE);
         code_ptr = code_buffer;
         memset(block_cache, 0, BLOCK_CACHE_SIZE * sizeof(BlockEntry));
@@ -359,18 +361,18 @@ static uint32_t *compile_block(uint32_t psx_pc)
 
     if (blocks_compiled < 20)
     {
-        printf("DYNAREC: Compiling block at PC=0x%08X\n", (unsigned)psx_pc);
+        DLOG("Compiling block at PC=0x%08X\n", (unsigned)psx_pc);
     }
 
     // Debug: Inspect hot loop
     if (psx_pc == 0x800509AC)
     {
-        printf("DYNAREC: Hot Loop dump at %08" PRIX32 ":\n", psx_pc);
-        printf("  -4: %08" PRIX32 "\n", psx_code[-1]);
-        printf("   0: %08" PRIX32 " (Hit)\n", psx_code[0]);
-        printf("  +4: %08" PRIX32 "\n", psx_code[1]);
-        printf("  +8: %08" PRIX32 "\n", psx_code[2]);
-        printf(" +12: %08" PRIX32 "\n", psx_code[3]);
+        DLOG("Hot Loop dump at %08" PRIX32 ":\n", psx_pc);
+        DLOG_RAW("  -4: %08" PRIX32 "\n", psx_code[-1]);
+        DLOG_RAW("   0: %08" PRIX32 " (Hit)\n", psx_code[0]);
+        DLOG_RAW("  +4: %08" PRIX32 "\n", psx_code[1]);
+        DLOG_RAW("  +8: %08" PRIX32 "\n", psx_code[2]);
+        DLOG_RAW(" +12: %08" PRIX32 "\n", psx_code[3]);
     }
 
     emit_block_prologue();
@@ -761,15 +763,15 @@ static uint32_t *compile_block(uint32_t psx_pc)
     if (blocks_compiled < 5)
     {
         int num_words = (int)(code_ptr - block_start);
-        printf("DYNAREC: Block %u at %p, %d words:\n",
+        DLOG("Block %u at %p, %d words:\n",
                (unsigned)blocks_compiled, block_start, num_words);
         int j;
         for (j = 0; j < num_words && j < 32; j++)
         {
-            printf("  [%02d] %p: 0x%08X\n", j, &block_start[j], (unsigned)block_start[j]);
+            DLOG_RAW("  [%02d] %p: 0x%08X\n", j, &block_start[j], (unsigned)block_start[j]);
         }
         if (num_words > 32)
-            printf("  ... (%d more)\n", num_words - 32);
+            DLOG_RAW("  ... (%d more)\n", num_words - 32);
     }
     /* Calculate instruction count for this block */
     uint32_t block_instr_count = (cur_pc - psx_pc) / 4;
@@ -931,7 +933,7 @@ void debug_mtc0_sr(uint32_t val)
     {
         if (mtc0_sr_log_count < 200)
         {
-            //            printf("[MTC0] SR = %08X (IEc=%d IM=%02X BEV=%d CU0=%d)\n",
+            //            DLOG("SR = %08X (IEc=%d IM=%02X BEV=%d CU0=%d)\n",
             //                   (unsigned)val,
             //                   (int)(val & 1),
             //                   (int)((val >> 8) & 0xFF),
@@ -963,7 +965,7 @@ static int BIOS_HLE_A(void)
     static int a_log_count = 0;
     if (a_log_count < 30)
     {
-        // printf("[BIOS] A(%02X) ret=%08X\n", (unsigned)func, (unsigned)cpu.regs[31]);
+        // DLOG("A(%02X) ret=%08X\n", (unsigned)func, (unsigned)cpu.regs[31]);
         a_log_count++;
     }
 
@@ -992,7 +994,7 @@ static int BIOS_HLE_B(void)
     static int b_log_count = 0;
     if (b_log_count < 30)
     {
-        // printf("[BIOS] B(%02X) ret=%08X\n", (unsigned)func, (unsigned)cpu.regs[31]);
+        // DLOG("[BIOS] B(%02X) ret=%08X\n", (unsigned)func, (unsigned)cpu.regs[31]);
         b_log_count++;
     }
 
@@ -1037,7 +1039,7 @@ static int BIOS_HLE_C(void)
     static int c_log_count = 0;
     if (c_log_count < 20)
     {
-        //        printf("[BIOS] C(%02X) ret=%08X\n", (unsigned)func, (unsigned)cpu.regs[31]);
+        //        DLOG("[BIOS] C(%02X) ret=%08X\n", (unsigned)func, (unsigned)cpu.regs[31]);
         c_log_count++;
     }
     return 0; /* Let native code handle it */
@@ -1233,7 +1235,7 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
             break;
         default:
             if (total_instructions < 50)
-                printf("DYNAREC: Unknown SPECIAL func=0x%02X at PC=0x%08X\n", func, (unsigned)psx_pc);
+                DLOG("Unknown SPECIAL func=0x%02X at PC=0x%08X\n", func, (unsigned)psx_pc);
             break;
         }
         break;
@@ -1377,7 +1379,7 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
 
         if (total_instructions < 20000000)
         { // Log COP2 instructions
-            printf("DYNAREC: Compiling COP2 Op %08" PRIX32 " at %08" PRIX32 "\n", opcode, psx_pc);
+            DLOG("Compiling COP2 Op %08" PRIX32 " at %08" PRIX32 "\n", opcode, psx_pc);
         }
         if ((opcode & 0x02000000) == 0)
         {
@@ -1428,7 +1430,7 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
             else
             {
                 if (total_instructions < 100)
-                    printf("DYNAREC: Unknown COP2 transfer rs=0x%X\n", rs);
+                    DLOG("Unknown COP2 transfer rs=0x%X\n", rs);
             }
         }
         else
@@ -1691,7 +1693,7 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
         static int unknown_log_count = 0;
         if (unknown_log_count < 200)
         {
-            printf("DYNAREC: Unknown opcode 0x%02" PRIX32 " at PC=0x%08" PRIX32 "\n", op, psx_pc);
+            DLOG("Unknown opcode 0x%02" PRIX32 " at PC=0x%08" PRIX32 "\n", op, psx_pc);
             unknown_log_count++;
         }
         break;
@@ -1779,7 +1781,7 @@ void Run_CPU(void)
     int j;
     for (j = 0; j < (int)(code_ptr - test_start); j++)
     {
-        printf("  [%d] 0x%08X\n", j, (unsigned)test_start[j]);
+        DLOG_RAW("  [%d] 0x%08X\n", j, (unsigned)test_start[j]);
     }
 
     /* Call it */
@@ -1846,12 +1848,12 @@ void Run_CPU(void)
             static int binary_loaded = 0;
             if (!binary_loaded)
             {
-                printf("DYNAREC: Reached BIOS Shell Entry (0xBFC06FF0). Loading binary...\n");
+                DLOG("Reached BIOS Shell Entry (0xBFC06FF0). Loading binary...\n");
                 if (psx_exe_filename && psx_exe_filename[0] != '\0')
                 {
                     if (Load_PSX_EXE(psx_exe_filename, &cpu) == 0)
                     {
-                        printf("DYNAREC: Binary loaded successfully. Jump to PC=0x%08X\n", (unsigned)cpu.pc);
+                        DLOG("Binary loaded successfully. Jump to PC=0x%08X\n", (unsigned)cpu.pc);
 #ifdef ENABLE_HOST_LOG
                         host_log_file = fopen("output.log", "w");
 #endif
@@ -1871,7 +1873,7 @@ void Run_CPU(void)
                 }
                 else
                 {
-                    printf("DYNAREC: No PSX EXE provided; continuing BIOS.\n");
+                    DLOG("No PSX EXE provided; continuing BIOS.\n");
                 }
 
                 binary_loaded = 1; /* Don't try again */
@@ -1897,7 +1899,7 @@ void Run_CPU(void)
             {
                 /* PC points to non-executable region (scratchpad, MDEC, etc.)
                  * Fire an Instruction Bus Error exception (cause 6) like real HW */
-                printf("DYNAREC: IBE at PC=0x%08X\n", (unsigned)pc);
+                DLOG("IBE at PC=0x%08X\n", (unsigned)pc);
                 cpu.pc = pc;
                 PSX_Exception(6); /* IBE - Instruction Bus Error */
                 continue;
@@ -1943,7 +1945,7 @@ void Run_CPU(void)
             }
             else if (iterations % 5000000 == 0)
             {
-                printf("DYNAREC: INT pending but blocked: SR=%08X IEc=%d IM2=%d PC=%08X\n",
+                DLOG("INT pending but blocked: SR=%08X IEc=%d IM2=%d PC=%08X\n",
                        (unsigned)sr, (int)(sr & 1), (int)((sr >> 10) & 1),
                        (unsigned)cpu.pc);
             }
@@ -1963,7 +1965,7 @@ void Run_CPU(void)
             stuck_count++;
             if (stuck_count == 50000)
             {
-                printf("[STUCK] Block at %08X ran 50000 times (SR=%08X I_STAT=%08X Cause=%08X)\n",
+                DLOG("STUCK: Block at %08X ran 50000 times (SR=%08X I_STAT=%08X Cause=%08X)\n",
                        (unsigned)pc, (unsigned)cpu.cop0[PSX_COP0_SR],
                        (unsigned)CheckInterrupts(),
                        (unsigned)cpu.cop0[PSX_COP0_CAUSE]);
@@ -1972,19 +1974,19 @@ void Run_CPU(void)
                 if (phys < PSX_RAM_SIZE - 32)
                 {
                     int di;
-                    printf("[STUCK] Instructions at %08X:\n", (unsigned)pc);
+                    DLOG("STUCK: Instructions at %08X:\n", (unsigned)pc);
                     for (di = 0; di < 8; di++)
                     {
-                        printf("  %08X: %08X\n", (unsigned)(pc + di * 4),
+                        DLOG_RAW("  %08X: %08X\n", (unsigned)(pc + di * 4),
                                (unsigned)(*(uint32_t *)(psx_ram + phys + di * 4)));
                     }
                 }
-                printf("[STUCK] Regs: v0=%08X a0=%08X a1=%08X t0=%08X t1=%08X ra=%08X sp=%08X\n",
+                DLOG("STUCK: Regs: v0=%08X a0=%08X a1=%08X t0=%08X t1=%08X ra=%08X sp=%08X\n",
                        (unsigned)cpu.regs[2], (unsigned)cpu.regs[4],
                        (unsigned)cpu.regs[5], (unsigned)cpu.regs[8],
                        (unsigned)cpu.regs[9], (unsigned)cpu.regs[31],
                        (unsigned)cpu.regs[29]);
-                printf("[STUCK] s0=%08X s1=%08X s2=%08X s3=%08X s4=%08X s5=%08X\n",
+                DLOG("STUCK: s0=%08X s1=%08X s2=%08X s3=%08X s4=%08X s5=%08X\n",
                        (unsigned)cpu.regs[16], (unsigned)cpu.regs[17],
                        (unsigned)cpu.regs[18], (unsigned)cpu.regs[19],
                        (unsigned)cpu.regs[20], (unsigned)cpu.regs[21]);
@@ -1994,7 +1996,7 @@ void Run_CPU(void)
                     uint32_t s1_phys = cpu.regs[17] & 0x1FFFFF;
                     if (s1_phys + 12 < PSX_RAM_SIZE)
                     {
-                        printf("[STUCK] *s1: [0]=%08X [4]=%08X [8]=%08X\n",
+                        DLOG("STUCK: *s1: [0]=%08X [4]=%08X [8]=%08X\n",
                                (unsigned)(*(uint32_t *)(psx_ram + s1_phys)),
                                (unsigned)(*(uint32_t *)(psx_ram + s1_phys + 4)),
                                (unsigned)(*(uint32_t *)(psx_ram + s1_phys + 8)));
@@ -2025,13 +2027,13 @@ void Run_CPU(void)
             sprintf(filename, "vram_%u.bin", (unsigned)iterations);
             extern void DumpVRAM(const char *);
             DumpVRAM(filename);
-            printf("VRAM Dumped to %s\n", filename);
+            DLOG("VRAM Dumped to %s\n", filename);
         }
 #endif
     }
 
-    printf("DYNAREC: Stopped after %u iterations. Final PC=0x%08X\n",
+    DLOG("Stopped after %u iterations. Final PC=0x%08X\n",
            (unsigned)iterations, (unsigned)cpu.pc);
-    printf("DYNAREC: Blocks compiled: %u, Total instructions: %u\n",
+    DLOG("Blocks compiled: %u, Total instructions: %u\n",
            (unsigned)blocks_compiled, (unsigned)total_instructions);
 }

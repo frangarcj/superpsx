@@ -10,6 +10,8 @@
 #include <string.h>
 #include <gs_psm.h>
 
+#define LOG_TAG "GPU"
+
 // DMA Channel 1 (VIF1) registers - PCSX2 routes GS readback through VIF1
 #define D1_CHCR ((volatile uint32_t *)0x10009000)
 #define D1_MADR ((volatile uint32_t *)0x10009010)
@@ -137,7 +139,7 @@ static void Flush_GIF(void)
 {
     if (gif_packet_ptr > 0)
     {
-        //        printf("[GIF] Sending %d qwords via DMA\n", gif_packet_ptr);
+        //        DLOG("Sending %d qwords via DMA\n", gif_packet_ptr);
         // Send to GIF (Channel 2)
         dma_channel_send_normal(DMA_CHANNEL_GIF, gif_packet_buf, gif_packet_ptr, 0, 0);
         dma_wait_fast(); // Wait for completion for now to be safe
@@ -1451,7 +1453,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
             *gif_cursor = &gif_packet_buf[gif_packet_ptr];
         }
 
-        // printf("[GPU] Draw Sprite: Rect (%d,%d %dx%d) Color=%06X\n", x, y, w, h, color);
+        // DLOG("Draw Sprite: Rect (%d,%d %dx%d) Color=%06X\n", x, y, w, h, color);
     }
     else if (cmd == 0x02)
     { // FillRect
@@ -1806,7 +1808,7 @@ void GPU_WriteGP0(uint32_t data)
                     h = 512;
                 gpu_transfer_words = (w * h + 1) / 2;
                 gpu_transfer_total = gpu_transfer_words;
-                printf("[GPU] GP0(A0) Start Transfer: %" PRIu32 "x%" PRIu32 " (%d words)\n", w, h, gpu_transfer_words);
+                DLOG("GP0(A0) Start Transfer: %" PRIu32 "x%" PRIu32 " (%d words)\n", w, h, gpu_transfer_words);
 
                 // Track transfer position for shadow VRAM
                 uint32_t xy = gpu_cmd_buffer[1];
@@ -1838,7 +1840,7 @@ void GPU_WriteGP0(uint32_t data)
                 // Set GPUSTAT bit 27 (ready to send VRAM to CPU)
                 gpu_stat |= 0x08000000;
 
-                printf("[GPU] GP0(C0) VRAM Read: %dx%d at (%d,%d), %d words\n",
+                DLOG("GP0(C0) VRAM Read: %dx%d at (%d,%d), %d words\n",
                        vram_read_w, vram_read_h, vram_read_x, vram_read_y, vram_read_remaining);
             }
             else if ((cmd & 0xE0) == 0x80)
@@ -1858,7 +1860,7 @@ void GPU_WriteGP0(uint32_t data)
                 if (h == 0)
                     h = 0x200;
 
-                printf("[GPU] GP0(80) VRAM Copy: (%d,%d)->(%d,%d) %dx%d\n", sx, sy, dx, dy, w, h);
+                DLOG("GP0(80) VRAM Copy: (%d,%d)->(%d,%d) %dx%d\n", sx, sy, dx, dy, w, h);
 
                 // Update shadow VRAM
                 if (psx_vram_shadow)
@@ -2204,7 +2206,7 @@ void GPU_WriteGP0(uint32_t data)
             Push_GIF_Data(alpha_reg, 0x42); // ALPHA_1
         }
 
-        // printf("[GPU] E1: TexPage(%d,%d) fmt=%d\n", tex_page_x, tex_page_y, tpf);
+        // DLOG("E1: TexPage(%d,%d) fmt=%d\n", tex_page_x, tex_page_y, tpf);
         if (gpu_debug_log)
         {
             fprintf(gpu_debug_log, "[GPU] E1: TexPage(%d,%d) fmt=%" PRIu32 " trans=%" PRIu32 " dither=%" PRIu32 " flipX=%d flipY=%d\n",
@@ -2217,7 +2219,7 @@ void GPU_WriteGP0(uint32_t data)
     case 0xE3: // Drawing Area Top-Left
         draw_clip_x1 = data & 0x3FF;
         draw_clip_y1 = (data >> 10) & 0x3FF;
-        printf("[GPU] E3: Draw Area TL (%d,%d)\n", draw_clip_x1, draw_clip_y1);
+        DLOG("E3: Draw Area TL (%d,%d)\n", draw_clip_x1, draw_clip_y1);
         // Update SCISSOR (framebuffer space, no offset)
         {
             Push_GIF_Tag(1, 1, 0, 0, 0, 1, 0xE);
@@ -2231,7 +2233,7 @@ void GPU_WriteGP0(uint32_t data)
     case 0xE4: // Drawing Area Bottom-Right
         draw_clip_x2 = data & 0x3FF;
         draw_clip_y2 = (data >> 10) & 0x3FF;
-        printf("[GPU] E4: Draw Area BR (%d,%d)\n", draw_clip_x2, draw_clip_y2);
+        DLOG("E4: Draw Area BR (%d,%d)\n", draw_clip_x2, draw_clip_y2);
         // Update SCISSOR (framebuffer space, no offset)
         {
             Push_GIF_Tag(1, 1, 0, 0, 0, 1, 0xE);
@@ -2253,7 +2255,7 @@ void GPU_WriteGP0(uint32_t data)
 
         // Don't update XYOFFSET (keep fixed at 2048,2048)
         // Draw offset is applied per-vertex in Translate_GP0_to_GS
-        printf("[GPU] E5: Draw Offset = (%d, %d)\n", draw_offset_x, draw_offset_y);
+        DLOG("E5: Draw Offset = (%d, %d)\n", draw_offset_x, draw_offset_y);
         break;
     case 0xE2: // Texture Window Setting
         tex_win_mask_x = data & 0x1F;
@@ -2333,7 +2335,7 @@ void GPU_WriteGP1(uint32_t data)
         uint32_t x = data & 0x3FF;
         uint32_t y = (data >> 10) & 0x1FF;
 
-        //                printf("[GPU] GP1(05) Display Start: %d, %d (Offset: %06X)\n", x, y, data & 0xFFFFFF);
+        //                DLOG("GP1(05) Display Start: %d, %d (Offset: %06X)\n", x, y, data & 0xFFFFFF);
 
         uint64_t dispfb = 0;
         dispfb |= (uint64_t)0 << 0;            // FBP (Base 0)
@@ -2347,10 +2349,10 @@ void GPU_WriteGP1(uint32_t data)
     }
     break;
     case 0x06: // Horizontal Display Range
-               //            printf("[GPU] GP1(06) H Display Range: raw=0x%06X x1=%d x2=%d\n", data & 0xFFFFFF, data & 0xFFF, (data >> 12) & 0xFFF);
+               //            DLOG("GP1(06) H Display Range: raw=0x%06X x1=%d x2=%d\n", data & 0xFFFFFF, data & 0xFFF, (data >> 12) & 0xFFF);
         break;
     case 0x07: // Vertical Display Range
-               //            printf("[GPU] GP1(07) V Display Range: raw=0x%06X y1=%d y2=%d\n", data & 0xFFFFFF, data & 0x3FF, (data >> 10) & 0x3FF);
+               //            DLOG("GP1(07) V Display Range: raw=0x%06X y1=%d y2=%d\n", data & 0xFFFFFF, data & 0x3FF, (data >> 10) & 0x3FF);
         break;
     case 0x08: // Display Mode
     {
@@ -2369,7 +2371,7 @@ void GPU_WriteGP1(uint32_t data)
             uint32_t pal = (data >> 3) & 1;
             uint32_t interlace = (data >> 5) & 1;
             int widths[] = {256, 320, 512, 640};
-            printf("[GPU] GP1(08) Display Mode CHANGED: %dx%d %s %s\n",
+            DLOG("GP1(08) Display Mode CHANGED: %dx%d %s %s\n",
                    widths[hres], vres ? 480 : 240,
                    pal ? "PAL" : "NTSC", interlace ? "Interlaced" : "Progressive");
 
@@ -2416,7 +2418,7 @@ void GPU_WriteGP1(uint32_t data)
 
 void GPU_Flush(void)
 {
-    //    printf("[GPU] GPU_Flush called\n");
+    //    DLOG("GPU_Flush called\n");
     Flush_GIF();
 }
 
@@ -2457,7 +2459,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                 total_words = block_size * block_count;
             }
 
-            //            printf("[GPU] DMA2 Block Transfer: %d words (mode=%d, bs=%d, bc=%d)\n",
+            //            DLOG("DMA2 Block Transfer: %d words (mode=%d, bs=%d, bc=%d)\n",
             //                   total_words, sync_mode, block_size, block_count);
 
             for (uint32_t i = 0; i < total_words; i++)
@@ -2489,7 +2491,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                 total_words = block_size * block_count;
             }
 
-            printf("[GPU] DMA2 GPU->CPU Read: %" PRIu32 " words\n", total_words);
+            DLOG("DMA2 GPU->CPU Read: %" PRIu32 " words\n", total_words);
 
             for (uint32_t i = 0; i < total_words; i++)
             {
@@ -2506,7 +2508,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
         int packets = 0;
         int max_packets = 20000;
 
-        //        printf("[GPU] Start DMA2 Chain\n");
+        //        DLOG("Start DMA2 Chain\n");
         fflush(stdout);
 
         while (packets < max_packets)
@@ -2519,7 +2521,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
 
             if (count > 256)
             {
-                printf("[GPU] ERROR: Packet count too large (%" PRIu32 "). Aborting chain.\n", count);
+                DLOG("ERROR: Packet count too large (%" PRIu32 "). Aborting chain.\n", count);
                 break;
             }
 
@@ -2653,21 +2655,21 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
             // Check for end of list
             if (next == 0xFFFFFF)
             {
-                // printf("[GPU] End of Linked List (Terminator)\n");
+                // DLOG("End of Linked List (Terminator)\n");
                 break;
             }
 
             // Check for self-reference (Infinite Loop Prevention)
             if (next == packet_addr)
             {
-                printf("[GPU] Warning: Linked List Self-Reference %06" PRIX32 ". Breaking chain to allow CPU operation.\n", next);
+                DLOG("Warning: Linked List Self-Reference %06" PRIX32 ". Breaking chain to allow CPU operation.\n", next);
                 break;
             }
 
             // Safety check for next address (alignment)
             if (next & 0x3)
             {
-                printf("[GPU] ERROR: Unaligned next pointer %06" PRIX32 "\n", next);
+                DLOG("ERROR: Unaligned next pointer %06" PRIX32 "\n", next);
                 break;
             }
 
@@ -2675,7 +2677,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
         }
 
         Flush_GIF();
-        //        printf("[GPU] End DMA2 Chain (%d packets processed)\n", packets);
+        //        DLOG("End DMA2 Chain (%d packets processed)\n", packets);
     }
 }
 
@@ -2726,7 +2728,7 @@ void Init_Graphics()
 void DumpVRAM(const char *filename)
 {
 #ifdef ENABLE_VRAM_DUMP
-    printf("[DumpVRAM] Dumping VRAM to %s...\n", filename);
+    DLOG("DumpVRAM: Dumping VRAM to %s...\n", filename);
 #endif
 
     // 1. Finish any pending rendering
@@ -2743,7 +2745,7 @@ void DumpVRAM(const char *filename)
     if (!buf)
     {
 #ifdef ENABLE_VRAM_DUMP
-        printf("[DumpVRAM] Failed to allocate %d bytes\n", size_bytes);
+        DLOG("Failed to allocate %d bytes\n", size_bytes);
 #endif
         return;
     }
@@ -2805,8 +2807,8 @@ void DumpVRAM(const char *filename)
 
 #ifdef ENABLE_VRAM_DUMP
     uint16_t *p = (uint16_t *)uncached_buf;
-    printf("[DumpVRAM] First pixel: %04X\n", p[0]);
-    printf("[DumpVRAM] Center pixel: %04X\n", p[(512 * 1024 / 2) + 512]);
+    DLOG("DumpVRAM: First pixel: %04X\n", p[0]);
+    DLOG("DumpVRAM: Center pixel: %04X\n", p[(512 * 1024 / 2) + 512]);
     fflush(stdout);
 #endif
 
@@ -2816,14 +2818,14 @@ void DumpVRAM(const char *filename)
         fwrite(uncached_buf, 1, size_bytes, f);
         fclose(f);
 #ifdef ENABLE_VRAM_DUMP
-        printf("[DumpVRAM] Saved %d bytes to %s\n", size_bytes, filename);
+        DLOG("DumpVRAM: Saved %d bytes to %s\n", size_bytes, filename);
         fflush(stdout);
 #endif
     }
     else
     {
 #ifdef ENABLE_VRAM_DUMP
-        printf("[DumpVRAM] Error opening file %s\n", filename);
+        DLOG("Error opening file %s\n", filename);
         fflush(stdout);
 #endif
     }
