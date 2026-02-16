@@ -1751,58 +1751,6 @@ void Run_CPU(void)
 {
     printf("Starting CPU Execution (Dynarec)...\n");
 
-    /* ----- JIT sanity test ----- */
-    printf("JIT test: emitting trivial block...\n");
-    uint32_t *test_start = code_ptr;
-    /* Minimal block: store 0xDEADBEEF to cpu.pc, then return */
-    /* addiu $sp, $sp, -16 */
-    emit(MK_I(0x09, REG_SP, REG_SP, (uint16_t)(-16)));
-    /* sw $ra, 12($sp) */
-    emit(MK_I(0x2B, REG_SP, REG_RA, 12));
-    /* lui $t0, 0xDEAD */
-    emit(MK_I(0x0F, 0, REG_T0, 0xDEAD));
-    /* ori $t0, $t0, 0xBEEF */
-    emit(MK_I(0x0D, REG_T0, REG_T0, 0xBEEF));
-    /* sw $t0, CPU_PC($a0) */
-    emit(MK_I(0x2B, REG_A0, REG_T0, CPU_PC));
-    /* lw $ra, 12($sp) */
-    emit(MK_I(0x23, REG_SP, REG_RA, 12));
-    /* addiu $sp, $sp, 16 */
-    emit(MK_I(0x09, REG_SP, REG_SP, 16));
-    /* jr $ra */
-    emit(MK_R(0, REG_RA, 0, 0, 0, 0x08));
-    /* nop (delay slot) */
-    emit(0);
-
-    FlushCache(0);
-    FlushCache(2);
-
-    printf("JIT test: block at %p, %d words\n", test_start, (int)(code_ptr - test_start));
-    int j;
-    for (j = 0; j < (int)(code_ptr - test_start); j++)
-    {
-        DLOG_RAW("  [%d] 0x%08X\n", j, (unsigned)test_start[j]);
-    }
-
-    /* Call it */
-    cpu.pc = 0;
-    printf("JIT test: calling block... cpu.pc before = 0x%08X\n", (unsigned)cpu.pc);
-    ((block_func_t)test_start)(&cpu, psx_ram, psx_bios);
-    printf("JIT test: returned! cpu.pc = 0x%08X (expect 0xDEADBEEF)\n", (unsigned)cpu.pc);
-
-    if (cpu.pc != 0xDEADBEEF)
-    {
-        printf("JIT TEST FAILED! FlushCache may not be working.\n");
-        return;
-    }
-    printf("JIT TEST PASSED!\n");
-
-    /* Reset code pointer for actual use */
-    code_ptr = code_buffer;
-    memset(block_cache, 0, BLOCK_CACHE_SIZE * sizeof(BlockEntry));
-    blocks_compiled = 0;
-    total_instructions = 0;
-
     /* ----- Real execution ----- */
     cpu.pc = 0xBFC00000;
     cpu.cop0[PSX_COP0_SR] = 0x10400000;   /* Initial status: CU0=1, BEV=1 */
