@@ -100,6 +100,7 @@ extern volatile int psx_block_exception;
 void CDROM_Init(void);
 u32 CDROM_Read(u32 addr);
 void CDROM_Write(u32 addr, u32 data);
+void CDROM_Update(u32 cycles);
 
 /*=== Graphics ===*/
 void Init_Graphics(void);

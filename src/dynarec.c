@@ -1927,6 +1927,9 @@ void Run_CPU(void)
         /* Update Timers (approximate cycles) */
         UpdateTimers(cycles);
 
+        /* Update CD-ROM timing */
+        CDROM_Update(cycles);
+
         /* Check for interrupts */
         if (CheckInterrupts())
         {
