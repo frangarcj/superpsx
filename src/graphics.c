@@ -79,6 +79,13 @@ static int polyline_expect_color = 0; // For shaded: 1=expecting color, 0=expect
 static int tex_flip_x = 0;
 static int tex_flip_y = 0;
 
+// Mask bit state from GP0(E6)
+static int mask_set_bit = 0;   // GP0(E6).0 - Force bit15 when drawing
+static int mask_check_bit = 0; // GP0(E6).1 - Skip pixels with bit15 set
+
+// GP1(09h) - Allow 2MB VRAM (controls GP0(E1h).bit11 → GPUSTAT.15)
+static int gp1_allow_2mb = 0;
+
 // Texture window from GP0(E2)
 static u32 tex_win_mask_x = 0; // In 8-pixel steps
 static u32 tex_win_mask_y = 0;
@@ -702,9 +709,9 @@ static int Decode_CLUT4_Texture(int clut_x, int clut_y, int tex_x, int tex_y,
     // We need to read back:
     // 1. The CLUT: 16 entries at (clut_x, clut_y), 16 halfwords = 32 bytes
     // 2. The texture rows: from (tex_x + u0/4, tex_y + v0) with width = ceil((u0+tw)/4) - u0/4
-    int hw_x0 = u0 / 4;                    // First halfword column needed
-    int hw_x1 = (u0 + tw + 3) / 4;        // One past last halfword column
-    int hw_w = hw_x1 - hw_x0;              // Number of halfword columns
+    int hw_x0 = u0 / 4;            // First halfword column needed
+    int hw_x1 = (u0 + tw + 3) / 4; // One past last halfword column
+    int hw_w = hw_x1 - hw_x0;      // Number of halfword columns
     int rb_x = tex_x + hw_x0;
     int rb_y = tex_y + v0;
     int rb_w = hw_w;
@@ -763,7 +770,8 @@ static int Decode_CLUT4_Texture(int clut_x, int clut_y, int tex_x, int tex_y,
             u16 cv = clut_uc[idx];
             // Set STP bit (bit 15) on non-zero CLUT values so they pass alpha test
             // PSX treats 0x0000 as transparent; non-zero with STP=0 is still opaque
-            if (cv != 0) cv |= 0x8000;
+            if (cv != 0)
+                cv |= 0x8000;
             decoded[row * tw + col] = cv;
         }
     }
@@ -832,7 +840,8 @@ static int Decode_CLUT8_Texture(int clut_x, int clut_y, int tex_x, int tex_y,
             u16 packed = tex_uc[row * rb_w_aligned + hw_col];
             int idx = (packed >> (byte_idx * 8)) & 0xFF;
             u16 cv = clut_uc[idx];
-            if (cv != 0) cv |= 0x8000;
+            if (cv != 0)
+                cv |= 0x8000;
             decoded[row * tw + col] = cv;
         }
     }
@@ -925,6 +934,20 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
                     u32 tpage = verts[i].uv >> 16;
                     poly_tex_page_x = (tpage & 0xF) * 64;
                     poly_tex_page_y = ((tpage >> 4) & 0x1) * 256;
+
+                    // Texpage attribute updates GPUSTAT bits 0-8 and optionally bit 15
+                    // Bits 9-10 (dither, draw-to-display) are NOT changed
+                    gpu_stat = (gpu_stat & ~0x81FF) | (tpage & 0x1FF);
+                    if (gp1_allow_2mb)
+                        gpu_stat = (gpu_stat & ~0x8000) | (((tpage >> 11) & 1) << 15);
+                    else
+                        gpu_stat &= ~0x8000;
+
+                    // Also update internal state from texpage
+                    tex_page_x = poly_tex_page_x;
+                    tex_page_y = poly_tex_page_y;
+                    tex_page_format = (tpage >> 7) & 3;
+                    semi_trans_mode = (tpage >> 5) & 3;
                 }
             }
         }
@@ -1213,30 +1236,30 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
                 }
                 else
                 {
-                int u_start = (int)u0_raw;
-                int u_eff = (u_start + 1) & 0xFF; // Effective first UV (PSX mirrors around u_start + 0.5)
-                int k_at_zero = u_eff;            // Column index where u reaches 0
-                int n_a = (k_at_zero + 1 < (int)w) ? (k_at_zero + 1) : (int)w;
-                int n_b = (int)w - n_a;
+                    int u_start = (int)u0_raw;
+                    int u_eff = (u_start + 1) & 0xFF; // Effective first UV (PSX mirrors around u_start + 0.5)
+                    int k_at_zero = u_eff;            // Column index where u reaches 0
+                    int n_a = (k_at_zero + 1 < (int)w) ? (k_at_zero + 1) : (int)w;
+                    int n_b = (int)w - n_a;
 
-                num_sprites = (n_b > 0) ? 2 : 1;
+                    num_sprites = (n_b > 0) ? 2 : 1;
 
-                // Sprite A: first n_a columns, UV from u_eff down to 0
-                sp_gx0[0] = ((s32)x + draw_offset_x + 2048) << 4;
-                sp_gx1[0] = ((s32)(x + n_a) + draw_offset_x + 2048) << 4;
-                sp_u0[0] = u_eff + tex_page_x;
-                // V1.u = V0.u - n_a (gives exact -16/pixel step in 10.4 fixed point)
-                // For 1-pixel sprite, V1.u doesn't affect output, use V0.u+1
-                sp_u1[0] = (n_a == 1) ? (sp_u0[0] + 1) : (sp_u0[0] - n_a);
+                    // Sprite A: first n_a columns, UV from u_eff down to 0
+                    sp_gx0[0] = ((s32)x + draw_offset_x + 2048) << 4;
+                    sp_gx1[0] = ((s32)(x + n_a) + draw_offset_x + 2048) << 4;
+                    sp_u0[0] = u_eff + tex_page_x;
+                    // V1.u = V0.u - n_a (gives exact -16/pixel step in 10.4 fixed point)
+                    // For 1-pixel sprite, V1.u doesn't affect output, use V0.u+1
+                    sp_u1[0] = (n_a == 1) ? (sp_u0[0] + 1) : (sp_u0[0] - n_a);
 
-                if (n_b > 0)
-                {
-                    // Sprite B: remaining n_b columns, UV from 255 down to (256-n_b)
-                    sp_gx0[1] = sp_gx1[0];
-                    sp_gx1[1] = ((s32)(x + w) + draw_offset_x + 2048) << 4;
-                    sp_u0[1] = 255 + tex_page_x;
-                    sp_u1[1] = sp_u0[1] - n_b;
-                }
+                    if (n_b > 0)
+                    {
+                        // Sprite B: remaining n_b columns, UV from 255 down to (256-n_b)
+                        sp_gx0[1] = sp_gx1[0];
+                        sp_gx1[1] = ((s32)(x + w) + draw_offset_x + 2048) << 4;
+                        sp_u0[1] = 255 + tex_page_x;
+                        sp_u1[1] = sp_u0[1] - n_b;
+                    }
                 } // end else (non-CLUT flip)
             }
             else
@@ -1302,12 +1325,12 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
                 u64 tex0_before = 0;
                 tex0_before |= (u64)PSX_VRAM_FBW << 14;
                 tex0_before |= (u64)GS_PSM_16S << 20;
-                tex0_before |= (u64)10 << 26;                                       // TW = 10 (1024)
-                tex0_before |= (u64)(clut_decoded ? 10 : 9) << 30;                  // TH = 10 (1024) if CLUT, else 9 (512)
-                tex0_before |= (u64)1 << 34;                                        // TCC = 1
-                tex0_before |= (u64)(is_raw_texture ? 1 : 0) << 35;                 // TFX = Decal if raw, Modulate otherwise
-                Push_GIF_Data(tex0_before, 0x06); // TEX0_1
-                Push_GIF_Data(0, 0x3F);           // TEXFLUSH
+                tex0_before |= (u64)10 << 26;                       // TW = 10 (1024)
+                tex0_before |= (u64)(clut_decoded ? 10 : 9) << 30;  // TH = 10 (1024) if CLUT, else 9 (512)
+                tex0_before |= (u64)1 << 34;                        // TCC = 1
+                tex0_before |= (u64)(is_raw_texture ? 1 : 0) << 35; // TFX = Decal if raw, Modulate otherwise
+                Push_GIF_Data(tex0_before, 0x06);                   // TEX0_1
+                Push_GIF_Data(0, 0x3F);                             // TEXFLUSH
             }
 
             // Enable alpha test for CLUT textures: discard pixels with α=0 (=0x0000 transparent)
@@ -1315,11 +1338,11 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
             // ATE=1 enables the test. All other fields default to 0/pass.
             if (clut_decoded)
             {
-                u64 test_at = (u64)1;              // ATE = 1 (enable alpha test)
-                test_at |= (u64)6 << 1;            // ATST = 6 (GREATER)
-                                                    // AREF = 0 (bits 4-11)
-                                                    // AFAIL = 0 (bits 12-13, KEEP = don't write)
-                Push_GIF_Data(test_at, 0x47);       // TEST_1
+                u64 test_at = (u64)1;         // ATE = 1 (enable alpha test)
+                test_at |= (u64)6 << 1;       // ATST = 6 (GREATER)
+                                              // AREF = 0 (bits 4-11)
+                                              // AFAIL = 0 (bits 12-13, KEEP = don't write)
+                Push_GIF_Data(test_at, 0x47); // TEST_1
             }
 
             Push_GIF_Data(prim_reg, 0x00); // PRIM register
@@ -1371,9 +1394,9 @@ void Translate_GP0_to_GS(u32 *psx_cmd, u128 **gif_cursor)
                 tex0_mod |= (u64)PSX_VRAM_FBW << 14;
                 tex0_mod |= (u64)GS_PSM_16S << 20;
                 tex0_mod |= (u64)10 << 26;
-                tex0_mod |= (u64)9 << 30;          // TH = 9 (512) - restore
-                tex0_mod |= (u64)1 << 34;          // TCC = 1
-                tex0_mod |= (u64)0 << 35;          // TFX = 0 (Modulate)
+                tex0_mod |= (u64)9 << 30;      // TH = 9 (512) - restore
+                tex0_mod |= (u64)1 << 34;      // TCC = 1
+                tex0_mod |= (u64)0 << 35;      // TFX = 0 (Modulate)
                 Push_GIF_Data(tex0_mod, 0x06); // TEX0_1
                 Push_GIF_Data(0, 0x3F);        // TEXFLUSH
             }
@@ -1619,17 +1642,37 @@ void GPU_WriteGP0(u32 data)
         {
             u16 p0 = data & 0xFFFF;
             u16 p1 = data >> 16;
+            int total_pixels = vram_tx_w * vram_tx_h;
 
-            int px = vram_tx_x + (vram_tx_pixel % vram_tx_w);
-            int py = vram_tx_y + (vram_tx_pixel / vram_tx_w);
-            if (px < 1024 && py < 512)
-                psx_vram_shadow[py * 1024 + px] = p0;
+            // Apply GP0(E6h) mask bit behavior to CPU-to-VRAM transfers
+            if (mask_set_bit)
+            {
+                p0 |= 0x8000;
+                p1 |= 0x8000;
+            }
+
+            if (vram_tx_pixel < total_pixels)
+            {
+                int px = vram_tx_x + (vram_tx_pixel % vram_tx_w);
+                int py = vram_tx_y + (vram_tx_pixel / vram_tx_w);
+                if (px < 1024 && py < 512)
+                {
+                    if (!mask_check_bit || !(psx_vram_shadow[py * 1024 + px] & 0x8000))
+                        psx_vram_shadow[py * 1024 + px] = p0;
+                }
+            }
             vram_tx_pixel++;
 
-            px = vram_tx_x + (vram_tx_pixel % vram_tx_w);
-            py = vram_tx_y + (vram_tx_pixel / vram_tx_w);
-            if (px < 1024 && py < 512)
-                psx_vram_shadow[py * 1024 + px] = p1;
+            if (vram_tx_pixel < total_pixels)
+            {
+                int px = vram_tx_x + (vram_tx_pixel % vram_tx_w);
+                int py = vram_tx_y + (vram_tx_pixel / vram_tx_w);
+                if (px < 1024 && py < 512)
+                {
+                    if (!mask_check_bit || !(psx_vram_shadow[py * 1024 + px] & 0x8000))
+                        psx_vram_shadow[py * 1024 + px] = p1;
+                }
+            }
             vram_tx_pixel++;
         }
 
@@ -2107,6 +2150,14 @@ void GPU_WriteGP0(u32 data)
         tex_flip_x = (data >> 12) & 1;
         tex_flip_y = (data >> 13) & 1;
 
+        // Update GPUSTAT bits 0-10 from GP0(E1) bits 0-10
+        // GPUSTAT bit 15 from GP0(E1) bit 11 only if GP1(09h) enabled 2MB VRAM;
+        // otherwise force bit 15 to 0 on each E1 write
+        if (gp1_allow_2mb)
+            gpu_stat = (gpu_stat & ~0x87FF) | (data & 0x7FF) | (((data >> 11) & 1) << 15);
+        else
+            gpu_stat = (gpu_stat & ~0x87FF) | (data & 0x7FF);
+
         // Set TEX0: Use TBP0=0 (whole VRAM), UV offset applied per-vertex
         Push_GIF_Tag(4, 1, 0, 0, 0, 1, 0xE);
         u64 tex0 = 0;                    // TBP0 = 0 (full VRAM base)
@@ -2211,8 +2262,12 @@ void GPU_WriteGP0(u32 data)
         tex_win_off_y = (data >> 15) & 0x1F;
         break;
     case 0xE6: // Mask Bit Setting
-        // Bit 0: Set mask while drawing (1=set MSB)
-        // Bit 1: Check mask before drawing (1=skip already-set pixels)
+        // Bit 0: Set mask while drawing (1=force bit15=1)
+        // Bit 1: Check mask before drawing (1=skip pixels with bit15)
+        mask_set_bit = data & 1;
+        mask_check_bit = (data >> 1) & 1;
+        // Update GPUSTAT bits 11-12
+        gpu_stat = (gpu_stat & ~0x1800) | (mask_set_bit << 11) | (mask_check_bit << 12);
         break;
     case 0x00: // NOP
     case 0x01: // Clear Cache (NOP on real hardware too)
@@ -2327,6 +2382,9 @@ void GPU_WriteGP1(u32 data)
         // PSX content renders to VRAM and is visible through the updated GS display window
     }
     break;
+    case 0x09: // Set VRAM size (v2) - Allow 2MB VRAM
+        gp1_allow_2mb = data & 1;
+        break;
     case 0x10: // Get GPU Info
     {
         u32 info_type = data & 0x0F;
@@ -2647,6 +2705,16 @@ void Init_Graphics()
         dispfb |= (u64)0 << 43;                 // DBY
         *((volatile u64 *)0xB2000070) = dispfb; // DISPFB1
         *((volatile u64 *)0xB2000090) = dispfb; // DISPFB2
+    }
+
+    // Allocate PSX VRAM shadow (1024x512 x 16-bit) for VRAM read-back
+    if (!psx_vram_shadow)
+    {
+        psx_vram_shadow = (u16 *)memalign(64, 1024 * 512 * sizeof(u16));
+        if (psx_vram_shadow)
+            memset(psx_vram_shadow, 0, 1024 * 512 * sizeof(u16));
+        else
+            printf("ERROR: Failed to allocate PSX VRAM shadow!\n");
     }
 
     // Setup GS environment for rendering
