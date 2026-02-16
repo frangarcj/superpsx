@@ -87,6 +87,11 @@ static int sio_state = 0;         /* Current byte index in protocol */
 static uint8_t sio_response[5];   /* Pre-built response buffer */
 static int sio_selected = 0;      /* 1 = JOY SELECT is asserted */
 
+/* SIO Serial Port (0x1F801050-0x1F80105E) */
+static u16 serial_mode = 0;
+static u16 serial_ctrl = 0;
+static u16 serial_baud = 0;
+
 /* SPU */
 static u16 spu_regs[512]; /* 0x1F801C00-0x1F801DFF */
 
@@ -124,11 +129,23 @@ u32 ReadHardware(u32 addr)
         return stat;
     }
     if (phys == 0x1F801048)
-        return sio_mode;
+        return sio_mode & 0x003F; /* Only bits 0-5 are valid for JOY_MODE */
     if (phys == 0x1F80104A)
         return sio_ctrl;
     if (phys == 0x1F80104E)
         return sio_baud;
+
+    /* SIO Serial Port */
+    if (phys == 0x1F801050)
+        return 0xFF; /* SIO_TX_DATA - empty */
+    if (phys == 0x1F801054)
+        return 0x00000005; /* SIO_STAT - TX Ready */
+    if (phys == 0x1F801058)
+        return serial_mode & 0xFF;
+    if (phys == 0x1F80105A)
+        return serial_ctrl;
+    if (phys == 0x1F80105E)
+        return serial_baud;
 
     /* RAM Size */
     if (phys == 0x1F801060)
@@ -136,9 +153,9 @@ u32 ReadHardware(u32 addr)
 
     /* Interrupt Controller */
     if (phys == 0x1F801070)
-        return i_stat;
+        return i_stat & 0x7FF; /* Only 11 IRQ sources, bits 0-10 */
     if (phys == 0x1F801074)
-        return i_mask;
+        return i_mask & 0x7FF; /* Only 11 IRQ sources, bits 0-10 */
 
     /* DMA registers */
     if (phys >= 0x1F801080 && phys < 0x1F801100)
@@ -163,7 +180,27 @@ u32 ReadHardware(u32 addr)
     if (phys == 0x1F8010F0)
         return dma_dpcr;
     if (phys == 0x1F8010F4)
-        return dma_dicr;
+    {
+        /* DICR format:
+         *   Bits 0-5:   R/W (unknown purpose)
+         *   Bits 6-14:  Always 0 on read
+         *   Bit 15:     Force IRQ (R/W)
+         *   Bits 16-22: IRQ Enable per channel (R/W)
+         *   Bit 23:     IRQ Master Enable (R/W)
+         *   Bits 24-30: IRQ Flags per channel (R/W1C - write 1 to clear)
+         *   Bit 31:     IRQ Master Flag (Read-only, computed)
+         */
+        u32 read_val = dma_dicr & 0x7F000000; /* flags bits 24-30 */
+        read_val |= dma_dicr & 0x00FF803F;     /* enable, master en, force, bits 0-5 */
+        /* Bit 31 = force || (master_en && (en & flg) != 0) */
+        u32 force = (dma_dicr >> 15) & 1;
+        u32 master_en = (dma_dicr >> 23) & 1;
+        u32 en = (dma_dicr >> 16) & 0x7F;
+        u32 flg = (dma_dicr >> 24) & 0x7F;
+        if (force || (master_en && (en & flg)))
+            read_val |= 0x80000000;
+        return read_val;
+    }
 
     /* Timers */
     if (phys >= 0x1F801100 && phys < 0x1F801130)
@@ -262,8 +299,9 @@ void UpdateTimers(u32 cycles)
 
         val += inc;
 
-        // Check Target
-        if (val >= target && target > 0)
+        // Check Target (only lower 16 bits meaningful)
+        u32 target16 = target & 0xFFFF;
+        if (val >= target16 && target16 > 0)
         { // Target match
             // Bit 4: IRQ on Target
             if (mode & (1 << 4))
@@ -425,7 +463,7 @@ void WriteHardware(u32 addr, u32 data)
     }
     if (phys == 0x1F801048)
     {
-        sio_mode = (u16)data;
+        sio_mode = (u16)(data & 0x003F); /* Only bits 0-5 valid */
         return;
     }
     if (phys == 0x1F80104A)
@@ -433,11 +471,15 @@ void WriteHardware(u32 addr, u32 data)
         sio_ctrl = (u16)data;
         if (data & 0x40)
         {
-            /* Reset - clear all state */
+            /* Reset - clear all state including JOY_CTRL itself */
+            sio_ctrl = 0;
+            sio_mode = 0;
+            sio_baud = 0;
             sio_tx_pending = 0;
             sio_state = 0;
             sio_selected = 0;
             sio_data = 0xFF;
+            return;
         }
         if (data & 0x10)
         {
@@ -463,6 +505,30 @@ void WriteHardware(u32 addr, u32 data)
         return;
     }
 
+    /* SIO Serial Port writes */
+    if (phys == 0x1F801058)
+    {
+        serial_mode = (u16)(data & 0xFF);
+        return;
+    }
+    if (phys == 0x1F80105A)
+    {
+        serial_ctrl = (u16)data;
+        if (data & 0x40)
+        {
+            /* Reset serial port */
+            serial_ctrl = 0;
+            serial_mode = 0;
+            serial_baud = 0;
+        }
+        return;
+    }
+    if (phys == 0x1F80105E)
+    {
+        serial_baud = (u16)data;
+        return;
+    }
+
     /* RAM Size */
     if (phys == 0x1F801060)
     {
@@ -473,23 +539,12 @@ void WriteHardware(u32 addr, u32 data)
     /* Interrupt Controller */
     if (phys == 0x1F801070)
     {
-        /* Log CD-ROM IRQ ack */
-        if (!(data & 0x04) && (i_stat & 0x04))
-        {
-            //            printf("[IRQ] Acknowledging CD-ROM IRQ (I_STAT=%08X, write=%08X)\n",
-            //                   (unsigned)i_stat, (unsigned)data);
-        }
-        i_stat &= data;
+        i_stat &= data & 0x7FF; /* Only 11 bits, write-to-acknowledge */
         return;
     }
     if (phys == 0x1F801074)
     {
-        if (data != i_mask)
-        {
-            //            printf("[IRQ] I_MASK changed: %08X -> %08X\n",
-            //                   (unsigned)i_mask, (unsigned)data);
-        }
-        i_mask = data;
+        i_mask = data & 0x7FF; /* Only 11 bits writable */
         return;
     }
 
@@ -503,7 +558,7 @@ void WriteHardware(u32 addr, u32 data)
             switch (reg)
             {
             case 0:
-                dma_channels[ch].madr = data;
+                dma_channels[ch].madr = data & 0x00FFFFFF; /* 24-bit address */
                 break;
             case 1:
                 dma_channels[ch].bcr = data;
@@ -556,7 +611,18 @@ void WriteHardware(u32 addr, u32 data)
     }
     if (phys == 0x1F8010F4)
     {
-        dma_dicr = data;
+        /* DICR write behavior:
+         *   Bits 0-5:   R/W
+         *   Bits 6-14:  Not used (ignored)
+         *   Bit 15:     Force IRQ (R/W)
+         *   Bits 16-22: IRQ Enable per channel (R/W)
+         *   Bit 23:     IRQ Master Enable (R/W)
+         *   Bits 24-30: Write-1-to-clear (acknowledge flags)
+         *   Bit 31:     Read-only (ignored on write)
+         */
+        u32 rw_mask = 0x00FF803F; /* bits 0-5, 15-23 */
+        u32 ack_bits = data & 0x7F000000; /* bits 24-30 written as 1 clear the flag */
+        dma_dicr = (data & rw_mask) | ((dma_dicr & 0x7F000000) & ~ack_bits);
         return;
     }
 
@@ -570,13 +636,13 @@ void WriteHardware(u32 addr, u32 data)
             switch (reg)
             {
             case 0:
-                timers[t].value = data & 0xFFFF;
+                timers[t].value = data;
                 break;
             case 1:
                 timers[t].mode = data;
                 break;
             case 2:
-                timers[t].target = data & 0xFFFF;
+                timers[t].target = data;
                 break;
             }
         }
