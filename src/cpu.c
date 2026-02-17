@@ -12,18 +12,18 @@ jmp_buf psx_block_jmp;
 volatile int psx_block_exception = 0;
 
 /* ---- PSX Exception Handling ---- */
-static int cdrom_irq_logged = 0;
+static int cdrom_irq_count = 0;
 void PSX_Exception(uint32_t cause_code)
 {
-    /* Debug: log CD-ROM interrupt delivery */
-    if (cause_code == 0 && !cdrom_irq_logged)
+    /* Debug: log CD-ROM interrupt delivery (first 20) */
+    if (cause_code == 0 && cdrom_irq_count < 20)
     {
         uint32_t istat = CheckInterrupts();
         if (istat & 0x04)
         {
-            DLOG("Delivering CD-ROM interrupt! PC=%08X SR=%08X\n",
-                   (unsigned)cpu.pc, (unsigned)cpu.cop0[PSX_COP0_SR]);
-            cdrom_irq_logged = 1;
+            DLOG("Delivering CD-ROM interrupt #%d! PC=%08X SR=%08X\n",
+                 cdrom_irq_count, (unsigned)cpu.pc, (unsigned)cpu.cop0[PSX_COP0_SR]);
+            cdrom_irq_count++;
         }
     }
 
@@ -71,7 +71,7 @@ void PSX_Exception(uint32_t cause_code)
             if (exc_warn < 5)
             {
                 DLOG("WARNING: No exception handler at 0x80000080! (word=0x%08X) Ignoring IRQ.\n",
-                       (unsigned)handler_word);
+                     (unsigned)handler_word);
                 exc_warn++;
             }
             /* Undo the mode push since we can't handle it */

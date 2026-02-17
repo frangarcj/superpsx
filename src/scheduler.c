@@ -14,9 +14,10 @@
  */
 
 /* ---- Event slot ---- */
-typedef struct {
-    int             active;
-    uint64_t        deadline;
+typedef struct
+{
+    int active;
+    uint64_t deadline;
     sched_callback_t callback;
 } SchedEvent;
 
@@ -40,7 +41,7 @@ void Scheduler_ScheduleEvent(int event_id, uint64_t absolute_cycle,
 {
     if (event_id < 0 || event_id >= SCHED_EVENT_COUNT)
         return;
-    events[event_id].active   = 1;
+    events[event_id].active = 1;
     events[event_id].deadline = absolute_cycle;
     events[event_id].callback = cb;
 }
@@ -74,7 +75,7 @@ void Scheduler_DispatchEvents(uint64_t current_cycle)
     {
         if (events[i].active && events[i].deadline <= current_cycle)
         {
-            events[i].active = 0;  /* Mark inactive BEFORE callback */
+            events[i].active = 0; /* Mark inactive BEFORE callback */
             if (events[i].callback)
                 events[i].callback();
             /* The callback is expected to reschedule itself if recurring */

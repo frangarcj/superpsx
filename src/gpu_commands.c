@@ -113,8 +113,10 @@ void GPU_WriteGP0(uint32_t data)
             uint16_t gs_p0 = (uint16_t)(data & 0xFFFF);
             uint16_t gs_p1 = (uint16_t)(data >> 16);
             // Only 0x0000 is transparent; 0x8000 (black + STP=1) is opaque
-            if (gs_p0 != 0) gs_p0 |= 0x8000;
-            if (gs_p1 != 0) gs_p1 |= 0x8000;
+            if (gs_p0 != 0)
+                gs_p0 |= 0x8000;
+            if (gs_p1 != 0)
+                gs_p1 |= 0x8000;
             pending_words[pending_count++] = (uint32_t)gs_p0 | ((uint32_t)gs_p1 << 16);
         }
 
@@ -644,7 +646,7 @@ void GPU_WriteGP0(uint32_t data)
         {
             Push_GIF_Tag(2, 1, 0, 0, 0, 1, 0xE);
             Push_GIF_Data((uint64_t)mask_set_bit, 0x4A); // FBA_1
-            Push_GIF_Data(Get_Base_TEST(), 0x47); // TEST_1
+            Push_GIF_Data(Get_Base_TEST(), 0x47);        // TEST_1
         }
         break;
     case 0x00: // NOP
@@ -655,6 +657,12 @@ void GPU_WriteGP0(uint32_t data)
         int size = GPU_GetCommandSize(cmd);
         if (size > 1)
         {
+            static int draw_cmd_count = 0;
+            draw_cmd_count++;
+            if (draw_cmd_count <= 20 || (draw_cmd_count % 10000 == 0))
+            {
+                DLOG("GP0 draw cmd %02Xh (size=%d) #%d\n", cmd, size, draw_cmd_count);
+            }
             gpu_cmd_buffer[0] = data;
             gpu_cmd_ptr = 1;
             gpu_cmd_remaining = size - 1;
@@ -748,6 +756,8 @@ void GPU_WriteGP1(uint32_t data)
             gpu_stat |= 0x00800000;
         else
             gpu_stat &= ~0x00800000;
+        DLOG("GP1(03) Display Enable: %s (data=%08X, gpu_stat=%08X)\n",
+             (data & 1) ? "DISABLED" : "ENABLED", (unsigned)data, (unsigned)gpu_stat);
         break;
     case 0x04: // DMA Direction
         gpu_stat = (gpu_stat & ~0x60000000) | ((data & 3) << 29);

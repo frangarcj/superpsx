@@ -21,3 +21,4 @@ Thumbs.db
 # Test binaries and data
 test.exe
 tests/
+isos/

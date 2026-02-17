@@ -3,7 +3,7 @@ EE_OBJS = src/main.o src/memory.o src/cpu.o src/hardware.o \
           src/gpu_core.o src/gpu_gif.o src/gpu_vram.o src/gpu_texture.o \
           src/gpu_primitives.o src/gpu_commands.o src/gpu_dma.o \
           src/dynarec.o src/gte.o src/cdrom.o src/loader.o src/joystick.o \
-          src/scheduler.o
+          src/scheduler.o src/iso_image.o src/iso_fs.o
 EE_LIBS = -lpatches -lps2_drivers -ldebug -lgraph -ldma -ldraw -lmath3d
 
 # Remove -DENABLE_VRAM_DUMP to disable VRAM dumping (improves performance)
@@ -11,7 +11,7 @@ ENABLE_VRAM_DUMP ?= 1
 ENABLE_HOST_LOG ?= 1
 ENABLE_DEBUG_LOG ?= 1
 
-EE_CFLAGS = -I$(PS2SDK)/ee/include -I$(PS2SDK)/common/include -I$(PS2SDK)/ports/include -Iinclude -O2 -G0 -Wall
+EE_CFLAGS = -I$(PS2SDK)/ee/include -I$(PS2SDK)/common/include -I$(PS2SDK)/ports/include -Iinclude -O2 -G0 -Wall -DENABLE_STUCK_DETECTION
 EE_LDFLAGS = -L$(PS2SDK)/ee/lib -L$(PS2SDK)/ports/lib
 
 # Allow passing game arguments to PCSX2 via `make run GAMEARGS="arg1 arg2"`

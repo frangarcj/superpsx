@@ -59,8 +59,10 @@ void Upload_Shadow_VRAM_Region(int x, int y, int w, int h)
             uint16_t p1 = (col + 1 < (uint32_t)w) ? psx_vram_shadow[sy * 1024 + ((sx + 1) & 0x3FF)] : 0;
             // Set STP bit for non-zero pixels → GS alpha=0x80 for opaque, 0x00 for transparent
             // Only 0x0000 is transparent; 0x8000 (black + STP=1) is opaque
-            if (p0 != 0) p0 |= 0x8000;
-            if (p1 != 0) p1 |= 0x8000;
+            if (p0 != 0)
+                p0 |= 0x8000;
+            if (p1 != 0)
+                p1 |= 0x8000;
             pending[pc++] = (uint32_t)p0 | ((uint32_t)p1 << 16);
 
             if (pc >= 4)
@@ -176,8 +178,10 @@ void GS_UploadRegion(int x, int y, int w, int h, const uint16_t *pixels)
         uint16_t p1 = (i + 1 < total) ? pixels[i + 1] : 0;
         // Set STP bit for non-zero pixels → GS alpha=0x80 for opaque, 0x00 for transparent
         // Only 0x0000 is transparent; 0x8000 (black + STP=1) is opaque
-        if (p0 != 0) p0 |= 0x8000;
-        if (p1 != 0) p1 |= 0x8000;
+        if (p0 != 0)
+            p0 |= 0x8000;
+        if (p1 != 0)
+            p1 |= 0x8000;
         pend[pc++] = (uint32_t)p0 | ((uint32_t)p1 << 16);
         if (pc >= 4)
         {
