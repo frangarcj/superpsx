@@ -1757,11 +1757,10 @@ void Run_CPU(void)
     cpu.cop0[PSX_COP0_PRID] = 0x00000002; /* R3000A */
 
     uint32_t iterations = 0;
-    uint32_t max_iterations = 200000000; /* 200M iterations for full BIOS boot */
     static uint32_t stuck_pc = 0;
     static uint32_t stuck_count = 0;
 
-    while (iterations < max_iterations)
+    while (true)
     {
         uint32_t pc = cpu.pc;
 
@@ -1979,9 +1978,4 @@ void Run_CPU(void)
         }
 #endif
     }
-
-    DLOG("Stopped after %u iterations. Final PC=0x%08X\n",
-           (unsigned)iterations, (unsigned)cpu.pc);
-    DLOG("Blocks compiled: %u, Total instructions: %u\n",
-           (unsigned)blocks_compiled, (unsigned)total_instructions);
 }
