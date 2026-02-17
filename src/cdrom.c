@@ -11,6 +11,7 @@
 
 #include "superpsx.h"
 #include "scheduler.h"
+#include "iso_image.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -19,7 +20,7 @@
 /* ---- FIFOs ---- */
 #define PARAM_FIFO_SIZE 16
 #define RESPONSE_FIFO_SIZE 16
-#define DATA_FIFO_SIZE 2048
+#define DATA_FIFO_SIZE 2352 /* Large enough for raw sector mode (2340 bytes) */
 
 /* ---- Disc geometry ---- */
 #define DISC_MAX_LBA 335250 /* 74:30:00 - seeks beyond this fail */
@@ -91,6 +92,20 @@ static struct
     int32_t read_delay;     /* Cycles until next INT1 delivery (legacy, used for state) */
     int32_t pending_delay;  /* Cycles until pending response delivery (legacy) */
     uint8_t seek_pending;   /* 1 = seek is in progress, waiting for scheduler */
+
+    /* Deferred first response (INT3) — mimics real CD controller latency */
+    uint8_t deferred_response[RESPONSE_FIFO_SIZE];
+    uint8_t deferred_count;
+    uint8_t deferred_int;   /* INT type for deferred response */
+    uint8_t has_deferred;   /* 1 if a deferred response is queued */
+    int32_t deferred_delay; /* Cycles until deferred response delivery */
+
+    /* IRQ signal delay — models propagation latency from CD-ROM controller
+     * to CPU interrupt line.  On real hardware the polling loop at
+     * 0x1F801803 can see int_flag a few µs before the CPU exception
+     * fires, which allows poll-based CD libraries (PSXSDK) to read the
+     * response before the ISR clears int_flag. */
+    int32_t irq_signal_delay;
 } cdrom;
 
 /* ---- Forward declarations for scheduler ---- */
@@ -115,30 +130,44 @@ void CDROM_Init(void)
     DLOG("Initialized (no disc)\n");
 }
 
+/* ---- Insert a disc (called when ISO is mounted) ---- */
+void CDROM_InsertDisc(void)
+{
+    cdrom.disc_present = 1;
+    cdrom.stat = 0x02; /* Motor On, idle (no ShellOpen) */
+    DLOG("Disc inserted\n");
+}
+
+/* ---- Read data from the CD-ROM data FIFO (used by DMA3) ---- */
+uint32_t CDROM_ReadDataFIFO(uint8_t *dst, uint32_t count)
+{
+    uint32_t avail = cdrom.data_len - cdrom.data_pos;
+    if (count > avail)
+        count = avail;
+    if (count > 0)
+    {
+        memcpy(dst, &cdrom.data_fifo[cdrom.data_pos], count);
+        cdrom.data_pos += count;
+    }
+    return count;
+}
+
 /* ---- Queue a response ---- */
 static void cdrom_queue_response(const uint8_t *data, int count, uint8_t irq_type)
 {
     if (count > RESPONSE_FIFO_SIZE)
         count = RESPONSE_FIFO_SIZE;
-    memcpy(cdrom.response_fifo, data, count);
-    cdrom.response_count = count;
-    cdrom.response_read_pos = 0;
-    cdrom.int_flag = irq_type;
-    cdrom.busy = 0;
 
-    /* Always signal PSX IRQ2 (CD-ROM).
-     * The CD-ROM int_enable only controls which INT types
-     * trigger the IRQ, but we always assert it to be safe.
-     * The BIOS checks I_STAT/I_MASK at the CPU level. */
-    // DLOG("Queue response: %d bytes, INT%d, int_en=%02X\n",
-    //        count, irq_type, cdrom.int_enable);
-    SignalInterrupt(2);
-    /* Debug: check if IRQ2 will be delivered */
-    //{
-    //    extern uint32_t ReadHardware(uint32_t);
-    //    DLOG("After signal: I_STAT has bit2=%d\n",
-    //           (CheckInterrupts() >> 2) & 1);
-    //}
+    /* Defer the response delivery to mimic real CD controller latency.
+     * Real hardware takes ~1000-6000 cycles to process a command.
+     * Without this delay, the ISR fires immediately and consumes
+     * the response before the caller's polling loop starts. */
+    memcpy(cdrom.deferred_response, data, count);
+    cdrom.deferred_count = count;
+    cdrom.deferred_int = irq_type;
+    cdrom.has_deferred = 1;
+    cdrom.deferred_delay = 4000; /* ~120 instructions, enough for caller to reach poll loop */
+    cdrom.busy = 1;              /* Stay busy until response is delivered */
 }
 
 /* ---- Queue a pending (second) response ---- */
@@ -174,7 +203,17 @@ static void cdrom_execute_command(uint8_t cmd)
         uint8_t ff = (cdrom.param_count > 2) ? cdrom.param_fifo[2] : 0;
         cdrom.setloc_lba = msf_to_lba(mm, ss, ff);
         DLOG("Cmd 02h Setloc(%02X:%02X:%02X) -> LBA %" PRIu32 "\n",
-               mm, ss, ff, cdrom.setloc_lba);
+             mm, ss, ff, cdrom.setloc_lba);
+        resp[0] = cdrom.stat;
+        cdrom_queue_response(resp, 1, 3); /* INT3 */
+        break;
+    }
+
+    case 0x03: /* Play - CDDA audio playback (stub) */
+    {
+        DLOG("Cmd 03h Play (stub)\n");
+        cdrom.cur_lba = cdrom.setloc_lba;
+        cdrom_set_stat(0x82); /* Playing + Motor On */
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
         break;
@@ -187,7 +226,7 @@ static void cdrom_execute_command(uint8_t cmd)
         cdrom.reading = 1;
         cdrom.has_loc_header = 1;
         cdrom.seek_error = 0;
-        cdrom_set_stat(0x42);        /* Seeking + Motor On */
+        cdrom_set_stat(0x42); /* Seeking + Motor On */
         cdrom.seek_pending = 1;
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 acknowledge */
@@ -197,6 +236,25 @@ static void cdrom_execute_command(uint8_t cmd)
                                 CDROM_EventCallback);
         break;
     }
+
+    case 0x07: /* MotorOn */
+        DLOG("Cmd 07h MotorOn\n");
+        cdrom_set_stat(0x02); /* Motor On */
+        resp[0] = cdrom.stat;
+        cdrom_queue_response(resp, 1, 3); /* INT3 */
+        resp[0] = cdrom.stat;
+        cdrom_queue_pending(resp, 1, 2); /* INT2 */
+        break;
+
+    case 0x08: /* Stop */
+        DLOG("Cmd 08h Stop\n");
+        cdrom.reading = 0;
+        cdrom_set_stat(0x00); /* Motor Off */
+        resp[0] = cdrom.stat;
+        cdrom_queue_response(resp, 1, 3); /* INT3 */
+        resp[0] = cdrom.stat;
+        cdrom_queue_pending(resp, 1, 2); /* INT2 */
+        break;
 
     case 0x09: /* Pause */
         DLOG("Cmd 09h Pause\n");
@@ -234,11 +292,40 @@ static void cdrom_execute_command(uint8_t cmd)
         cdrom_queue_response(resp, 1, 3); /* INT3 */
         break;
 
+    case 0x0B: /* Mute */
+        DLOG("Cmd 0Bh Mute\n");
+        resp[0] = cdrom.stat;
+        cdrom_queue_response(resp, 1, 3); /* INT3 */
+        break;
+
+    case 0x0D: /* SetFilter */
+    {
+        uint8_t file = (cdrom.param_count > 0) ? cdrom.param_fifo[0] : 0;
+        uint8_t channel = (cdrom.param_count > 1) ? cdrom.param_fifo[1] : 0;
+        DLOG("Cmd 0Dh SetFilter(file=%02X, channel=%02X)\n", file, channel);
+        (void)file;
+        (void)channel;
+        resp[0] = cdrom.stat;
+        cdrom_queue_response(resp, 1, 3); /* INT3 */
+        break;
+    }
+
     case 0x0E: /* SetMode */
         cdrom.mode = (cdrom.param_count > 0) ? cdrom.param_fifo[0] : 0;
         DLOG("Cmd 0Eh SetMode(%02X)\n", cdrom.mode);
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
+        break;
+
+    case 0x0F: /* GetParam */
+        DLOG("Cmd 0Fh GetParam\n");
+        resp[0] = cdrom.stat;
+        resp[1] = cdrom.mode;
+        resp[2] = 0x00;                   /* file */
+        resp[3] = 0x00;                   /* channel */
+        resp[4] = 0x00;                   /* ci (match) */
+        resp[5] = 0x00;                   /* ci (mask) */
+        cdrom_queue_response(resp, 6, 3); /* INT3 */
         break;
 
     case 0x10: /* GetlocL - Get logical position (sector header) */
@@ -254,7 +341,7 @@ static void cdrom_execute_command(uint8_t cmd)
             uint8_t mm, ss, ff;
             lba_to_bcd(cdrom.cur_lba, &mm, &ss, &ff);
             DLOG("Cmd 10h GetlocL -> %02X:%02X:%02X mode 2\n",
-                   mm, ss, ff);
+                 mm, ss, ff);
             resp[0] = mm;                     /* Absolute minute (BCD) */
             resp[1] = ss;                     /* Absolute second (BCD) */
             resp[2] = ff;                     /* Absolute frame (BCD) */
@@ -300,7 +387,7 @@ static void cdrom_execute_command(uint8_t cmd)
             }
 
             DLOG("Cmd 11h GetlocP -> T%02X I%02X [%02X:%02X:%02X] abs [%02X:%02X:%02X]\n",
-                   track, index, rmm, rss, rff, amm, ass, aff);
+                 track, index, rmm, rss, rff, amm, ass, aff);
             resp[0] = track;
             resp[1] = index;
             resp[2] = rmm;
@@ -312,6 +399,46 @@ static void cdrom_execute_command(uint8_t cmd)
             cdrom_queue_response(resp, 8, 3); /* INT3 */
         }
         break;
+
+    case 0x13: /* GetTN - Get first and last track numbers */
+        DLOG("Cmd 13h GetTN\n");
+        resp[0] = cdrom.stat;
+        resp[1] = 0x01;                   /* First track: 01 (BCD) */
+        resp[2] = 0x01;                   /* Last track: 01 (BCD) - single data track */
+        cdrom_queue_response(resp, 3, 3); /* INT3 */
+        break;
+
+    case 0x14: /* GetTD - Get track start position */
+    {
+        uint8_t track = (cdrom.param_count > 0) ? cdrom.param_fifo[0] : 0;
+        DLOG("Cmd 14h GetTD(track=%02X)\n", track);
+        if (track == 0)
+        {
+            /* Track 0 = disc end (lead-out) */
+            uint8_t mm, ss, ff;
+            lba_to_bcd(LEADOUT_LBA + PREGAP_LBA, &mm, &ss, &ff);
+            resp[0] = cdrom.stat;
+            resp[1] = mm;
+            resp[2] = ss;
+            cdrom_queue_response(resp, 3, 3); /* INT3 */
+        }
+        else if (track == 1)
+        {
+            /* Track 1 starts at 00:02:00 (pregap) */
+            resp[0] = cdrom.stat;
+            resp[1] = 0x00;                   /* MM (BCD) */
+            resp[2] = 0x02;                   /* SS (BCD) */
+            cdrom_queue_response(resp, 3, 3); /* INT3 */
+        }
+        else
+        {
+            /* Invalid track */
+            resp[0] = cdrom.stat | 0x01;
+            resp[1] = 0x10;                   /* Invalid parameter */
+            cdrom_queue_response(resp, 2, 5); /* INT5 */
+        }
+        break;
+    }
 
     case 0x15: /* SeekL - Seek (data mode) */
     case 0x16: /* SeekP - Seek (audio mode) */
@@ -372,21 +499,41 @@ static void cdrom_execute_command(uint8_t cmd)
 
     case 0x1A: /* GetID - Disc identification */
     {
-        DLOG("Cmd 1Ah GetID (no disc)\n");
-        /* First response: INT3 */
-        resp[0] = cdrom.stat;
-        resp[1] = 0x00;
-        cdrom_queue_response(resp, 2, 3); /* INT3 */
-        /* Second response: INT5 (error - no disc) */
-        resp[0] = 0x08; /* stat: ShellOpen */
-        resp[1] = 0x40; /* flags: Missing Disc */
-        resp[2] = 0x00;
-        resp[3] = 0x00;
-        resp[4] = 0x00; /* No SCEx string */
-        resp[5] = 0x00;
-        resp[6] = 0x00;
-        resp[7] = 0x00;
-        cdrom_queue_pending(resp, 8, 5); /* INT5 error */
+        if (cdrom.disc_present)
+        {
+            DLOG("Cmd 1Ah GetID (disc present)\n");
+            /* First response: INT3 */
+            resp[0] = cdrom.stat;
+            cdrom_queue_response(resp, 1, 3); /* INT3 */
+            /* Second response: INT2 (disc identified successfully) */
+            resp[0] = cdrom.stat; /* Stat */
+            resp[1] = 0x00;       /* Flags: 0x00 = data disc, licensed */
+            resp[2] = 0x20;       /* Type: 0x20 = Mode2 disc */
+            resp[3] = 0x00;       /* Disc type info */
+            resp[4] = 'S';        /* Region: SCEA (US) */
+            resp[5] = 'C';
+            resp[6] = 'E';
+            resp[7] = 'A';
+            cdrom_queue_pending(resp, 8, 2); /* INT2 = complete */
+        }
+        else
+        {
+            DLOG("Cmd 1Ah GetID (no disc)\n");
+            /* First response: INT3 */
+            resp[0] = cdrom.stat;
+            resp[1] = 0x00;
+            cdrom_queue_response(resp, 2, 3); /* INT3 */
+            /* Second response: INT5 (error - no disc) */
+            resp[0] = 0x08; /* stat: ShellOpen */
+            resp[1] = 0x40; /* flags: Missing Disc */
+            resp[2] = 0x00;
+            resp[3] = 0x00;
+            resp[4] = 0x00; /* No SCEx string */
+            resp[5] = 0x00;
+            resp[6] = 0x00;
+            resp[7] = 0x00;
+            cdrom_queue_pending(resp, 8, 5); /* INT5 error */
+        }
         break;
     }
 
@@ -436,17 +583,39 @@ static void cdrom_deliver_pending(void)
         return;
     if (cdrom.int_flag != 0)
     {
-        // DLOG("Pending delivery blocked: int_flag=%02X (need 0)\n", cdrom.int_flag);
+        DLOG("Pending delivery blocked: int_flag=%02X (need 0)\n", cdrom.int_flag);
         return; /* Wait for current INT to be acknowledged */
     }
 
+    DLOG("Delivering pending INT%d (count=%d)\n", cdrom.pending_int, cdrom.pending_count);
     memcpy(cdrom.response_fifo, cdrom.pending_response, cdrom.pending_count);
     cdrom.response_count = cdrom.pending_count;
     cdrom.response_read_pos = 0;
     cdrom.int_flag = cdrom.pending_int;
     cdrom.has_pending = 0;
 
-    SignalInterrupt(2); /* CD-ROM IRQ */
+    /* Delay I_STAT assertion so the polling loop can see int_flag
+     * before the CPU exception fires (models real HW propagation). */
+    cdrom.irq_signal_delay = 800;
+}
+
+/* ---- Deliver deferred (first) response ---- */
+static void cdrom_deliver_deferred(void)
+{
+    if (!cdrom.has_deferred)
+        return;
+
+    DLOG("Delivering deferred INT%d (count=%d)\n", cdrom.deferred_int, cdrom.deferred_count);
+    memcpy(cdrom.response_fifo, cdrom.deferred_response, cdrom.deferred_count);
+    cdrom.response_count = cdrom.deferred_count;
+    cdrom.response_read_pos = 0;
+    cdrom.int_flag = cdrom.deferred_int;
+    cdrom.has_deferred = 0;
+    cdrom.busy = 0;
+
+    /* Delay I_STAT assertion so the polling loop can see int_flag
+     * before the CPU exception fires (models real HW propagation). */
+    cdrom.irq_signal_delay = 800;
 }
 
 /* ---- Read CD-ROM register ---- */
@@ -502,7 +671,7 @@ uint32_t CDROM_Read(uint32_t addr)
 
     /* Log non-status reads (avoid flooding from status polling) */
     // if (reg != 0)
-    //{
+    // {
     //     DLOG("Read reg%d (idx=%d) = %02X\n", reg, cdrom.index, result);
     // }
     return result;
@@ -536,10 +705,30 @@ static void CDROM_EventCallback(void)
         return;
     }
 
-    /* Fill data FIFO with dummy sector data */
-    memset(cdrom.data_fifo, 0, DATA_FIFO_SIZE);
+    /* Fill data FIFO with sector data */
+    if (ISO_IsLoaded())
+    {
+        /* Convert absolute LBA to file-relative LBA.
+         * The BIN/CUE file starts at the data area (Track 1 INDEX 01),
+         * which is at absolute sector 150 (2-second pregap).
+         * MSF addresses from Setloc are absolute, so we subtract 150. */
+        uint32_t file_lba = (cdrom.cur_lba >= PREGAP_LBA) ? (cdrom.cur_lba - PREGAP_LBA) : 0;
+
+        /* Read real sector data from mounted ISO */
+        if (ISO_ReadSector(file_lba, cdrom.data_fifo) < 0)
+        {
+            DLOG("Failed to read sector at LBA %" PRIu32 " (file LBA %" PRIu32 ")\n",
+                 cdrom.cur_lba, file_lba);
+            memset(cdrom.data_fifo, 0, ISO_SECTOR_SIZE);
+        }
+    }
+    else
+    {
+        /* No disc image: fill with zeros */
+        memset(cdrom.data_fifo, 0, ISO_SECTOR_SIZE);
+    }
     cdrom.data_pos = 0;
-    cdrom.data_len = DATA_FIFO_SIZE;
+    cdrom.data_len = ISO_SECTOR_SIZE; /* 2048 bytes normal mode */
 
     /* Deliver INT1 response */
     {
@@ -575,14 +764,36 @@ void CDROM_ScheduleEvent(void)
     }
 }
 
-/* ---- Legacy periodic update (retained for INT re-assertion) ---- */
+/* ---- Legacy periodic update (retained for deferred delivery + IRQ re-assertion) ---- */
 void CDROM_Update(uint32_t cycles)
 {
-    (void)cycles;
+    /* Deliver deferred first response (INT3) after delay */
+    if (cdrom.deferred_delay > 0)
+    {
+        cdrom.deferred_delay -= (int32_t)cycles;
+        if (cdrom.deferred_delay <= 0)
+        {
+            cdrom.deferred_delay = 0;
+            if (cdrom.has_deferred)
+                cdrom_deliver_deferred();
+        }
+    }
 
-    /* Re-assert I_STAT if CD-ROM still has an active interrupt */
+    /* Delayed I_STAT assertion — models the propagation delay from
+     * the CD-ROM controller to the CPU interrupt line.  This gives
+     * poll-based code one or more block-execution windows to read
+     * int_flag before the ISR fires and clears it. */
     if (cdrom.int_flag != 0)
-        SignalInterrupt(2);
+    {
+        if (cdrom.irq_signal_delay > 0)
+        {
+            cdrom.irq_signal_delay -= (int32_t)cycles;
+        }
+        else
+        {
+            SignalInterrupt(2); /* Assert I_STAT bit 2 (CD-ROM) */
+        }
+    }
 }
 
 /* ---- Write CD-ROM register ---- */
@@ -650,7 +861,11 @@ void CDROM_Write(uint32_t addr, uint32_t data)
             }
             break;
         case 1: /* Interrupt Flag Register (acknowledge) */
+        {
+            uint8_t old_flag = cdrom.int_flag;
             cdrom.int_flag &= ~(val & 0x07);
+            DLOG("ACK: val=%02X old_flag=%d new_flag=%d has_pending=%d\n",
+                 val, old_flag, cdrom.int_flag, cdrom.has_pending);
             if (val & 0x40)
             {
                 /* Reset parameter FIFO */
@@ -666,6 +881,7 @@ void CDROM_Write(uint32_t addr, uint32_t data)
                                         CDROM_PendingCallback);
             }
             break;
+        }
         case 2: /* Audio Volume Left→Right */
             break;
         case 3: /* Apply Audio Volume changes */

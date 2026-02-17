@@ -139,9 +139,10 @@ uint32_t GPU_Read(void)
 
 uint32_t GPU_ReadStatus(void)
 {
-    /* Force bits: 28 (ready DMA), 26 (ready CMD), 21, 13 */
+    /* Force bits: 28 (ready DMA), 26 (ready CMD), 13 (interlace field) */
     /* Bit 27 (ready VRAM-to-CPU) is dynamic, set only during C0h transfer */
-    return gpu_stat | 0x14802000;
+    /* Bit 23 (display disable) must NOT be forced — it reflects GP1(03h) state */
+    return gpu_stat | 0x14002000;
 }
 
 void GPU_VBlank(void)

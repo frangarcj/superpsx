@@ -43,8 +43,8 @@ typedef struct
 {
     uint32_t psx_pc;
     uint32_t *native;
-    uint32_t instr_count;  /* Number of PSX instructions in this block */
-    uint32_t cycle_count;  /* Weighted R3000A cycle count for this block */
+    uint32_t instr_count; /* Number of PSX instructions in this block */
+    uint32_t cycle_count; /* Weighted R3000A cycle count for this block */
 } BlockEntry;
 
 static BlockEntry *block_cache;
@@ -233,77 +233,134 @@ static uint32_t r3000a_cycle_cost(uint32_t opcode)
     uint32_t op = OP(opcode);
     uint32_t func = FUNC(opcode);
 
-    switch (op) {
+    switch (op)
+    {
     case 0x00: /* SPECIAL */
-        switch (func) {
-        case 0x18: /* MULT  */ return 6;
-        case 0x19: /* MULTU */ return 6;
-        case 0x1A: /* DIV   */ return 36;
-        case 0x1B: /* DIVU  */ return 36;
-        default:   return 1;
+        switch (func)
+        {
+        case 0x18: /* MULT  */
+            return 6;
+        case 0x19: /* MULTU */
+            return 6;
+        case 0x1A: /* DIV   */
+            return 36;
+        case 0x1B: /* DIVU  */
+            return 36;
+        default:
+            return 1;
         }
     /* Loads: 2 cycles (includes load delay) */
-    case 0x20: /* LB  */ return 2;
-    case 0x21: /* LH  */ return 2;
-    case 0x22: /* LWL */ return 2;
-    case 0x23: /* LW  */ return 2;
-    case 0x24: /* LBU */ return 2;
-    case 0x25: /* LHU */ return 2;
-    case 0x26: /* LWR */ return 2;
+    case 0x20: /* LB  */
+        return 2;
+    case 0x21: /* LH  */
+        return 2;
+    case 0x22: /* LWL */
+        return 2;
+    case 0x23: /* LW  */
+        return 2;
+    case 0x24: /* LBU */
+        return 2;
+    case 0x25: /* LHU */
+        return 2;
+    case 0x26: /* LWR */
+        return 2;
     /* Stores: 1 cycle */
-    case 0x28: /* SB  */ return 1;
-    case 0x29: /* SH  */ return 1;
-    case 0x2B: /* SW  */ return 1;
-    case 0x2A: /* SWL */ return 1;
-    case 0x2E: /* SWR */ return 1;
+    case 0x28: /* SB  */
+        return 1;
+    case 0x29: /* SH  */
+        return 1;
+    case 0x2B: /* SW  */
+        return 1;
+    case 0x2A: /* SWL */
+        return 1;
+    case 0x2E: /* SWR */
+        return 1;
     /* COP2 (GTE) commands */
     case 0x12: /* COP2 */
-        if (opcode & 0x02000000) {
+        if (opcode & 0x02000000)
+        {
             /* GTE command - approximate cycle cost by command */
             uint32_t gte_op = opcode & 0x3F;
-            switch (gte_op) {
-            case 0x01: /* RTPS  */ return 15;
-            case 0x06: /* NCLIP */ return 8;
-            case 0x0C: /* OP    */ return 6;
-            case 0x10: /* DPCS  */ return 8;
-            case 0x11: /* INTPL */ return 8;
-            case 0x12: /* MVMVA */ return 8;
-            case 0x13: /* NCDS  */ return 19;
-            case 0x14: /* CDP   */ return 13;
-            case 0x16: /* NCDT  */ return 44;
-            case 0x1B: /* NCCS  */ return 17;
-            case 0x1C: /* CC    */ return 11;
-            case 0x1E: /* NCS   */ return 14;
-            case 0x20: /* NCT   */ return 30;
-            case 0x28: /* SQR   */ return 5;
-            case 0x29: /* DCPL  */ return 8;
-            case 0x2A: /* DPCT  */ return 17;
-            case 0x2D: /* AVSZ3 */ return 5;
-            case 0x2E: /* AVSZ4 */ return 6;
-            case 0x30: /* RTPT  */ return 23;
-            case 0x3D: /* GPF   */ return 5;
-            case 0x3E: /* GPL   */ return 5;
-            case 0x3F: /* NCCT  */ return 39;
-            default:   return 8;  /* Unknown GTE, assume 8 */
+            switch (gte_op)
+            {
+            case 0x01: /* RTPS  */
+                return 15;
+            case 0x06: /* NCLIP */
+                return 8;
+            case 0x0C: /* OP    */
+                return 6;
+            case 0x10: /* DPCS  */
+                return 8;
+            case 0x11: /* INTPL */
+                return 8;
+            case 0x12: /* MVMVA */
+                return 8;
+            case 0x13: /* NCDS  */
+                return 19;
+            case 0x14: /* CDP   */
+                return 13;
+            case 0x16: /* NCDT  */
+                return 44;
+            case 0x1B: /* NCCS  */
+                return 17;
+            case 0x1C: /* CC    */
+                return 11;
+            case 0x1E: /* NCS   */
+                return 14;
+            case 0x20: /* NCT   */
+                return 30;
+            case 0x28: /* SQR   */
+                return 5;
+            case 0x29: /* DCPL  */
+                return 8;
+            case 0x2A: /* DPCT  */
+                return 17;
+            case 0x2D: /* AVSZ3 */
+                return 5;
+            case 0x2E: /* AVSZ4 */
+                return 6;
+            case 0x30: /* RTPT  */
+                return 23;
+            case 0x3D: /* GPF   */
+                return 5;
+            case 0x3E: /* GPL   */
+                return 5;
+            case 0x3F: /* NCCT  */
+                return 39;
+            default:
+                return 8; /* Unknown GTE, assume 8 */
             }
         }
         return 1; /* MFC2/MTC2/CFC2/CTC2 */
     /* Branches/Jumps: 1 cycle (delay slot counted separately) */
-    case 0x02: /* J   */ return 1;
-    case 0x03: /* JAL */ return 1;
-    case 0x04: /* BEQ */ return 1;
-    case 0x05: /* BNE */ return 1;
-    case 0x06: /* BLEZ */ return 1;
-    case 0x07: /* BGTZ */ return 1;
-    case 0x01: /* REGIMM (BLTZ/BGEZ/BLTZAL/BGEZAL) */ return 1;
+    case 0x02: /* J   */
+        return 1;
+    case 0x03: /* JAL */
+        return 1;
+    case 0x04: /* BEQ */
+        return 1;
+    case 0x05: /* BNE */
+        return 1;
+    case 0x06: /* BLEZ */
+        return 1;
+    case 0x07: /* BGTZ */
+        return 1;
+    case 0x01: /* REGIMM (BLTZ/BGEZ/BLTZAL/BGEZAL) */
+        return 1;
     /* COP0/COP1/COP3 */
-    case 0x10: /* COP0 */ return 1;
-    case 0x11: /* COP1 */ return 1;
-    case 0x13: /* COP3 */ return 1;
+    case 0x10: /* COP0 */
+        return 1;
+    case 0x11: /* COP1 */
+        return 1;
+    case 0x13: /* COP3 */
+        return 1;
     /* LWC2/SWC2 */
-    case 0x32: /* LWC2 */ return 2;
-    case 0x3A: /* SWC2 */ return 1;
-    default: return 1;
+    case 0x32: /* LWC2 */
+        return 2;
+    case 0x3A: /* SWC2 */
+        return 1;
+    default:
+        return 1;
     }
 }
 
@@ -443,7 +500,7 @@ static uint32_t *compile_block(uint32_t psx_pc)
     if (used > CODE_BUFFER_SIZE - 65536)
     {
         DLOG("Code buffer nearly full (%u/%u), flushing cache\n",
-               (unsigned)used, CODE_BUFFER_SIZE);
+             (unsigned)used, CODE_BUFFER_SIZE);
         code_ptr = code_buffer;
         memset(block_cache, 0, BLOCK_CACHE_SIZE * sizeof(BlockEntry));
         blocks_compiled = 0;
@@ -859,7 +916,7 @@ static uint32_t *compile_block(uint32_t psx_pc)
     {
         int num_words = (int)(code_ptr - block_start);
         DLOG("Block %u at %p, %d words:\n",
-               (unsigned)blocks_compiled, block_start, num_words);
+             (unsigned)blocks_compiled, block_start, num_words);
         int j;
         for (j = 0; j < num_words && j < 32; j++)
         {
@@ -1845,7 +1902,7 @@ void Init_Dynarec(void)
 
 /* ---- Forward declarations for scheduler callbacks ---- */
 static void Sched_VBlank_Callback(void);
-void Timer_ScheduleAll(void);  /* Defined in hardware.c */
+void Timer_ScheduleAll(void);   /* Defined in hardware.c */
 void CDROM_ScheduleEvent(void); /* Defined in cdrom.c */
 
 static void Sched_VBlank_Callback(void)
@@ -1884,6 +1941,9 @@ void Run_CPU(void)
 #ifdef ENABLE_STUCK_DETECTION
     static uint32_t stuck_pc = 0;
     static uint32_t stuck_count = 0;
+    static uint32_t heartbeat_counter = 0;
+    static uint32_t last_heartbeat_pc = 0;
+    static int heartbeat_dumped = 0;
 #endif
 
     while (true)
@@ -1928,7 +1988,31 @@ void Run_CPU(void)
                 if (!binary_loaded)
                 {
                     DLOG("Reached BIOS Shell Entry (0xBFC06FF0). Loading binary...\n");
-                    if (psx_exe_filename && psx_exe_filename[0] != '\0')
+                    if (psx_boot_mode == BOOT_MODE_ISO)
+                    {
+                        /* ISO mode: load the boot EXE directly from the mounted ISO */
+                        DLOG("ISO boot mode: extracting EXE from ISO...\n");
+                        if (Load_PSX_EXE_FromISO(&cpu) == 0)
+                        {
+                            DLOG("ISO EXE loaded. Jump to PC=0x%08X\n", (unsigned)cpu.pc);
+#ifdef ENABLE_HOST_LOG
+                            host_log_file = fopen("output.log", "w");
+#endif
+                            binary_loaded = 1;
+                            FlushCache(0);
+                            FlushCache(2);
+#ifdef ENABLE_STUCK_DETECTION
+                            stuck_pc = cpu.pc;
+                            stuck_count = 0;
+#endif
+                            continue;
+                        }
+                        else
+                        {
+                            printf("DYNAREC: Failed to load EXE from ISO. Continuing BIOS.\n");
+                        }
+                    }
+                    else if (psx_exe_filename && psx_exe_filename[0] != '\0')
                     {
                         if (Load_PSX_EXE(psx_exe_filename, &cpu) == 0)
                         {
@@ -1999,6 +2083,9 @@ void Run_CPU(void)
                 cycles = 8;
             global_cycles += cycles;
 
+            /* Update CD-ROM deferred delivery + IRQ signal delay */
+            CDROM_Update(cycles);
+
             /* Check for interrupts after each block */
             if (CheckInterrupts())
             {
@@ -2024,9 +2111,9 @@ void Run_CPU(void)
                 {
                     DLOG("STUCK: Block at %08X ran 50000 times\n", (unsigned)pc);
                     DLOG("  SR=%08X I_STAT=%08X Cause=%08X\n",
-                           (unsigned)cpu.cop0[PSX_COP0_SR],
-                           (unsigned)CheckInterrupts(),
-                           (unsigned)cpu.cop0[PSX_COP0_CAUSE]);
+                         (unsigned)cpu.cop0[PSX_COP0_SR],
+                         (unsigned)CheckInterrupts(),
+                         (unsigned)cpu.cop0[PSX_COP0_CAUSE]);
                 }
             }
             else

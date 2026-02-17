@@ -7,6 +7,8 @@
 #include "scheduler.h"
 #include "joystick.h"
 
+#define LOG_TAG "HW"
+
 /*
  * PSX Hardware Register Emulation
  *
@@ -225,7 +227,12 @@ uint32_t ReadHardware(uint32_t addr)
                 return current;
             }
             case 1:
-                return timers[t].mode;
+            {
+                /* PSX hardware: reading mode clears bits 10-11 (reached-target/overflow flags) */
+                uint32_t mode = timers[t].mode;
+                timers[t].mode &= ~((1 << 10) | (1 << 11));
+                return mode;
+            }
             case 2:
                 return timers[t].target;
             default:
@@ -279,8 +286,8 @@ static uint32_t timer_clock_divider(int t)
     if (t == 1 && src == 1)
         return CYCLES_PER_HBLANK; /* HBlank mode */
     if (t == 2 && src == 2)
-        return 8;                 /* Sysclk/8 */
-    return 1;                     /* Sysclk (default) */
+        return 8; /* Sysclk/8 */
+    return 1;     /* Sysclk (default) */
 }
 
 /* ---- Calculate cycles until the next timer event and schedule it ---- */
@@ -289,8 +296,7 @@ static void Timer_Callback1(void);
 static void Timer_Callback2(void);
 
 static const sched_callback_t timer_callbacks[3] = {
-    Timer_Callback0, Timer_Callback1, Timer_Callback2
-};
+    Timer_Callback0, Timer_Callback1, Timer_Callback2};
 
 /* Sync timer value to current global_cycles (call before reading/modifying value) */
 static void Timer_SyncValue(int t)
@@ -309,7 +315,7 @@ static void Timer_ScheduleOne(int t)
     Timer_SyncValue(t);
 
     uint32_t mode = timers[t].mode;
-    uint32_t val  = timers[t].value & 0xFFFF;
+    uint32_t val = timers[t].value & 0xFFFF;
     uint32_t target = timers[t].target & 0xFFFF;
     uint32_t divider = timer_clock_divider(t);
 
@@ -404,6 +410,33 @@ void Timer_ScheduleAll(void)
 void UpdateTimers(uint32_t cycles)
 {
     (void)cycles;
+}
+
+/* DMA Channel 3: CD-ROM → RAM */
+static void CDROM_DMA3(uint32_t madr, uint32_t bcr, uint32_t chcr)
+{
+    /* BCR format for block mode: bits 0-15 = block size (words), bits 16-31 = block count */
+    uint32_t block_size_words = bcr & 0xFFFF;
+    uint32_t block_count = (bcr >> 16) & 0xFFFF;
+    if (block_count == 0)
+        block_count = 1;
+    if (block_size_words == 0)
+        block_size_words = 1;
+
+    uint32_t total_bytes = block_size_words * block_count * 4; /* words to bytes */
+
+    uint32_t phys_addr = madr & 0x1FFFFC;
+    if (phys_addr + total_bytes > PSX_RAM_SIZE)
+    {
+        DLOG("DMA3 Transfer would overflow RAM (addr=0x%08" PRIx32 ", size=%" PRIu32 ")\n",
+             phys_addr, total_bytes);
+        total_bytes = PSX_RAM_SIZE - phys_addr;
+    }
+
+    /* Copy from CD-ROM data FIFO to PSX RAM */
+    CDROM_ReadDataFIFO(psx_ram + phys_addr, total_bytes);
+
+    (void)chcr;
 }
 
 static void GPU_DMA6(uint32_t madr, uint32_t bcr, uint32_t chcr)
@@ -623,6 +656,9 @@ void WriteHardware(uint32_t addr, uint32_t data)
     if (phys == 0x1F801074)
     {
         i_mask = data & 0xFFFF07FF; /* Bits 11-15 always 0; rest preserved */
+        DLOG("I_MASK = %08X (VSync=%d CD=%d Timer0=%d Timer1=%d Timer2=%d)\n",
+             (unsigned)i_mask, (int)(i_mask & 1), (int)((i_mask >> 2) & 1),
+             (int)((i_mask >> 4) & 1), (int)((i_mask >> 5) & 1), (int)((i_mask >> 6) & 1));
         return;
     }
 
@@ -650,6 +686,11 @@ void WriteHardware(uint32_t addr, uint32_t data)
                     {
                         /* GPU DMA */
                         GPU_DMA2(dma_channels[ch].madr, dma_channels[ch].bcr, dma_channels[ch].chcr);
+                    }
+                    else if (ch == 3)
+                    {
+                        /* CD-ROM DMA */
+                        CDROM_DMA3(dma_channels[ch].madr, dma_channels[ch].bcr, dma_channels[ch].chcr);
                     }
                     else if (ch == 6)
                     {
@@ -719,7 +760,8 @@ void WriteHardware(uint32_t addr, uint32_t data)
                 Timer_ScheduleOne(t); /* Reschedule on value change */
                 break;
             case 1:
-                timers[t].value = 0; /* Writing mode resets counter */
+                /* PSX hardware: writing mode resets counter to 0 */
+                timers[t].value = 0;
                 timers[t].mode = data;
                 timers[t].last_sync_cycle = global_cycles;
                 Timer_ScheduleOne(t); /* Reschedule on mode change */

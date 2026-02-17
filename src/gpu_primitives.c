@@ -19,9 +19,15 @@ void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
     // second vertex.  Reorder so that GS V0 = PSX start, GS V1 = PSX end.
     if (y0 > y1 || (y0 == y1 && x0 > x1))
     {
-        int16_t tx = x0; x0 = x1; x1 = tx;
-        int16_t ty = y0; y0 = y1; y1 = ty;
-        uint32_t tc = color0; color0 = color1; color1 = tc;
+        int16_t tx = x0;
+        x0 = x1;
+        x1 = tx;
+        int16_t ty = y0;
+        y0 = y1;
+        y1 = ty;
+        uint32_t tc = color0;
+        color0 = color1;
+        color1 = tc;
     }
 
     uint64_t prim_reg = 1; // LINE
@@ -204,10 +210,14 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
                     {
                         int u_tw = verts[i].uv & 0xFF;
                         int v_tw = (verts[i].uv >> 8) & 0xFF;
-                        if (u_tw < u_min) u_min = u_tw;
-                        if (u_tw > u_max) u_max = u_tw;
-                        if (v_tw < v_min) v_min = v_tw;
-                        if (v_tw > v_max) v_max = v_tw;
+                        if (u_tw < u_min)
+                            u_min = u_tw;
+                        if (u_tw > u_max)
+                            u_max = u_tw;
+                        if (v_tw < v_min)
+                            v_min = v_tw;
+                        if (v_tw > v_max)
+                            v_max = v_tw;
                     }
                     int dec_w = u_max - u_min + 1;
                     int dec_h = v_max - v_min + 1;
@@ -338,10 +348,14 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
                 {
                     int u_tw = verts[i].uv & 0xFF;
                     int v_tw = (verts[i].uv >> 8) & 0xFF;
-                    if (u_tw < u_min) u_min = u_tw;
-                    if (u_tw > u_max) u_max = u_tw;
-                    if (v_tw < v_min) v_min = v_tw;
-                    if (v_tw > v_max) v_max = v_tw;
+                    if (u_tw < u_min)
+                        u_min = u_tw;
+                    if (u_tw > u_max)
+                        u_max = u_tw;
+                    if (v_tw < v_min)
+                        v_min = v_tw;
+                    if (v_tw > v_max)
+                        v_max = v_tw;
                 }
                 int dec_w = u_max - u_min + 1;
                 int dec_h = v_max - v_min + 1;
@@ -352,7 +366,12 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
                                                clut_x, clut_y,
                                                u_min, v_min, dec_w, dec_h,
                                                0, 0);
-                if (ok) { tri_clut_decoded = 1; tri_uv_off_u = u_min; tri_uv_off_v = v_min; }
+                if (ok)
+                {
+                    tri_clut_decoded = 1;
+                    tri_uv_off_u = u_min;
+                    tri_uv_off_v = v_min;
+                }
             }
 
             int ndata = is_textured ? 10 : 7;
@@ -530,7 +549,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
             // Use per-pixel decode when tex window is active OR CLUT format
             // (psx_vram_shadow reads are more reliable than GS readback for CLUT)
             int need_perpixel = tex_win_active ||
-                (tex_page_format == 0 || tex_page_format == 1);
+                                (tex_page_format == 0 || tex_page_format == 1);
 
             if (need_perpixel)
             {
@@ -598,7 +617,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
             {
                 // --- TRIANGLE_STRIP + STQ for flipped textures ---
                 uint64_t tri_prim = 4; // TRIANGLE_STRIP
-                tri_prim |= (1 << 4); // TME
+                tri_prim |= (1 << 4);  // TME
                 // STQ mode (no FST bit)
                 if (cmd & 0x02)
                     tri_prim |= (1 << 6); // ABE
@@ -608,11 +627,13 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
                 int32_t u_right_i = ((int32_t)u0_raw - (int32_t)w) + (int32_t)tex_page_x;
                 int32_t v_top_i = (int32_t)v0_raw + (int32_t)tex_page_y;
                 int32_t v_bottom_i = ((int32_t)v0_raw - (int32_t)h) + (int32_t)tex_page_y;
-                if (!tex_flip_y) {
+                if (!tex_flip_y)
+                {
                     v_top_i = (int32_t)v0_raw + (int32_t)tex_page_y;
                     v_bottom_i = (int32_t)(v0_raw + h) + (int32_t)tex_page_y;
                 }
-                if (!tex_flip_x) {
+                if (!tex_flip_x)
+                {
                     u_left_i = (int32_t)u0_raw + (int32_t)tex_page_x;
                     u_right_i = (int32_t)(u0_raw + w) + (int32_t)tex_page_x;
                 }
@@ -626,8 +647,10 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
                 }
 
                 int nregs_tri = 15 + 2; // base(DTHE+PRIM+4*3vertices+DTHE_restore) + alpha test enable/restore
-                if (is_semi_trans) nregs_tri += 1;
-                if (is_raw_texture) nregs_tri += 4;
+                if (is_semi_trans)
+                    nregs_tri += 1;
+                if (is_raw_texture)
+                    nregs_tri += 4;
 
                 Push_GIF_Tag(nregs_tri, 1, 0, 0, 0, 1, 0xE);
                 Push_GIF_Data(0, 0x45); // DTHE = 0
@@ -710,8 +733,8 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
             {
                 // --- SPRITE path for non-flip rects (precise rasterization) ---
                 uint64_t prim_reg = 6; // SPRITE
-                prim_reg |= (1 << 4); // TME
-                prim_reg |= (1 << 8); // FST
+                prim_reg |= (1 << 4);  // TME
+                prim_reg |= (1 << 8);  // FST
                 if (cmd & 0x02)
                     prim_reg |= (1 << 6); // ABE
 
@@ -737,8 +760,10 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
 
                 // nregs: DTHE + PRIM + 2*(UV+RGBAQ+XYZ) + alpha_test_en + alpha_test_restore + DTHE_restore
                 int nregs = 1 + 1 + 6 + 2 + 1; // = 11
-                if (is_semi_trans) nregs += 1;
-                if (clut_decoded || is_raw_texture) nregs += 4;
+                if (is_semi_trans)
+                    nregs += 1;
+                if (clut_decoded || is_raw_texture)
+                    nregs += 4;
 
                 Push_GIF_Tag(nregs, 1, 0, 0, 0, 1, 0xE);
                 Push_GIF_Data(0, 0x45); // DTHE = 0

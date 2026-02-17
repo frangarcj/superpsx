@@ -44,7 +44,8 @@ int Decode_TexWindow_Rect(int tex_format,
                           int flip_x, int flip_y)
 {
     uint16_t *decoded = (uint16_t *)memalign(64, w * h * 2);
-    if (!decoded) return 0;
+    if (!decoded)
+        return 0;
 
     for (int row = 0; row < h; row++)
     {
@@ -79,7 +80,8 @@ int Decode_TexWindow_Rect(int tex_format,
             }
 
             // STP bit: only 0x0000 is transparent
-            if (pixel != 0) pixel |= 0x8000;
+            if (pixel != 0)
+                pixel |= 0x8000;
             decoded[row * w + col] = pixel;
         }
     }

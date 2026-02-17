@@ -32,4 +32,11 @@ typedef struct
  */
 int Load_PSX_EXE(const char *filename, R3000CPU *cpu);
 
+/*
+ * Load the boot executable from a mounted ISO image.
+ * Reads SYSTEM.CNF to find the boot path, then reads the EXE from the ISO.
+ * Returns 0 on success, < 0 on error.
+ */
+int Load_PSX_EXE_FromISO(R3000CPU *cpu);
+
 #endif /* LOADER_H */

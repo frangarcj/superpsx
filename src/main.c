@@ -12,6 +12,8 @@
 
 #include "superpsx.h"
 #include "joystick.h"
+#include "iso_image.h"
+#include "iso_fs.h"
 
 #include <string.h>
 #include <limits.h>
@@ -23,6 +25,27 @@
 #endif
 static char psx_exe_filename_buf[PSX_EXE_PATH_MAX] = "test.exe";
 const char *psx_exe_filename = psx_exe_filename_buf;
+int psx_boot_mode = BOOT_MODE_EXE;
+
+/* Check if a filename has a disc image extension */
+static int has_disc_extension(const char *filename)
+{
+    size_t len = strlen(filename);
+    if (len < 4)
+        return 0;
+    const char *ext = filename + len - 4;
+    return (strcasecmp(ext, ".iso") == 0 ||
+            strcasecmp(ext, ".bin") == 0 ||
+            strcasecmp(ext, ".cue") == 0);
+}
+
+static int has_cue_extension(const char *filename)
+{
+    size_t len = strlen(filename);
+    if (len < 4)
+        return 0;
+    return strcasecmp(filename + len - 4, ".cue") == 0;
+}
 
 static void reset_IOP()
 {
@@ -129,6 +152,54 @@ void Init_SuperPSX(void)
     Init_Memory();
     Init_Interrupts();
     CDROM_Init();
+
+    /* Detect ISO disc image and mount it */
+    if (psx_exe_filename && has_disc_extension(psx_exe_filename))
+    {
+        psx_boot_mode = BOOT_MODE_ISO;
+        printf("Disc image detected: %s\n", psx_exe_filename);
+
+        int open_result;
+        if (has_cue_extension(psx_exe_filename))
+            open_result = ISO_OpenCue(psx_exe_filename);
+        else
+            open_result = ISO_Open(psx_exe_filename);
+
+        if (open_result < 0)
+        {
+            printf("ERROR: Failed to open disc image: %s\n", psx_exe_filename);
+            scr_printf("Failed to open disc image. Halting.\n");
+            while (1)
+                ;
+        }
+
+        if (ISOFS_Init() < 0)
+        {
+            printf("ERROR: Failed to parse ISO 9660 filesystem\n");
+            scr_printf("Failed to parse ISO. Halting.\n");
+            while (1)
+                ;
+        }
+
+        /* Report what we found */
+        {
+            char boot_path[256];
+            if (ISOFS_ReadBootPath(boot_path, sizeof(boot_path)) == 0)
+                printf("Boot executable from SYSTEM.CNF: %s\n", boot_path);
+            else
+                printf("WARNING: Could not parse SYSTEM.CNF boot path\n");
+        }
+
+        CDROM_InsertDisc();
+        printf("ISO mounted, disc inserted. BIOS will boot from CD.\n");
+
+        /* Clear the EXE filename so the BIOS shell hook won't intercept */
+        psx_exe_filename_buf[0] = '\0';
+    }
+    else
+    {
+        psx_boot_mode = BOOT_MODE_EXE;
+    }
 
     if (Load_BIOS("bios/SCPH1001.BIN") < 0)
     {

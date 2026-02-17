@@ -109,10 +109,12 @@ extern volatile int psx_block_exception;
 
 /*=== CD-ROM ===*/
 void CDROM_Init(void);
+void CDROM_InsertDisc(void);
 uint32_t CDROM_Read(uint32_t addr);
 void CDROM_Write(uint32_t addr, uint32_t data);
 void CDROM_Update(uint32_t cycles);
 void CDROM_ScheduleEvent(void);
+uint32_t CDROM_ReadDataFIFO(uint8_t *dst, uint32_t count);
 
 /*=== Timer Scheduler ===*/
 void Timer_ScheduleAll(void);
@@ -133,5 +135,10 @@ void Init_SuperPSX(void);
 /* Filename of PS-X EXE to load (defaults to "test.exe").
  * Can be overridden from `main` using command-line arguments. */
 extern const char *psx_exe_filename;
+
+/* Boot mode: 0 = PS-X EXE, 1 = ISO disc */
+#define BOOT_MODE_EXE  0
+#define BOOT_MODE_ISO  1
+extern int psx_boot_mode;
 
 #endif
