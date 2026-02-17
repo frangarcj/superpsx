@@ -56,6 +56,10 @@ static int draw_clip_y1 = 0;
 static int draw_clip_x2 = 640;
 static int draw_clip_y2 = 480;
 
+// -- PSX Display Range --
+static int disp_range_y1 = 0;
+static int disp_range_y2 = 0;
+
 // Texture page state (from GP0 E1)
 static int tex_page_x = 0;      // Texture page X offset in pixels
 static int tex_page_y = 0;      // Texture page Y offset in pixels
@@ -206,7 +210,9 @@ static void Update_GS_Display(void)
         int widths[] = {256, 320, 512, 640};
         psx_w = widths[disp_hres & 3];
     }
-    int psx_h = disp_vres ? 480 : 240;
+    int psx_h = (disp_range_y2 - disp_range_y1) * (disp_vres + 1);
+
+    DLOG("Update_GS_Display: disp_range_y1=%d, disp_range_y2=%d, psx_h=%d\n, disp_vres=%d", disp_range_y1, disp_range_y2, psx_h, disp_vres);
 
     // 2. Calcular MAGH para llenar una línea de TV (~2560 ciclos)
     // El reloj base del GS es ~54MHz.
@@ -252,8 +258,8 @@ static void Update_GS_Display(void)
     }
     else
     {
-        dh = psx_h * 2 - 1; // Doblar líneas para 240p -> 480i
-        magv = 1;
+        dh = psx_h - 1; // Doblar líneas para 240p -> 480i
+        magv = 0;
     }
 
     // 5. Calcular Centrado (DX, DY)
@@ -269,12 +275,12 @@ static void Update_GS_Display(void)
     if (disp_pal)
     {
         dx = dx_start_pal;
-        dy = 37;
+        dy = disp_interlace ? (disp_range_y1 * 2) : disp_range_y1;
     }
     else
     {
         dx = dx_start_ntsc;
-        dy = 26;
+        dy = disp_interlace ? (disp_range_y1 * 2) + 18 : disp_range_y1 + 1;
     }
 
     // Ajuste fino de DX para centrar según el ancho real generado
@@ -287,8 +293,8 @@ static void Update_GS_Display(void)
     // Si es más ancha, la movemos a la izquierda (offset negativo)
     dx += (target_width - current_width_vck) / 2;
 
-    printf("Update_GS_Display: PSX %dx%d -> GS MAGH=%d DW=%d (VCK) DX=%d\n",
-           psx_w, psx_h, magh, dw, dx);
+    DLOG("Update_GS_Display: PSX %dx%d -> GS MAGH=%d DW=%d (VCK) DX=%d\n DY=%d\n DR=%d\n",
+           psx_w, psx_h, magh, dw, dx, dy, disp_range_y1);
 
     // Build DISPLAY register value
     uint64_t display = (uint64_t)(dx & 0xFFF) |
@@ -2281,7 +2287,7 @@ void GPU_WriteGP0(uint32_t data)
             last_e3 = data;
             draw_clip_x1 = data & 0x3FF;
             draw_clip_y1 = (data >> 10) & 0x3FF;
-            DLOG("E3: Draw Area TL (%d,%d)\n", draw_clip_x1, draw_clip_y1);
+            //DLOG("E3: Draw Area TL (%d,%d)\n", draw_clip_x1, draw_clip_y1);
             // Update SCISSOR (framebuffer space, no offset)
             {
                 Push_GIF_Tag(1, 1, 0, 0, 0, 1, 0xE);
@@ -2302,7 +2308,7 @@ void GPU_WriteGP0(uint32_t data)
             last_e4 = data;
             draw_clip_x2 = data & 0x3FF;
             draw_clip_y2 = (data >> 10) & 0x3FF;
-            DLOG("E4: Draw Area BR (%d,%d)\n", draw_clip_x2, draw_clip_y2);
+            //DLOG("E4: Draw Area BR (%d,%d)\n", draw_clip_x2, draw_clip_y2);
             // Update SCISSOR (framebuffer space, no offset)
             {
                 Push_GIF_Tag(1, 1, 0, 0, 0, 1, 0xE);
@@ -2331,7 +2337,7 @@ void GPU_WriteGP0(uint32_t data)
 
             // Don't update XYOFFSET (keep fixed at 2048,2048)
             // Draw offset is applied per-vertex in Translate_GP0_to_GS
-            DLOG("E5: Draw Offset = (%d, %d)\n", draw_offset_x, draw_offset_y);
+            //DLOG("E5: Draw Offset = (%d, %d)\n", draw_offset_x, draw_offset_y);
         }
     }
     break;
@@ -2447,6 +2453,8 @@ void GPU_WriteGP1(uint32_t data)
         if (data != last_v_range)
         {
             last_v_range = data;
+            disp_range_y1 = data & 0x3FF;
+            disp_range_y2 = (data >> 10) & 0x3FF;
             Update_GS_Display();
         }
     }
@@ -2477,10 +2485,7 @@ void GPU_WriteGP1(uint32_t data)
                    pal ? "PAL" : "NTSC", interlace ? "Interlaced" : "Progressive");
 
             // Update GS display mode to match PSX
-            int gs_mode = pal ? GRAPH_MODE_PAL : GRAPH_MODE_NTSC;
-            int gs_interlace = interlace ? GRAPH_MODE_INTERLACED : GRAPH_MODE_NONINTERLACED;
-            int gs_ffmd = 0; // Frame mode
-            SetGsCrt(gs_interlace, gs_mode, gs_ffmd);
+            SetGsCrt(interlace, pal ? 3 : 2, 0);
             Update_GS_Display();
         }
         // PSX content renders to VRAM and is visible through the updated GS display window
