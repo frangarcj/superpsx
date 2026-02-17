@@ -22,6 +22,13 @@
 
 // -- GPU State --
 static uint32_t gpu_stat = 0x14802000;
+// Helper macros to extract display settings from GPUSTAT
+#define disp_hres368 ((gpu_stat >> 16) & 1)
+#define disp_hres ((gpu_stat >> 17) & 3)
+#define disp_vres ((gpu_stat >> 19) & 1)
+#define disp_pal ((gpu_stat >> 20) & 1)
+#define disp_interlace ((gpu_stat >> 22) & 1)
+
 static uint32_t gpu_read = 0;
 
 // Framebuffer configuration - must be global for GPU rendering
@@ -36,7 +43,9 @@ static int fb_psm = GS_PSM_16S;
 
 // -- GIF Buffer --
 #define GIF_BUFFER_SIZE 16384
-static unsigned __int128 gif_packet_buf[GIF_BUFFER_SIZE] __attribute__((aligned(16)));
+// Double buffered to allow CPU to fill one while DMA sends the other
+static unsigned __int128 gif_packet_buf[2][GIF_BUFFER_SIZE] __attribute__((aligned(64)));
+static int current_buffer = 0;
 static int gif_packet_ptr = 0;
 
 // -- GS Registers (Shadow) --
@@ -55,10 +64,10 @@ static int semi_trans_mode = 0; // Semi-transparency mode from E1 bits 5-6
 static int dither_enabled = 0;  // Dithering enable from E1 bit 9
 
 // Shadow PSX VRAM for CLUT texture decode - dynamically allocated
+static uint16_t *psx_vram_shadow = NULL;
 
 // Debug log file (enable for detailed GPU command tracing)
 static FILE *gpu_debug_log = NULL;
-static uint16_t *psx_vram_shadow = NULL;
 
 // VRAM transfer tracking for shadow writes
 static int vram_tx_x, vram_tx_y, vram_tx_w, vram_tx_h, vram_tx_pixel;
@@ -139,10 +148,19 @@ static void Flush_GIF(void)
 {
     if (gif_packet_ptr > 0)
     {
-        //        DLOG("Sending %d qwords via DMA\n", gif_packet_ptr);
-        // Send to GIF (Channel 2)
-        dma_channel_send_normal(DMA_CHANNEL_GIF, gif_packet_buf, gif_packet_ptr, 0, 0);
-        dma_wait_fast(); // Wait for completion for now to be safe
+        // Flush CPU cache to RAM so DMA sees the data
+        FlushCache(0);
+        
+        // Wait for the PREVIOUS transfer on this channel to complete
+        // (i.e., make sure the buffer we are about to switch away from is done being sent?)
+        // No, we need to wait for the buffer we are about to SWITCH TO, to be free.
+        dma_wait_fast(); 
+
+        // Send current buffer to GIF (Channel 2)
+        dma_channel_send_normal(DMA_CHANNEL_GIF, gif_packet_buf[current_buffer], gif_packet_ptr, 0, 0);
+        
+        // Switch to the other buffer for next writes
+        current_buffer ^= 1;
         gif_packet_ptr = 0;
     }
 }
@@ -152,7 +170,7 @@ static void Push_GIF_Tag(uint64_t nloop, uint64_t eop, uint64_t pre, uint64_t pr
     if (gif_packet_ptr + 1 >= GIF_BUFFER_SIZE)
         Flush_GIF();
 
-    GifTag *tag = (GifTag *)&gif_packet_buf[gif_packet_ptr];
+    GifTag *tag = (GifTag *)&gif_packet_buf[current_buffer][gif_packet_ptr];
     tag->NLOOP = nloop;
     tag->EOP = eop;
     tag->pad1 = 0;
@@ -170,71 +188,124 @@ static void Push_GIF_Data(uint64_t d0, uint64_t d1)
     if (gif_packet_ptr + 1 >= GIF_BUFFER_SIZE)
         Flush_GIF();
 
-    uint64_t *p = (uint64_t *)&gif_packet_buf[gif_packet_ptr];
+    uint64_t *p = (uint64_t *)&gif_packet_buf[current_buffer][gif_packet_ptr];
     p[0] = d0;
     p[1] = d1;
 
     gif_packet_ptr++;
 }
 
+static void Update_GS_Display(void)
+{
+    // 1. Determinar resolución base PSX
+    int psx_w;
+    if (disp_hres368)
+        psx_w = 368;
+    else
+    {
+        int widths[] = {256, 320, 512, 640};
+        psx_w = widths[disp_hres & 3];
+    }
+    int psx_h = disp_vres ? 480 : 240;
+
+    // 2. Calcular MAGH para llenar una línea de TV (~2560 ciclos)
+    // El reloj base del GS es ~54MHz.
+    // MAGH = (Ciclos deseados / Ancho fuente) - 1
+    int magh;
+
+    switch (psx_w)
+    {
+    case 256:
+        magh = 9;
+        break; // 256 * 10 = 2560
+    case 320:
+        magh = 7;
+        break; // 320 * 8  = 2560 (A veces se usa 3 si se usa reloj lento, pero en estándar es 7)
+    case 368:
+        magh = 6;
+        break; // 368 * 7  = 2576
+    case 512:
+        magh = 4;
+        break; // 512 * 5  = 2560
+    case 640:
+        magh = 3;
+        break; // 640 * 4  = 2560
+    default:
+        magh = 3;
+        break;
+    }
+
+    // NOTA: Si usas el modo de reloj pixel (PMODE) diferente, estos valores cambian.
+    // Asumiendo reloj GS estándar.
+
+    // 3. Calcular DW (Display Width) en unidades VCK
+    // Fórmula Hardware: DW = (width_in_pixels * (magh + 1)) - 1
+    int dw = (psx_w * (magh + 1)) - 1;
+
+    // 4. Calcular DH y MAGV (Vertical)
+    int dh;
+    int magv = 0;
+    if (disp_interlace)
+    {
+        dh = psx_h - 1;
+        magv = 0;
+    }
+    else
+    {
+        dh = psx_h * 2 - 1; // Doblar líneas para 240p -> 480i
+        magv = 1;
+    }
+
+    // 5. Calcular Centrado (DX, DY)
+    // El centro horizontal de la pantalla en VCK suele estar en ~1280.
+    // Rango de visión seguro aprox: 600 a 700 para el inicio (DX).
+
+    int dx_start_ntsc = 650; // Valor base seguro
+    int dx_start_pal = 680;
+
+    int dy;
+    int dx;
+
+    if (disp_pal)
+    {
+        dx = dx_start_pal;
+        dy = 37;
+    }
+    else
+    {
+        dx = dx_start_ntsc;
+        dy = 26;
+    }
+
+    // Ajuste fino de DX para centrar según el ancho real generado
+    // Ancho total en ciclos = (dw + 1)
+    // Un ancho estándar "lleno" es 2560. Si nos pasamos o faltamos, ajustamos.
+    int current_width_vck = dw + 1;
+    int target_width = 2560;
+
+    // Si la imagen es más estrecha que el target, la movemos a la derecha
+    // Si es más ancha, la movemos a la izquierda (offset negativo)
+    dx += (target_width - current_width_vck) / 2;
+
+    printf("Update_GS_Display: PSX %dx%d -> GS MAGH=%d DW=%d (VCK) DX=%d\n",
+           psx_w, psx_h, magh, dw, dx);
+
+    // Build DISPLAY register value
+    uint64_t display = (uint64_t)(dx & 0xFFF) |
+                       ((uint64_t)(dy & 0x7FF) << 12) |
+                       ((uint64_t)(magh & 0xF) << 23) |
+                       ((uint64_t)(magv & 0x3) << 27) |
+                       ((uint64_t)(dw & 0xFFF) << 32) |
+                       ((uint64_t)(dh & 0x7FF) << 44);
+
+    *((volatile uint64_t *)0xB2000080) = display; // DISPLAY1
+    *((volatile uint64_t *)0xB20000A0) = display; // DISPLAY2
+}
+
 static uint32_t GPU_GetWord(uint32_t addr)
 {
     addr &= 0x1FFFFC;
     return *(uint32_t *)&psx_ram[addr];
-}
-
-// Translate PSX coordinates to GS coordinates (12.4 fixed point)
-// GS XYZ2 register:
-// 0-15: X
-// 16-31: Y
-// 32-63: Z
-// Standard GS center offset is 2048.0 (32768 in 12.4)
-static uint64_t Wrap_Coord(int16_t x, int16_t y)
-{
-    // PSX coordinates are relative to the Drawing Offset.
-    // GS requires absolute coordinates in 12.4 fixed point, plus the primitive offset.
-    // We set XYOFFSET to (draw_offset_x + 2048, draw_offset_y + 2048).
-    // So the primitive coordinates should just be (x << 4) + center_offset?
-    // Actually, usually on PS2 we set XYOFFSET to the center (2048, 2048).
-    // Then we add 2048 to the coordinates?
-    // Let's stick to a simpler mapping:
-    // XYOFFSET = (2048, 2048) in GS pixels.
-    // PSX (0,0) with DrawOffset(DX, DY) should be GS (DX, DY).
-    // To make this work:
-    // GS_X = (X + DX) * 16 + (2048 * 16)
-    // But since we can set XYOFFSET, let's set XYOFFSET = (2048 + DX, 2048 + DY).
-    // Then GS_X = X * 16.
-
-    // However, Wrap_Coord currently does: (x + draw_offset_x + 2048) << 4.
-    // This is applying the offset TWICE if we also set XYOFFSET to include draw_offset.
-
-    // Approach 2 (Recommended for dynamic offsets):
-    // Set XYOFFSET to fixed (2048, 2048).
-    // Calculate final position here: (x + draw_offset_x + 2048) << 4.
-
-    // Sumar 2048 para ajustar al XYOFFSET del GS
-    int32_t gx = ((int32_t)x + 2048) << 4;
-    int32_t gy = ((int32_t)y + 2048) << 4;
-
-    // Clamp to valid GS range (though GS usually handles this via scissor)
-    if (gx < 0)
-        gx = 0;
-    if (gy < 0)
-        gy = 0;
-
-    uint32_t z = 0;
-
-    return (uint64_t)z << 32 | (uint64_t)(gy & 0xFFFF) << 16 | (uint64_t)(gx & 0xFFFF);
-}
-
-// Helper to bundle color (RGBA8)
-static uint64_t Wrap_Color(uint32_t bgr)
-{
-    uint64_t r = bgr & 0xFF;
-    uint64_t g = (bgr >> 8) & 0xFF;
-    uint64_t b = (bgr >> 16) & 0xFF;
-    uint64_t a = 0x80; // Default alpha (not transparent)
-    return r | (g << 8) | (b << 16) | (a << 24);
 }
 
 static void Setup_GS_Environment(void)
@@ -417,7 +488,7 @@ static void Start_VRAM_Transfer(int x, int y, int w, int h)
     // TRXDIR (0x53): XDIR=0 (Host -> Local)
     Push_GIF_Data(0, 0x53);
 
-    Flush_GIF();
+    // Flush_GIF(); // REMOVED: Batch setup with data/previous commands
 
     // Now prepare for IMAGE transfer
     // We will send REGS as we receive them.
@@ -446,7 +517,6 @@ static void Upload_Shadow_VRAM_Region(int x, int y, int w, int h)
         int sy = y + row;
         if (sy >= 512)
             sy -= 512;
-        uint32_t words_in_row = (w + 1) / 2; // 2 pixels per word
         uint32_t pending[4];
         int pc = 0;
         int qw_count = 0;
@@ -888,12 +958,6 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
         if (cmd & 0x02)
             prim_reg |= (1 << 6); // ABE=1
 
-        // Registers Sequence
-        // Textured: UV, RGBA, XYZ2 (Regs: 0x513)
-        // Flat: RGBA, XYZ2 (Regs: 0x51)
-        int nreg = is_textured ? 3 : 2;
-        uint64_t regs = is_textured ? 0x513 : 0x51;
-
         // Vertices
         int num_psx_verts = is_quad ? 4 : 3;
 
@@ -975,7 +1039,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
 
             if (use_sprite)
             {
-                gif_packet_ptr = *gif_cursor - gif_packet_buf;
+                gif_packet_ptr = *gif_cursor - gif_packet_buf[current_buffer];
 
                 uint64_t sprite_prim = 6; // SPRITE
                 sprite_prim |= (1 << 4);  // TME
@@ -1007,14 +1071,14 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
                 Push_GIF_Data(rgbaq, 0x01);
                 Push_GIF_Data(GS_set_XYZ(gx1, gy1, 0), 0x05); // XYZ2 BR (kick)
 
-                *gif_cursor = &gif_packet_buf[gif_packet_ptr];
+                *gif_cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
             }
             else
             {
                 // Emit two triangles: 0-1-2 and 1-3-2 using A+D mode
                 int tris[2][3] = {{0, 1, 2}, {1, 3, 2}};
-                // Sync cursor to gif_packet_ptr first
-                gif_packet_ptr = *gif_cursor - gif_packet_buf;
+                // Sync cursor to gif_packet_ptr so Push functions work
+                gif_packet_ptr = *gif_cursor - gif_packet_buf[current_buffer];
 
                 for (int t = 0; t < 2; t++)
                 {
@@ -1041,14 +1105,14 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
                         Push_GIF_Data(GS_set_XYZ(gx, gy, 0), 0x05);
                     }
                 }
-                *gif_cursor = &gif_packet_buf[gif_packet_ptr];
+                *gif_cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
             } // end else (triangle decomposition fallback)
         }
         else
         {
             // Triangle using A+D mode (most reliable for Gouraud)
             // Sync cursor to gif_packet_ptr
-            gif_packet_ptr = *gif_cursor - gif_packet_buf;
+            gif_packet_ptr = *gif_cursor - gif_packet_buf[current_buffer];
 
             // 1 PRIM + 3*(RGBAQ+XYZ2) = 7 registers
             int ndata = is_textured ? 10 : 7;
@@ -1070,7 +1134,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
                 int32_t gy = ((int32_t)verts[i].y + draw_offset_y + 2048) << 4;
                 Push_GIF_Data(GS_set_XYZ(gx, gy, 0), 0x05);
             }
-            *gif_cursor = &gif_packet_buf[gif_packet_ptr];
+            *gif_cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
 
             // Debug output
             if (gpu_debug_log)
@@ -1149,7 +1213,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
         {
             // Textured sprite using A+D mode (explicit register writes, most reliable)
             // Sync cursor to gif_packet_ptr
-            gif_packet_ptr = *gif_cursor - gif_packet_buf;
+            gif_packet_ptr = *gif_cursor - gif_packet_buf[current_buffer];
 
             if (gpu_debug_log)
             {
@@ -1406,12 +1470,12 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
             // Restore dither state
             Push_GIF_Data((uint64_t)dither_enabled, 0x45); // DTHE = restore
 
-            *gif_cursor = &gif_packet_buf[gif_packet_ptr];
+            *gif_cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
         }
         else
         {
             // Flat sprite using A+D mode (explicit register writes)
-            gif_packet_ptr = *gif_cursor - gif_packet_buf;
+            gif_packet_ptr = *gif_cursor - gif_packet_buf[current_buffer];
 
             int32_t gx0 = ((int32_t)x + draw_offset_x + 2048) << 4;
             int32_t gy0 = ((int32_t)y + draw_offset_y + 2048) << 4;
@@ -1450,7 +1514,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
             // Restore dither state
             Push_GIF_Data((uint64_t)dither_enabled, 0x45); // DTHE = restore
 
-            *gif_cursor = &gif_packet_buf[gif_packet_ptr];
+            *gif_cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
         }
 
         // DLOG("Draw Sprite: Rect (%d,%d %dx%d) Color=%06X\n", x, y, w, h, color);
@@ -1526,7 +1590,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
 
         // FillRect writes directly to GIF, doesn't use cursor
         // Sync cursor back to current gif_packet_ptr position
-        *gif_cursor = &gif_packet_buf[gif_packet_ptr];
+        *gif_cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
     }
     else if ((cmd & 0xE0) == 0x40)
     { // Line (GP0 40h-5Fh) - using A+D mode for reliable rendering
@@ -1552,11 +1616,11 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
         int16_t y1 = (int16_t)(xy1 >> 16);
 
         // Sync cursor to gif_packet_ptr
-        gif_packet_ptr = *gif_cursor - gif_packet_buf;
+        gif_packet_ptr = *gif_cursor - gif_packet_buf[current_buffer];
 
         Emit_Line_Segment_AD(x0, y0, color0, x1, y1, color1, is_shaded, is_semi_trans);
 
-        *gif_cursor = &gif_packet_buf[gif_packet_ptr];
+        *gif_cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
 
         if (gpu_debug_log)
         {
@@ -1619,19 +1683,6 @@ static int GPU_GetCommandSize(uint32_t cmd)
         return 4; // cmd, src XY, dst XY, WH
 
     return 1;
-}
-
-// Moved to file scope for use by Upload_Shadow_VRAM_Region
-// (was previously at GPU_WriteGP0 scope)
-
-// Convert 2 PSX pixels (32-bit word) to 2 GS pixels (2x 32-bit RGBA)
-// Returns 64-bit (2 pixels)
-// For CT16S framebuffer: PSX 16-bit pixels pass through directly
-// No conversion needed - PSX RGBA5551 == GS CT16 format
-static uint64_t Convert_Pixels_16(uint32_t data)
-{
-    // Just return the raw 32-bit word (2 x 16-bit pixels) as-is
-    return (uint64_t)data;
 }
 
 void GPU_WriteGP0(uint32_t data)
@@ -2073,9 +2124,9 @@ void GPU_WriteGP0(uint32_t data)
             else
             {
                 // Execute Primitive via Translate_GP0_to_GS
-                unsigned __int128 *cursor = &gif_packet_buf[gif_packet_ptr];
+                unsigned __int128 *cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
                 Translate_GP0_to_GS(gpu_cmd_buffer, &cursor);
-                gif_packet_ptr = cursor - gif_packet_buf;
+                gif_packet_ptr = cursor - gif_packet_buf[current_buffer];
                 Flush_GIF(); // Flush immediately so primitives are visible
 
                 // Check if this was a polyline command - activate polyline mode
@@ -2127,136 +2178,163 @@ void GPU_WriteGP0(uint32_t data)
     {
     case 0xE1: // Draw Mode
     {
-        // Parse Texture Page settings
-        // 0-3: TP X (x64 halfwords)
-        // 4: TP Y (x256 lines)
-        // 7-8: TPF (0=4bit, 1=8bit, 2=15bit)
-
-        uint32_t tp_x = data & 0xF;
-        uint32_t tp_y = (data >> 4) & 1;
-        uint32_t tpf = (data >> 7) & 3;
-
-        // Store texture page position in PSX VRAM pixel coords
-        // For all formats, the VRAM position is tp_x*64, tp_y*256 in halfword coords
-        // Since we upload each halfword as one CT32 pixel at the same (x,y),
-        // the GS VRAM position matches: (tp_x*64, tp_y*256)
-        tex_page_x = tp_x * 64;
-        tex_page_y = tp_y * 256;
-        tex_page_format = tpf;
-
-        // Semi-transparency mode: bits 5-6 of E1
-        uint32_t trans_mode = (data >> 5) & 3;
-        semi_trans_mode = trans_mode;
-
-        // Texture flip bits: bits 12-13 of E1
-        tex_flip_x = (data >> 12) & 1;
-        tex_flip_y = (data >> 13) & 1;
-
-        // Update GPUSTAT bits 0-10 from GP0(E1) bits 0-10
-        // GPUSTAT bit 15 from GP0(E1) bit 11 only if GP1(09h) enabled 2MB VRAM;
-        // otherwise force bit 15 to 0 on each E1 write
-        if (gp1_allow_2mb)
-            gpu_stat = (gpu_stat & ~0x87FF) | (data & 0x7FF) | (((data >> 11) & 1) << 15);
-        else
-            gpu_stat = (gpu_stat & ~0x87FF) | (data & 0x7FF);
-
-        // Set TEX0: Use TBP0=0 (whole VRAM), UV offset applied per-vertex
-        Push_GIF_Tag(4, 1, 0, 0, 0, 1, 0xE);
-        uint64_t tex0 = 0;                    // TBP0 = 0 (full VRAM base)
-        tex0 |= (uint64_t)PSX_VRAM_FBW << 14; // TBW = 16 (1024 pixels / 64)
-        tex0 |= (uint64_t)GS_PSM_16S << 20;   // PSM = CT16S (matches framebuffer)
-        tex0 |= (uint64_t)10 << 26;           // TW = 10 (2^10 = 1024)
-        tex0 |= (uint64_t)9 << 30;            // TH = 9 (2^9 = 512)
-        tex0 |= (uint64_t)1 << 34;            // TCC = 1 (RGBA)
-        tex0 |= (uint64_t)0 << 35;            // TFX = 0 (Modulate)
-
-        Push_GIF_Data(tex0, 0x06); // TEX0_1
-        Push_GIF_Data(0, 0x3F);    // TEXFLUSH
-
-        // Dithering: bit 9 of GP0 E1
-        uint32_t dither_enable = (data >> 9) & 1;
-        dither_enabled = dither_enable;
-        Push_GIF_Data(dither_enable, 0x45); // DTHE register
-
-        // Semi-transparency blending (ALPHA_1 register 0x42)
-        // PSX modes: 0=0.5B+0.5F, 1=B+F, 2=B-F, 3=B+0.25F
-        // GS ALPHA: A=Cs, B=Cd, C=FIX/As, D=Cd/0
-        // Formula: (A-B)*C + D
+        static u32 last_e1 = 0xFFFFFFFF;
+        if (data != last_e1)
         {
-            uint64_t alpha_reg;
-            switch (trans_mode)
+            last_e1 = data;
+
+            // Parse Texture Page settings
+            // 0-3: TP X (x64 halfwords)
+            // 4: TP Y (x256 lines)
+            // 7-8: TPF (0=4bit, 1=8bit, 2=15bit)
+
+            uint32_t tp_x = data & 0xF;
+            uint32_t tp_y = (data >> 4) & 1;
+            uint32_t tpf = (data >> 7) & 3;
+
+            // Store texture page position in PSX VRAM pixel coords
+            // For all formats, the VRAM position is tp_x*64, tp_y*256 in halfword coords
+            // Since we upload each halfword as one CT32 pixel at the same (x,y),
+            // the GS VRAM position matches: (tp_x*64, tp_y*256)
+            tex_page_x = tp_x * 64;
+            tex_page_y = tp_y * 256;
+            tex_page_format = tpf;
+
+            // Semi-transparency mode: bits 5-6 of E1
+            uint32_t trans_mode = (data >> 5) & 3;
+            semi_trans_mode = trans_mode;
+
+            // Texture flip bits: bits 12-13 of E1
+            tex_flip_x = (data >> 12) & 1;
+            tex_flip_y = (data >> 13) & 1;
+
+            // Update GPUSTAT bits 0-10 from GP0(E1) bits 0-10
+            // GPUSTAT bit 15 from GP0(E1) bit 11 only if GP1(09h) enabled 2MB VRAM;
+            // otherwise force bit 15 to 0 on each E1 write
+            if (gp1_allow_2mb)
+                gpu_stat = (gpu_stat & ~0x87FF) | (data & 0x7FF) | (((data >> 11) & 1) << 15);
+            else
+                gpu_stat = (gpu_stat & ~0x87FF) | (data & 0x7FF);
+
+            // Set TEX0: Use TBP0=0 (whole VRAM), UV offset applied per-vertex
+            Push_GIF_Tag(4, 1, 0, 0, 0, 1, 0xE);
+            uint64_t tex0 = 0;                    // TBP0 = 0 (full VRAM base)
+            tex0 |= (uint64_t)PSX_VRAM_FBW << 14; // TBW = 16 (1024 pixels / 64)
+            tex0 |= (uint64_t)GS_PSM_16S << 20;   // PSM = CT16S (matches framebuffer)
+            tex0 |= (uint64_t)10 << 26;           // TW = 10 (2^10 = 1024)
+            tex0 |= (uint64_t)9 << 30;            // TH = 9 (2^9 = 512)
+            tex0 |= (uint64_t)1 << 34;            // TCC = 1 (RGBA)
+            tex0 |= (uint64_t)0 << 35;            // TFX = 0 (Modulate)
+
+            Push_GIF_Data(tex0, 0x06); // TEX0_1
+            Push_GIF_Data(0, 0x3F);    // TEXFLUSH
+
+            // Dithering: bit 9 of GP0 E1
+            uint32_t dither_enable = (data >> 9) & 1;
+            dither_enabled = dither_enable;
+            Push_GIF_Data(dither_enable, 0x45); // DTHE register
+
+            // Semi-transparency blending (ALPHA_1 register 0x42)
+            // PSX modes: 0=0.5B+0.5F, 1=B+F, 2=B-F, 3=B+0.25F
+            // GS ALPHA: A=Cs, B=Cd, C=FIX/As, D=Cd/0
+            // Formula: (A-B)*C + D
             {
-            case 0: // 0.5*Cd + 0.5*Cs
-                    // GS: ((Cs-Cd)*FIX >> 7)+Cd with FIX=0x40 (64/128=0.5)
-                alpha_reg = (uint64_t)0 | ((uint64_t)1 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x40 << 32);
-                break;
-            case 1: // Cd + Cs (saturating)
-                    // GS: ((Cs-0)*FIX >> 7)+Cd with FIX=0x80 (128/128=1.0)
-                alpha_reg = (uint64_t)0 | ((uint64_t)2 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x80 << 32);
-                break;
-            case 2: // Cd - Cs
-                    // GS: ((Cd-Cs)*FIX >> 7)+0 with FIX=0x80 (128/128=1.0)
-                alpha_reg = (uint64_t)1 | ((uint64_t)0 << 2) | ((uint64_t)2 << 4) | ((uint64_t)2 << 6) | ((uint64_t)0x80 << 32);
-                break;
-            case 3: // Cd + 0.25*Cs
-                    // GS: ((Cs-0)*FIX >> 7)+Cd with FIX=0x20 (32/128=0.25)
-                alpha_reg = (uint64_t)0 | ((uint64_t)2 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x20 << 32);
-                break;
+                uint64_t alpha_reg;
+                switch (trans_mode)
+                {
+                case 0: // 0.5*Cd + 0.5*Cs
+                        // GS: ((Cs-Cd)*FIX >> 7)+Cd with FIX=0x40 (64/128=0.5)
+                    alpha_reg = (uint64_t)0 | ((uint64_t)1 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x40 << 32);
+                    break;
+                case 1: // Cd + Cs (saturating)
+                        // GS: ((Cs-0)*FIX >> 7)+Cd with FIX=0x80 (128/128=1.0)
+                    alpha_reg = (uint64_t)0 | ((uint64_t)2 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x80 << 32);
+                    break;
+                case 2: // Cd - Cs
+                        // GS: ((Cd-Cs)*FIX >> 7)+0 with FIX=0x80 (128/128=1.0)
+                    alpha_reg = (uint64_t)1 | ((uint64_t)0 << 2) | ((uint64_t)2 << 4) | ((uint64_t)2 << 6) | ((uint64_t)0x80 << 32);
+                    break;
+                case 3: // Cd + 0.25*Cs
+                        // GS: ((Cs-0)*FIX >> 7)+Cd with FIX=0x20 (32/128=0.25)
+                    alpha_reg = (uint64_t)0 | ((uint64_t)2 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x20 << 32);
+                    break;
+                }
+                Push_GIF_Data(alpha_reg, 0x42); // ALPHA_1
             }
-            Push_GIF_Data(alpha_reg, 0x42); // ALPHA_1
-        }
 
-        // DLOG("E1: TexPage(%d,%d) fmt=%d\n", tex_page_x, tex_page_y, tpf);
-        if (gpu_debug_log)
-        {
-            fprintf(gpu_debug_log, "[GPU] E1: TexPage(%d,%d) fmt=%" PRIu32 " trans=%" PRIu32 " dither=%" PRIu32 " flipX=%d flipY=%d\n",
-                    tex_page_x, tex_page_y, tpf, trans_mode, dither_enable, tex_flip_x, tex_flip_y);
-            fflush(gpu_debug_log);
+            // DLOG("E1: TexPage(%d,%d) fmt=%d\n", tex_page_x, tex_page_y, tpf);
+            if (gpu_debug_log)
+            {
+                fprintf(gpu_debug_log, "[GPU] E1: TexPage(%d,%d) fmt=%" PRIu32 " trans=%" PRIu32 " dither=%" PRIu32 " flipX=%d flipY=%d\n",
+                        tex_page_x, tex_page_y, tpf, trans_mode, dither_enable, tex_flip_x, tex_flip_y);
+                fflush(gpu_debug_log);
+            }
+            Flush_GIF(); // Ensure ALPHA_1 and other settings reach GS immediately
         }
-        Flush_GIF(); // Ensure ALPHA_1 and other settings reach GS immediately
     }
     break;
     case 0xE3: // Drawing Area Top-Left
-        draw_clip_x1 = data & 0x3FF;
-        draw_clip_y1 = (data >> 10) & 0x3FF;
-        DLOG("E3: Draw Area TL (%d,%d)\n", draw_clip_x1, draw_clip_y1);
-        // Update SCISSOR (framebuffer space, no offset)
+    {
+        static uint32_t last_e3 = 0xFFFFFFFF;
+        if (data != last_e3)
         {
-            Push_GIF_Tag(1, 1, 0, 0, 0, 1, 0xE);
-            uint64_t scax0 = draw_clip_x1;
-            uint64_t scax1 = draw_clip_x2;
-            uint64_t scay0 = draw_clip_y1;
-            uint64_t scay1 = draw_clip_y2;
-            Push_GIF_Data(scax0 | (scax1 << 16) | (scay0 << 32) | (scay1 << 48), 0x40); // SCISSOR_1
+            last_e3 = data;
+            draw_clip_x1 = data & 0x3FF;
+            draw_clip_y1 = (data >> 10) & 0x3FF;
+            DLOG("E3: Draw Area TL (%d,%d)\n", draw_clip_x1, draw_clip_y1);
+            // Update SCISSOR (framebuffer space, no offset)
+            {
+                Push_GIF_Tag(1, 1, 0, 0, 0, 1, 0xE);
+                uint64_t scax0 = draw_clip_x1;
+                uint64_t scax1 = draw_clip_x2;
+                uint64_t scay0 = draw_clip_y1;
+                uint64_t scay1 = draw_clip_y2;
+                Push_GIF_Data(scax0 | (scax1 << 16) | (scay0 << 32) | (scay1 << 48), 0x40); // SCISSOR_1
+            }
         }
-        break;
+    }
+    break;
     case 0xE4: // Drawing Area Bottom-Right
-        draw_clip_x2 = data & 0x3FF;
-        draw_clip_y2 = (data >> 10) & 0x3FF;
-        DLOG("E4: Draw Area BR (%d,%d)\n", draw_clip_x2, draw_clip_y2);
-        // Update SCISSOR (framebuffer space, no offset)
+    {
+        static uint32_t last_e4 = 0xFFFFFFFF;
+        if (data != last_e4)
         {
-            Push_GIF_Tag(1, 1, 0, 0, 0, 1, 0xE);
-            uint64_t scax0 = draw_clip_x1;
-            uint64_t scax1 = draw_clip_x2;
-            uint64_t scay0 = draw_clip_y1;
-            uint64_t scay1 = draw_clip_y2;
-            Push_GIF_Data(scax0 | (scax1 << 16) | (scay0 << 32) | (scay1 << 48), 0x40); // SCISSOR_1
+            last_e4 = data;
+            draw_clip_x2 = data & 0x3FF;
+            draw_clip_y2 = (data >> 10) & 0x3FF;
+            DLOG("E4: Draw Area BR (%d,%d)\n", draw_clip_x2, draw_clip_y2);
+            // Update SCISSOR (framebuffer space, no offset)
+            {
+                Push_GIF_Tag(1, 1, 0, 0, 0, 1, 0xE);
+                uint64_t scax0 = draw_clip_x1;
+                uint64_t scax1 = draw_clip_x2;
+                uint64_t scay0 = draw_clip_y1;
+                uint64_t scay1 = draw_clip_y2;
+                Push_GIF_Data(scax0 | (scax1 << 16) | (scay0 << 32) | (scay1 << 48), 0x40); // SCISSOR_1
+            }
         }
-        break;
+    }
+    break;
     case 0xE5: // Drawing Offset
-        // printf("  [GPU] GP0: Draw Offset %08X\n", data);
-        draw_offset_x = (int16_t)(data & 0x7FF);
-        if (draw_offset_x & 0x400)
-            draw_offset_x |= 0xF800;
-        draw_offset_y = (int16_t)((data >> 11) & 0x7FF);
-        if (draw_offset_y & 0x400)
-            draw_offset_y |= 0xF800;
+    {
+        static uint32_t last_e5 = 0xFFFFFFFF;
+        if (data != last_e5)
+        {
+            last_e5 = data;
+            // printf("  [GPU] GP0: Draw Offset %08X\n", data);
+            draw_offset_x = (int16_t)(data & 0x7FF);
+            if (draw_offset_x & 0x400)
+                draw_offset_x |= 0xF800;
+            draw_offset_y = (int16_t)((data >> 11) & 0x7FF);
+            if (draw_offset_y & 0x400)
+                draw_offset_y |= 0xF800;
 
-        // Don't update XYOFFSET (keep fixed at 2048,2048)
-        // Draw offset is applied per-vertex in Translate_GP0_to_GS
-        DLOG("E5: Draw Offset = (%d, %d)\n", draw_offset_x, draw_offset_y);
-        break;
+            // Don't update XYOFFSET (keep fixed at 2048,2048)
+            // Draw offset is applied per-vertex in Translate_GP0_to_GS
+            DLOG("E5: Draw Offset = (%d, %d)\n", draw_offset_x, draw_offset_y);
+        }
+    }
+    break;
     case 0xE2: // Texture Window Setting
         tex_win_mask_x = data & 0x1F;
         tex_win_mask_y = (data >> 5) & 0x1F;
@@ -2287,9 +2365,9 @@ void GPU_WriteGP0(uint32_t data)
         {
             // Single word primitive? Unlikely but safe.
             uint32_t buff[1] = {data};
-            unsigned __int128 *cursor = &gif_packet_buf[gif_packet_ptr];
+            unsigned __int128 *cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
             Translate_GP0_to_GS(buff, &cursor);
-            gif_packet_ptr = cursor - gif_packet_buf;
+            gif_packet_ptr = cursor - gif_packet_buf[current_buffer];
             if (gif_packet_ptr > GIF_BUFFER_SIZE - 32)
                 Flush_GIF();
         }
@@ -2332,28 +2410,47 @@ void GPU_WriteGP1(uint32_t data)
         break;
     case 0x05: // Display Start
     {
-        uint32_t x = data & 0x3FF;
-        uint32_t y = (data >> 10) & 0x1FF;
+        static u32 last_gp1_05 = 0xFFFFFFFF;
+        if (data != last_gp1_05)
+        {
+            last_gp1_05 = data;
+            uint32_t x = data & 0x3FF;
+            uint32_t y = (data >> 10) & 0x1FF;
 
-        //                DLOG("GP1(05) Display Start: %d, %d (Offset: %06X)\n", x, y, data & 0xFFFFFF);
+            //                DLOG("GP1(05) Display Start: %d, %d (Offset: %06X)\n", x, y, data & 0xFFFFFF);
 
-        uint64_t dispfb = 0;
-        dispfb |= (uint64_t)0 << 0;            // FBP (Base 0)
-        dispfb |= (uint64_t)PSX_VRAM_FBW << 9; // FBW (1024 pixels)
-        dispfb |= (uint64_t)GS_PSM_16S << 15;  // PSM (CT16S - matches PSX 15-bit VRAM)
-        dispfb |= (uint64_t)x << 32;           // DBX
-        dispfb |= (uint64_t)y << 43;           // DBY
+            uint64_t dispfb = 0;
+            dispfb |= (uint64_t)0 << 0;            // FBP (Base 0)
+            dispfb |= (uint64_t)PSX_VRAM_FBW << 9; // FBW (1024 pixels)
+            dispfb |= (uint64_t)GS_PSM_16S << 15;  // PSM (CT16S - matches PSX 15-bit VRAM)
+            dispfb |= (uint64_t)x << 32;           // DBX
+            dispfb |= (uint64_t)y << 43;           // DBY
 
-        *((volatile uint64_t *)0xB2000070) = dispfb; // DISPFB1
-        *((volatile uint64_t *)0xB2000090) = dispfb; // DISPFB2
+            *((volatile uint64_t *)0xB2000070) = dispfb; // DISPFB1
+            *((volatile uint64_t *)0xB2000090) = dispfb; // DISPFB2
+        }
     }
     break;
     case 0x06: // Horizontal Display Range
-               //            DLOG("GP1(06) H Display Range: raw=0x%06X x1=%d x2=%d\n", data & 0xFFFFFF, data & 0xFFF, (data >> 12) & 0xFFF);
-        break;
+    {
+        static uint32_t last_h_range = 0xFFFFFFFF;
+        if (data != last_h_range)
+        {
+            last_h_range = data;
+            Update_GS_Display();
+        }
+    }
+    break;
     case 0x07: // Vertical Display Range
-               //            DLOG("GP1(07) V Display Range: raw=0x%06X y1=%d y2=%d\n", data & 0xFFFFFF, data & 0x3FF, (data >> 10) & 0x3FF);
-        break;
+    {
+        static uint32_t last_v_range = 0xFFFFFFFF;
+        if (data != last_v_range)
+        {
+            last_v_range = data;
+            Update_GS_Display();
+        }
+    }
+    break;
     case 0x08: // Display Mode
     {
         // Update gpu_stat bits
@@ -2365,6 +2462,10 @@ void GPU_WriteGP1(uint32_t data)
         uint32_t mode_bits = data & 0x7F;
         if (mode_bits != last_display_mode)
         {
+            // Update gpu_stat bits
+            gpu_stat = (gpu_stat & ~0x007F4000) |
+                       ((data & 0x3F) << 17) | ((data & 0x40) << 10);
+
             last_display_mode = mode_bits;
             uint32_t hres = data & 3;
             uint32_t vres = (data >> 2) & 1;
@@ -2380,6 +2481,7 @@ void GPU_WriteGP1(uint32_t data)
             int gs_interlace = interlace ? GRAPH_MODE_INTERLACED : GRAPH_MODE_NONINTERLACED;
             int gs_ffmd = 0; // Frame mode
             SetGsCrt(gs_interlace, gs_mode, gs_ffmd);
+            Update_GS_Display();
         }
         // PSX content renders to VRAM and is visible through the updated GS display window
     }
@@ -2563,11 +2665,11 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
 
                     // Translate directly to GIF buffer
                     // We need to pass address of current GIF pointer
-                    unsigned __int128 *cursor = &gif_packet_buf[gif_packet_ptr];
+                    unsigned __int128 *cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
                     Translate_GP0_to_GS(cmd_ptr, &cursor);
 
                     // Update GIF pointer based on cursor movement
-                    gif_packet_ptr = cursor - gif_packet_buf;
+                    gif_packet_ptr = cursor - gif_packet_buf[current_buffer];
 
                     // Check buffer size and flush if needed
                     if (gif_packet_ptr > GIF_BUFFER_SIZE - 32)
@@ -2583,9 +2685,9 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                     // Fill Rect
                     uint32_t *cmd_ptr = (uint32_t *)&psx_ram[addr];
 
-                    unsigned __int128 *cursor = &gif_packet_buf[gif_packet_ptr];
+                    unsigned __int128 *cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
                     Translate_GP0_to_GS(cmd_ptr, &cursor);
-                    gif_packet_ptr = cursor - gif_packet_buf;
+                    gif_packet_ptr = cursor - gif_packet_buf[current_buffer];
                     if (gif_packet_ptr > GIF_BUFFER_SIZE - 32)
                         Flush_GIF();
 
@@ -2601,7 +2703,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                     // The pixel data may span multiple DMA nodes
 
                     // Flush pending GIF data before VRAM transfer
-                    Flush_GIF();
+                    // Flush_GIF(); // REMOVED: Batch with previous commands
 
                     // Send command word + params through GPU_WriteGP0
                     // First: A0 command
@@ -2629,7 +2731,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                 {
                     // GP0(80h) - VRAM-to-VRAM copy (4 words)
                     // Flush pending GIF data before transfer
-                    Flush_GIF();
+                    // Flush_GIF(); // REMOVED: Batch with previous commands
 
                     GPU_WriteGP0(cmd_word);
                     i++;
@@ -2692,6 +2794,13 @@ void Init_Graphics()
 
     dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
     dma_channel_fast_waits(DMA_CHANNEL_GIF);
+
+    if (!psx_vram_shadow)
+    {
+        psx_vram_shadow = (u16 *)malloc(1024 * 512 * 2);
+        if (psx_vram_shadow)
+            memset(psx_vram_shadow, 0, 1024 * 512 * 2);
+    }
 
     // Initialize graphics like libdraw does
     graph_initialize(fb_address, fb_width, fb_height, fb_psm, 0, 0);
