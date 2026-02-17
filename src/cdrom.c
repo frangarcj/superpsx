@@ -10,6 +10,7 @@
  */
 
 #include "superpsx.h"
+#include "scheduler.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -87,9 +88,14 @@ static struct
     uint8_t reading;        /* 1 = ReadN/ReadS in progress */
     uint8_t mode;           /* SetMode value */
     uint8_t disc_present;   /* 0 = no disc (ShellOpen), 1 = disc inserted */
-    int32_t read_delay;     /* Cycles until next INT1 delivery */
-    int32_t pending_delay;  /* Cycles until pending response delivery */
+    int32_t read_delay;     /* Cycles until next INT1 delivery (legacy, used for state) */
+    int32_t pending_delay;  /* Cycles until pending response delivery (legacy) */
+    uint8_t seek_pending;   /* 1 = seek is in progress, waiting for scheduler */
 } cdrom;
+
+/* ---- Forward declarations for scheduler ---- */
+static void CDROM_EventCallback(void);
+static void CDROM_PendingCallback(void);
 
 /* ---- Update stat preserving ShellOpen when no disc ---- */
 static void cdrom_set_stat(uint8_t new_stat)
@@ -182,10 +188,13 @@ static void cdrom_execute_command(uint8_t cmd)
         cdrom.has_loc_header = 1;
         cdrom.seek_error = 0;
         cdrom_set_stat(0x42);        /* Seeking + Motor On */
-        cdrom.read_delay = 10000000; /* ~300ms: long enough for test to observe stat=0x42 */
+        cdrom.seek_pending = 1;
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 acknowledge */
-        /* INT1 (data ready) will be delivered by CDROM_Update */
+        /* Schedule seek completion: ~300ms for initial seek */
+        Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
+                                global_cycles + 10000000ULL,
+                                CDROM_EventCallback);
         break;
     }
 
@@ -389,9 +398,13 @@ static void cdrom_execute_command(uint8_t cmd)
         cdrom.has_loc_header = 1;
         cdrom.seek_error = 0;
         cdrom_set_stat(0x42); /* Seeking + Motor On */
-        cdrom.read_delay = 10000000;
+        cdrom.seek_pending = 1;
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
+        /* Schedule seek completion */
+        Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
+                                global_cycles + 10000000ULL,
+                                CDROM_EventCallback);
         break;
     }
 
@@ -495,46 +508,33 @@ uint32_t CDROM_Read(uint32_t addr)
     return result;
 }
 
-/* ---- Tick the CD-ROM for timed operations ---- */
-void CDROM_Update(uint32_t cycles)
+/* ---- CD-ROM event callback (called by scheduler) ---- */
+static void CDROM_EventCallback(void)
 {
-    /* Deliver pending responses after delay */
-    if (cdrom.pending_delay > 0)
-    {
-        cdrom.pending_delay -= (int32_t)cycles;
-        if (cdrom.pending_delay <= 0)
-        {
-            cdrom.pending_delay = 0;
-            if (cdrom.has_pending && cdrom.int_flag == 0)
-                cdrom_deliver_pending();
-        }
-    }
-
-    /* Re-assert I_STAT if CD-ROM still has an active interrupt.
-     * This prevents edge-loss when I_STAT is acknowledged while
-     * the CD-ROM interrupt line is still active (e.g. new commands
-     * issued from within an ISR). */
-    if (cdrom.int_flag != 0)
-        SignalInterrupt(2);
-
     if (!cdrom.reading)
         return;
 
-    /* Count down read delay */
-    if (cdrom.read_delay > 0)
+    /* Phase 1: Seek completion */
+    if (cdrom.seek_pending)
     {
-        cdrom.read_delay -= (int32_t)cycles;
-        if (cdrom.read_delay <= 0)
-        {
-            /* Seek complete, now in reading state */
-            cdrom_set_stat(0x22); /* Reading + Motor On */
-        }
+        cdrom.seek_pending = 0;
+        cdrom_set_stat(0x22); /* Reading + Motor On */
+        /* Schedule first sector delivery */
+        Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
+                                global_cycles + CDROM_READ_CYCLES_FAST,
+                                CDROM_EventCallback);
         return;
     }
 
-    /* Deliver INT1 (data ready) when possible */
+    /* Phase 2: Sector delivery (INT1) */
     if (cdrom.int_flag != 0 || cdrom.has_pending)
-        return; /* Wait for previous INT to be acknowledged */
+    {
+        /* Previous INT not acknowledged yet - retry shortly */
+        Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
+                                global_cycles + 1000,
+                                CDROM_EventCallback);
+        return;
+    }
 
     /* Fill data FIFO with dummy sector data */
     memset(cdrom.data_fifo, 0, DATA_FIFO_SIZE);
@@ -551,8 +551,38 @@ void CDROM_Update(uint32_t cycles)
     /* Advance position */
     cdrom.cur_lba++;
 
-    /* Set delay until next sector (~225792 cycles at 33.8MHz for 150 sectors/s) */
-    cdrom.read_delay = 30000;
+    /* Schedule next sector (~50000 cycles fast approximation) */
+    Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
+                            global_cycles + CDROM_READ_CYCLES_FAST,
+                            CDROM_EventCallback);
+}
+
+/* ---- Pending response callback ---- */
+static void CDROM_PendingCallback(void)
+{
+    if (cdrom.has_pending && cdrom.int_flag == 0)
+        cdrom_deliver_pending();
+}
+
+/* ---- Schedule a CD-ROM event (public, called from dynarec) ---- */
+void CDROM_ScheduleEvent(void)
+{
+    if (cdrom.reading)
+    {
+        Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
+                                global_cycles + CDROM_READ_CYCLES_FAST,
+                                CDROM_EventCallback);
+    }
+}
+
+/* ---- Legacy periodic update (retained for INT re-assertion) ---- */
+void CDROM_Update(uint32_t cycles)
+{
+    (void)cycles;
+
+    /* Re-assert I_STAT if CD-ROM still has an active interrupt */
+    if (cdrom.int_flag != 0)
+        SignalInterrupt(2);
 }
 
 /* ---- Write CD-ROM register ---- */
@@ -631,7 +661,9 @@ void CDROM_Write(uint32_t addr, uint32_t data)
              * FIFO before it's overwritten by the pending response. */
             if (cdrom.has_pending && cdrom.int_flag == 0)
             {
-                cdrom.pending_delay = 200; /* ~25 instructions */
+                Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
+                                        global_cycles + 200,
+                                        CDROM_PendingCallback);
             }
             break;
         case 2: /* Audio Volume Left→Right */

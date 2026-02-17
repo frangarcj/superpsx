@@ -4,8 +4,8 @@
 
 #include <kernel.h>
 #include "superpsx.h"
+#include "scheduler.h"
 #include "joystick.h"
-#include "superpsx.h"
 
 /*
  * PSX Hardware Register Emulation
@@ -261,84 +261,130 @@ uint32_t ReadHardware(uint32_t addr)
     return 0;
 }
 
+/* ---- Timer clock divider for a given timer + mode ---- */
+static uint32_t timer_clock_divider(int t)
+{
+    uint32_t src = (timers[t].mode >> 8) & 3;
+    if (t == 1 && src == 1)
+        return CYCLES_PER_HBLANK; /* HBlank mode */
+    if (t == 2 && src == 2)
+        return 8;                 /* Sysclk/8 */
+    return 1;                     /* Sysclk (default) */
+}
+
+/* ---- Calculate cycles until the next timer event and schedule it ---- */
+static void Timer_Callback0(void);
+static void Timer_Callback1(void);
+static void Timer_Callback2(void);
+
+static const sched_callback_t timer_callbacks[3] = {
+    Timer_Callback0, Timer_Callback1, Timer_Callback2
+};
+
+/* Schedule the next event for timer t based on its current value/target/mode */
+static void Timer_ScheduleOne(int t)
+{
+    uint32_t mode = timers[t].mode;
+    uint32_t val  = timers[t].value & 0xFFFF;
+    uint32_t target = timers[t].target & 0xFFFF;
+    uint32_t divider = timer_clock_divider(t);
+
+    /* Find how many timer ticks until next event */
+    uint32_t ticks_to_event = 0xFFFF; /* default: overflow */
+
+    /* Check: will we hit target first? (if target IRQ enabled and target > 0) */
+    if ((mode & (1 << 4)) && target > 0 && val < target)
+    {
+        ticks_to_event = target - val;
+    }
+
+    /* Check: overflow (if overflow IRQ enabled) */
+    if (mode & (1 << 5))
+    {
+        uint32_t ticks_to_overflow = 0x10000 - val;
+        if (ticks_to_overflow < ticks_to_event)
+            ticks_to_event = ticks_to_overflow;
+    }
+
+    /* If neither IRQ is enabled, schedule at overflow anyway to keep counter alive */
+    if (ticks_to_event == 0)
+        ticks_to_event = 1;
+
+    /* Convert timer ticks to CPU cycles */
+    uint64_t cycles_to_event = (uint64_t)ticks_to_event * divider;
+
+    Scheduler_ScheduleEvent(SCHED_EVENT_TIMER0 + t,
+                            global_cycles + cycles_to_event,
+                            timer_callbacks[t]);
+}
+
+/* ---- Timer event callback: fire IRQs, update counter, reschedule ---- */
+static void Timer_FireEvent(int t)
+{
+    uint32_t mode = timers[t].mode;
+    uint32_t target = timers[t].target & 0xFFFF;
+
+    /* Figure out how many timer ticks elapsed since we last scheduled.
+     * For simplicity, advance counter to the target or overflow point. */
+    /* We know we fired because we reached the point, so:
+     *  If target match → set value to target (or 0 if reset-on-target)
+     *  If overflow    → set value to 0
+     */
+    uint32_t val = timers[t].value & 0xFFFF;
+
+    /* Check target match first */
+    int hit_target = 0;
+    if ((mode & (1 << 4)) && target > 0 && val < target)
+    {
+        /* Advance to target */
+        val = target;
+        hit_target = 1;
+    }
+
+    if (hit_target)
+    {
+        timers[t].mode |= (1 << 10);
+        SignalInterrupt(4 + t);
+
+        /* Reset on target? */
+        if (mode & (1 << 3))
+            val = 0;
+    }
+    else
+    {
+        /* Overflow */
+        val = 0;
+        if (mode & (1 << 5))
+        {
+            timers[t].mode |= (1 << 11);
+            SignalInterrupt(4 + t);
+        }
+    }
+
+    timers[t].value = val;
+
+    /* Reschedule for next event */
+    Timer_ScheduleOne(t);
+}
+
+static void Timer_Callback0(void) { Timer_FireEvent(0); }
+static void Timer_Callback1(void) { Timer_FireEvent(1); }
+static void Timer_Callback2(void) { Timer_FireEvent(2); }
+
+/* ---- Schedule all 3 timers (called at startup) ---- */
+void Timer_ScheduleAll(void)
+{
+    int t;
+    for (t = 0; t < 3; t++)
+        Timer_ScheduleOne(t);
+}
+
+/* ---- Legacy UpdateTimers (kept for backward compat, now a no-op) ---- */
+/* Timers are now driven by the scheduler. This function is retained
+ * so existing call sites don't break, but it does nothing. */
 void UpdateTimers(uint32_t cycles)
 {
-    int i;
-    for (i = 0; i < 3; i++)
-    {
-        uint32_t mode = timers[i].mode;
-        uint32_t target = timers[i].target;
-        uint32_t val = timers[i].value;
-
-        uint32_t inc = cycles;
-
-        // Timer clock sources (bits 8-9):
-        // Timer 0: 0/2=sysclk, 1=dotclock
-        // Timer 1: 0/2=sysclk, 1=hblank
-        // Timer 2: 0/1=sysclk, 2=sysclk/8
-
-        // Timer 1 hblank mode (more accurate for boot logo timing)
-        if (i == 1 && ((mode >> 8) & 3) == 1)
-        {
-            static uint32_t t1_accumulator = 0;
-            t1_accumulator += cycles;
-            // PSX CPU: 33.8688 MHz, NTSC hblank: ~15734 Hz
-            // Cycles per hblank ≈ 33868800 / 15734 ≈ 2152
-            inc = t1_accumulator / 2152;
-            t1_accumulator %= 2152;
-            if (inc == 0)
-                continue;
-        }
-        // Timer 2 clock source (bits 8-9)
-        // 2 = Sys/8.
-        else if (i == 2 && ((mode >> 8) & 3) == 2)
-        {
-            static uint32_t t2_accumulator = 0;
-            t2_accumulator += cycles;
-            inc = t2_accumulator / 8;
-            t2_accumulator %= 8; // Keep remainder
-            if (inc == 0)
-                continue;
-        }
-
-        val += inc;
-
-        // Check Target (only lower 16 bits meaningful)
-        uint32_t target16 = target & 0xFFFF;
-        if (val >= target16 && target16 > 0)
-        { // Target match
-            // Bit 4: IRQ on Target
-            if (mode & (1 << 4))
-            {
-                // Bit 6: Toggle/One-shot?
-                // Bit 10: IRQ Request Flag (we should set this in mode reg too?)
-                timers[i].mode |= (1 << 10);
-
-                // Signal CPU Interrupt (IRQ 4, 5, 6)
-                SignalInterrupt(4 + i);
-            }
-
-            // Bit 3: Reset on Target
-            if (mode & (1 << 3))
-            {
-                val = 0;
-            }
-        }
-
-        // Check Overflow (FFFF)
-        if (val >= 0xFFFF)
-        {
-            // Bit 5: IRQ on Overflow
-            if (mode & (1 << 5))
-            {
-                timers[i].mode |= (1 << 11); // Flag? 11 or 12?
-                SignalInterrupt(4 + i);
-            }
-            val &= 0xFFFF; // Wrap
-        }
-
-        timers[i].value = val;
-    }
+    (void)cycles;
 }
 
 static void GPU_DMA6(uint32_t madr, uint32_t bcr, uint32_t chcr)
@@ -650,12 +696,15 @@ void WriteHardware(uint32_t addr, uint32_t data)
             {
             case 0:
                 timers[t].value = data;
+                Timer_ScheduleOne(t); /* Reschedule on value change */
                 break;
             case 1:
                 timers[t].mode = data;
+                Timer_ScheduleOne(t); /* Reschedule on mode change */
                 break;
             case 2:
                 timers[t].target = data;
+                Timer_ScheduleOne(t); /* Reschedule on target change */
                 break;
             }
         }

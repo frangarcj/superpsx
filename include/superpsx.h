@@ -4,6 +4,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <setjmp.h>
+#include "scheduler.h"
 
 /*=== Debug logging macro ===*/
 #ifdef ENABLE_DEBUG_LOG
@@ -111,6 +112,10 @@ void CDROM_Init(void);
 uint32_t CDROM_Read(uint32_t addr);
 void CDROM_Write(uint32_t addr, uint32_t data);
 void CDROM_Update(uint32_t cycles);
+void CDROM_ScheduleEvent(void);
+
+/*=== Timer Scheduler ===*/
+void Timer_ScheduleAll(void);
 
 /*=== Graphics ===*/
 void Init_Graphics(void);

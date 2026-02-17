@@ -20,6 +20,7 @@
 #include <malloc.h>
 #include <kernel.h>
 #include "superpsx.h"
+#include "scheduler.h"
 #include "loader.h"
 
 #define LOG_TAG "DYNAREC"
@@ -42,7 +43,8 @@ typedef struct
 {
     uint32_t psx_pc;
     uint32_t *native;
-    uint32_t instr_count; /* Number of PSX instructions in this block */
+    uint32_t instr_count;  /* Number of PSX instructions in this block */
+    uint32_t cycle_count;  /* Weighted R3000A cycle count for this block */
 } BlockEntry;
 
 static BlockEntry *block_cache;
@@ -214,6 +216,97 @@ static void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset);
 static uint32_t blocks_compiled = 0;
 static uint32_t total_instructions = 0;
 
+/* Accumulated cycle cost during compile_block */
+static uint32_t block_cycle_count = 0;
+
+/* ---- R3000A Instruction Cycle Cost Table ----
+ * Most instructions are 1 cycle. Exceptions:
+ *   MULT/MULTU: ~6 cycles (data-dependent, 6 is average)
+ *   DIV/DIVU:   ~36 cycles
+ *   Load (LW/LB/LH/LBU/LHU/LWL/LWR): 2 cycles (1 + load delay)
+ *   Store (SW/SB/SH/SWL/SWR): 1 cycle
+ *   Branch taken: 2 cycles (1 + delay slot, but delay slot counted separately)
+ *   COP2 (GTE): variable, approximate by opcode
+ */
+static uint32_t r3000a_cycle_cost(uint32_t opcode)
+{
+    uint32_t op = OP(opcode);
+    uint32_t func = FUNC(opcode);
+
+    switch (op) {
+    case 0x00: /* SPECIAL */
+        switch (func) {
+        case 0x18: /* MULT  */ return 6;
+        case 0x19: /* MULTU */ return 6;
+        case 0x1A: /* DIV   */ return 36;
+        case 0x1B: /* DIVU  */ return 36;
+        default:   return 1;
+        }
+    /* Loads: 2 cycles (includes load delay) */
+    case 0x20: /* LB  */ return 2;
+    case 0x21: /* LH  */ return 2;
+    case 0x22: /* LWL */ return 2;
+    case 0x23: /* LW  */ return 2;
+    case 0x24: /* LBU */ return 2;
+    case 0x25: /* LHU */ return 2;
+    case 0x26: /* LWR */ return 2;
+    /* Stores: 1 cycle */
+    case 0x28: /* SB  */ return 1;
+    case 0x29: /* SH  */ return 1;
+    case 0x2B: /* SW  */ return 1;
+    case 0x2A: /* SWL */ return 1;
+    case 0x2E: /* SWR */ return 1;
+    /* COP2 (GTE) commands */
+    case 0x12: /* COP2 */
+        if (opcode & 0x02000000) {
+            /* GTE command - approximate cycle cost by command */
+            uint32_t gte_op = opcode & 0x3F;
+            switch (gte_op) {
+            case 0x01: /* RTPS  */ return 15;
+            case 0x06: /* NCLIP */ return 8;
+            case 0x0C: /* OP    */ return 6;
+            case 0x10: /* DPCS  */ return 8;
+            case 0x11: /* INTPL */ return 8;
+            case 0x12: /* MVMVA */ return 8;
+            case 0x13: /* NCDS  */ return 19;
+            case 0x14: /* CDP   */ return 13;
+            case 0x16: /* NCDT  */ return 44;
+            case 0x1B: /* NCCS  */ return 17;
+            case 0x1C: /* CC    */ return 11;
+            case 0x1E: /* NCS   */ return 14;
+            case 0x20: /* NCT   */ return 30;
+            case 0x28: /* SQR   */ return 5;
+            case 0x29: /* DCPL  */ return 8;
+            case 0x2A: /* DPCT  */ return 17;
+            case 0x2D: /* AVSZ3 */ return 5;
+            case 0x2E: /* AVSZ4 */ return 6;
+            case 0x30: /* RTPT  */ return 23;
+            case 0x3D: /* GPF   */ return 5;
+            case 0x3E: /* GPL   */ return 5;
+            case 0x3F: /* NCCT  */ return 39;
+            default:   return 8;  /* Unknown GTE, assume 8 */
+            }
+        }
+        return 1; /* MFC2/MTC2/CFC2/CTC2 */
+    /* Branches/Jumps: 1 cycle (delay slot counted separately) */
+    case 0x02: /* J   */ return 1;
+    case 0x03: /* JAL */ return 1;
+    case 0x04: /* BEQ */ return 1;
+    case 0x05: /* BNE */ return 1;
+    case 0x06: /* BLEZ */ return 1;
+    case 0x07: /* BGTZ */ return 1;
+    case 0x01: /* REGIMM (BLTZ/BGEZ/BLTZAL/BGEZAL) */ return 1;
+    /* COP0/COP1/COP3 */
+    case 0x10: /* COP0 */ return 1;
+    case 0x11: /* COP1 */ return 1;
+    case 0x13: /* COP3 */ return 1;
+    /* LWC2/SWC2 */
+    case 0x32: /* LWC2 */ return 2;
+    case 0x3A: /* SWC2 */ return 1;
+    default: return 1;
+    }
+}
+
 /* Current PSX PC being emitted (used by memory emitters for exception EPC) */
 static uint32_t emit_current_psx_pc = 0;
 
@@ -358,6 +451,7 @@ static uint32_t *compile_block(uint32_t psx_pc)
 
     uint32_t *block_start = code_ptr;
     uint32_t cur_pc = psx_pc;
+    block_cycle_count = 0; /* Reset cycle counter for this block */
 
     if (blocks_compiled < 20)
     {
@@ -390,6 +484,7 @@ static uint32_t *compile_block(uint32_t psx_pc)
     while (!block_ended)
     {
         uint32_t opcode = *psx_code++;
+        block_cycle_count += r3000a_cycle_cost(opcode);
 
         if (in_delay_slot)
         {
@@ -782,10 +877,11 @@ static uint32_t *compile_block(uint32_t psx_pc)
 
     blocks_compiled++;
 
-    /* Store instruction count in cache entry */
+    /* Store instruction count and weighted cycle count in cache entry */
     {
         uint32_t idx = (psx_pc >> 2) & BLOCK_CACHE_MASK;
         block_cache[idx].instr_count = block_instr_count;
+        block_cache[idx].cycle_count = block_cycle_count > 0 ? block_cycle_count : block_instr_count;
     }
 
     return block_start;
@@ -1747,234 +1843,213 @@ void Init_Dynarec(void)
     printf("  Block cache at %p, %d entries\n", block_cache, BLOCK_CACHE_SIZE);
 }
 
+/* ---- Forward declarations for scheduler callbacks ---- */
+static void Sched_VBlank_Callback(void);
+void Timer_ScheduleAll(void);  /* Defined in hardware.c */
+void CDROM_ScheduleEvent(void); /* Defined in cdrom.c */
+
+static void Sched_VBlank_Callback(void)
+{
+    /* Re-schedule next VBlank */
+    Scheduler_ScheduleEvent(SCHED_EVENT_VBLANK,
+                            global_cycles + CYCLES_PER_FRAME_NTSC,
+                            Sched_VBlank_Callback);
+}
+
 void Run_CPU(void)
 {
-    printf("Starting CPU Execution (Dynarec)...\n");
+    printf("Starting CPU Execution (Dynarec + Event Scheduler)...\n");
 
-    /* ----- Real execution ----- */
+    /* ----- CPU Init ----- */
     cpu.pc = 0xBFC00000;
     cpu.cop0[PSX_COP0_SR] = 0x10400000;   /* Initial status: CU0=1, BEV=1 */
     cpu.cop0[PSX_COP0_PRID] = 0x00000002; /* R3000A */
 
+    /* ----- Scheduler Init ----- */
+    Scheduler_Init();
+
+    /* Schedule initial VBlank event */
+    Scheduler_ScheduleEvent(SCHED_EVENT_VBLANK,
+                            global_cycles + CYCLES_PER_FRAME_NTSC,
+                            Sched_VBlank_Callback);
+
+    /* Schedule initial timer events */
+    Timer_ScheduleAll();
+
+    /* CD-ROM will self-schedule when a read command starts */
+
     uint32_t iterations = 0;
+    uint32_t next_vram_dump = 1000000;
+
+#ifdef ENABLE_STUCK_DETECTION
     static uint32_t stuck_pc = 0;
     static uint32_t stuck_count = 0;
+#endif
 
     while (true)
     {
-        uint32_t pc = cpu.pc;
-
-        /* === BIOS HLE Intercepts === */
-        /* PSX BIOS uses calls to addresses 0xA0, 0xB0, 0xC0 for function dispatch.
-         * Some function table entries may be incorrectly initialized. We intercept
-         * key functions (especially EnterCriticalSection/ExitCriticalSection) here. */
+        /* ---- Determine how many cycles to run until next event ---- */
+        uint64_t deadline = Scheduler_NextDeadline();
+        if (deadline == UINT64_MAX)
         {
-            uint32_t phys_pc = pc & 0x1FFFFFFF;
-            if (phys_pc == 0xA0)
-            {
-                if (BIOS_HLE_A())
-                    continue;
-            }
-            else if (phys_pc == 0xB0)
-            {
-                if (BIOS_HLE_B())
-                    continue;
-            }
-            else if (phys_pc == 0xC0)
-            {
-                if (BIOS_HLE_C())
-                    continue;
-            }
+            /* No events scheduled - run a default chunk */
+            deadline = global_cycles + 1024;
         }
 
-        /* === BIOS Shell Hook === */
-        /* Hook the BIOS execution just before it enters the shell/logo sequence.
-         * Tentative address: 0xBFC06FF0 (SCPH1001) */
-        if (pc == 0xBFC06FF0)
+        /* ---- Execute blocks until we reach the deadline ---- */
+        while (global_cycles < deadline)
         {
-            static int binary_loaded = 0;
-            if (!binary_loaded)
+            uint32_t pc = cpu.pc;
+
+            /* === BIOS HLE Intercepts === */
             {
-                DLOG("Reached BIOS Shell Entry (0xBFC06FF0). Loading binary...\n");
-                if (psx_exe_filename && psx_exe_filename[0] != '\0')
+                uint32_t phys_pc = pc & 0x1FFFFFFF;
+                if (phys_pc == 0xA0)
                 {
-                    if (Load_PSX_EXE(psx_exe_filename, &cpu) == 0)
+                    if (BIOS_HLE_A())
+                        continue;
+                }
+                else if (phys_pc == 0xB0)
+                {
+                    if (BIOS_HLE_B())
+                        continue;
+                }
+                else if (phys_pc == 0xC0)
+                {
+                    if (BIOS_HLE_C())
+                        continue;
+                }
+            }
+
+            /* === BIOS Shell Hook === */
+            if (pc == 0xBFC06FF0)
+            {
+                static int binary_loaded = 0;
+                if (!binary_loaded)
+                {
+                    DLOG("Reached BIOS Shell Entry (0xBFC06FF0). Loading binary...\n");
+                    if (psx_exe_filename && psx_exe_filename[0] != '\0')
                     {
-                        DLOG("Binary loaded successfully. Jump to PC=0x%08X\n", (unsigned)cpu.pc);
+                        if (Load_PSX_EXE(psx_exe_filename, &cpu) == 0)
+                        {
+                            DLOG("Binary loaded. Jump to PC=0x%08X\n", (unsigned)cpu.pc);
 #ifdef ENABLE_HOST_LOG
-                        host_log_file = fopen("output.log", "w");
+                            host_log_file = fopen("output.log", "w");
 #endif
-                        binary_loaded = 1;
-                        /* Flush cache for new code */
-                        FlushCache(0);
-                        FlushCache(2);
-                        /* Reset stuck count as we changed PC */
-                        stuck_pc = cpu.pc;
-                        stuck_count = 0;
-                        continue; /* Resume execution at new PC */
+                            binary_loaded = 1;
+                            FlushCache(0);
+                            FlushCache(2);
+#ifdef ENABLE_STUCK_DETECTION
+                            stuck_pc = cpu.pc;
+                            stuck_count = 0;
+#endif
+                            continue;
+                        }
+                        else
+                        {
+                            printf("DYNAREC: Failed to load binary. Continuing BIOS.\n");
+                        }
                     }
                     else
                     {
-                        printf("DYNAREC: Failed to load binary. Continuing BIOS.\n");
+                        DLOG("No PSX EXE provided; continuing BIOS.\n");
                     }
+                    binary_loaded = 1;
                 }
-                else
-                {
-                    DLOG("No PSX EXE provided; continuing BIOS.\n");
-                }
-
-                binary_loaded = 1; /* Don't try again */
             }
-        }
 
-        /* === PC Alignment Check === */
-        /* On R3000A, jumping to an unaligned address fires AdEL (cause 4) */
-        if (pc & 3)
-        {
-            cpu.cop0[PSX_COP0_BADVADDR] = pc;
-            cpu.pc = pc;      /* Ensure PC is set for the exception handler */
-            PSX_Exception(4); /* AdEL - Address Error on instruction fetch */
-            continue;
-        }
-
-        /* Look up compiled block */
-        uint32_t *block = lookup_block(pc);
-        if (!block)
-        {
-            block = compile_block(pc);
-            if (!block)
+            /* === PC Alignment Check === */
+            if (pc & 3)
             {
-                /* PC points to non-executable region (scratchpad, MDEC, etc.)
-                 * Fire an Instruction Bus Error exception (cause 6) like real HW */
-                DLOG("IBE at PC=0x%08X\n", (unsigned)pc);
+                cpu.cop0[PSX_COP0_BADVADDR] = pc;
                 cpu.pc = pc;
-                PSX_Exception(6); /* IBE - Instruction Bus Error */
+                PSX_Exception(4);
                 continue;
             }
-            cache_block(pc, block);
-        }
 
-        /* Execute the block with exception support */
-        /* setjmp returns 0 on first call, non-zero if longjmp fired from PSX_Exception */
-        psx_block_exception = 1; /* Enable longjmp path in PSX_Exception */
-        if (setjmp(psx_block_jmp) == 0)
-        {
-            ((block_func_t)block)(&cpu, psx_ram, psx_bios);
-        }
-        else
-        {
-            /* Exception fired during block, cpu.pc already set by PSX_Exception */
-        }
-        psx_block_exception = 0; /* Disable longjmp */
-
-        /* Get instruction count from cache for this block */
-        uint32_t cache_idx = (pc >> 2) & BLOCK_CACHE_MASK;
-        uint32_t cycles = block_cache[cache_idx].instr_count;
-        if (cycles == 0)
-            cycles = 8; /* fallback estimate */
-
-        /* Update Timers (approximate cycles) */
-        UpdateTimers(cycles);
-
-        /* Update CD-ROM timing */
-        CDROM_Update(cycles);
-
-        /* Check for interrupts */
-        if (CheckInterrupts())
-        {
-            /* Update Cause.IP2 to reflect pending interrupt */
-            cpu.cop0[PSX_COP0_CAUSE] |= (1 << 10);
-
-            uint32_t sr = cpu.cop0[PSX_COP0_SR];
-            if ((sr & 1) && (sr & (1 << 10)))
+            /* Look up compiled block */
+            uint32_t *block = lookup_block(pc);
+            if (!block)
             {
-                PSX_Exception(0); /* Interrupt */
+                block = compile_block(pc);
+                if (!block)
+                {
+                    DLOG("IBE at PC=0x%08X\n", (unsigned)pc);
+                    cpu.pc = pc;
+                    PSX_Exception(6);
+                    continue;
+                }
+                cache_block(pc, block);
             }
-            else if (iterations % 5000000 == 0)
-            {
-                DLOG("INT pending but blocked: SR=%08X IEc=%d IM2=%d PC=%08X\n",
-                       (unsigned)sr, (int)(sr & 1), (int)((sr >> 10) & 1),
-                       (unsigned)cpu.pc);
-            }
-        }
-        else
-        {
-            /* Clear Cause.IP2 when no pending interrupts */
-            cpu.cop0[PSX_COP0_CAUSE] &= ~(1 << 10);
-        }
 
-        iterations++;
+            /* Execute the block */
+            psx_block_exception = 1;
+            if (setjmp(psx_block_jmp) == 0)
+            {
+                ((block_func_t)block)(&cpu, psx_ram, psx_bios);
+            }
+            psx_block_exception = 0;
+
+            /* Advance global cycle counter using weighted cycle cost */
+            uint32_t cache_idx = (pc >> 2) & BLOCK_CACHE_MASK;
+            uint32_t cycles = block_cache[cache_idx].cycle_count;
+            if (cycles == 0)
+                cycles = block_cache[cache_idx].instr_count;
+            if (cycles == 0)
+                cycles = 8;
+            global_cycles += cycles;
+
+            /* Check for interrupts after each block */
+            if (CheckInterrupts())
+            {
+                cpu.cop0[PSX_COP0_CAUSE] |= (1 << 10);
+                uint32_t sr = cpu.cop0[PSX_COP0_SR];
+                if ((sr & 1) && (sr & (1 << 10)))
+                {
+                    PSX_Exception(0);
+                }
+            }
+            else
+            {
+                cpu.cop0[PSX_COP0_CAUSE] &= ~(1 << 10);
+            }
+
+            iterations++;
 
 #ifdef ENABLE_STUCK_DETECTION
-        /* Stuck loop detection */
-        if (pc == stuck_pc)
-        {
-            stuck_count++;
-            if (stuck_count == 50000)
+            if (pc == stuck_pc)
             {
-                DLOG("STUCK: Block at %08X ran 50000 times (SR=%08X I_STAT=%08X Cause=%08X)\n",
-                       (unsigned)pc, (unsigned)cpu.cop0[PSX_COP0_SR],
-                       (unsigned)CheckInterrupts(),
-                       (unsigned)cpu.cop0[PSX_COP0_CAUSE]);
-                /* Dump instructions at stuck address */
-                uint32_t phys = pc & 0x1FFFFF;
-                if (phys < PSX_RAM_SIZE - 32)
+                stuck_count++;
+                if (stuck_count == 50000)
                 {
-                    int di;
-                    DLOG("STUCK: Instructions at %08X:\n", (unsigned)pc);
-                    for (di = 0; di < 8; di++)
-                    {
-                        DLOG_RAW("  %08X: %08X\n", (unsigned)(pc + di * 4),
-                               (unsigned)(*(uint32_t *)(psx_ram + phys + di * 4)));
-                    }
-                }
-                DLOG("STUCK: Regs: v0=%08X a0=%08X a1=%08X t0=%08X t1=%08X ra=%08X sp=%08X\n",
-                       (unsigned)cpu.regs[2], (unsigned)cpu.regs[4],
-                       (unsigned)cpu.regs[5], (unsigned)cpu.regs[8],
-                       (unsigned)cpu.regs[9], (unsigned)cpu.regs[31],
-                       (unsigned)cpu.regs[29]);
-                DLOG("STUCK: s0=%08X s1=%08X s2=%08X s3=%08X s4=%08X s5=%08X\n",
-                       (unsigned)cpu.regs[16], (unsigned)cpu.regs[17],
-                       (unsigned)cpu.regs[18], (unsigned)cpu.regs[19],
-                       (unsigned)cpu.regs[20], (unsigned)cpu.regs[21]);
-                /* Show what s1+4 contains */
-                if (cpu.regs[17] != 0)
-                {
-                    uint32_t s1_phys = cpu.regs[17] & 0x1FFFFF;
-                    if (s1_phys + 12 < PSX_RAM_SIZE)
-                    {
-                        DLOG("STUCK: *s1: [0]=%08X [4]=%08X [8]=%08X\n",
-                               (unsigned)(*(uint32_t *)(psx_ram + s1_phys)),
-                               (unsigned)(*(uint32_t *)(psx_ram + s1_phys + 4)),
-                               (unsigned)(*(uint32_t *)(psx_ram + s1_phys + 8)));
-                    }
+                    DLOG("STUCK: Block at %08X ran 50000 times\n", (unsigned)pc);
+                    DLOG("  SR=%08X I_STAT=%08X Cause=%08X\n",
+                           (unsigned)cpu.cop0[PSX_COP0_SR],
+                           (unsigned)CheckInterrupts(),
+                           (unsigned)cpu.cop0[PSX_COP0_CAUSE]);
                 }
             }
-        }
-        else
-        {
-            stuck_pc = pc;
-            stuck_count = 0;
-        }
+            else
+            {
+                stuck_pc = pc;
+                stuck_count = 0;
+            }
 #endif
+        } /* end inner while (blocks until deadline) */
 
-        /* Periodic status */
-        if (iterations % 100000 == 0)
-        {
-            // printf("DYNAREC: %u iterations\n", (unsigned)iterations);
-        }
+        /* ---- Dispatch all events at or before current cycle ---- */
+        Scheduler_DispatchEvents(global_cycles);
 
-        /* Periodic VRAM Dump to capture sequence */
-        /* Controlled by ENABLE_VRAM_DUMP define in Makefile */
-        /* Comment out -DENABLE_VRAM_DUMP to disable for better performance */
+        /* ---- Periodic VRAM Dump ---- */
 #ifdef ENABLE_VRAM_DUMP
-        if (iterations % 1000000 == 0 && iterations > 0)
+        if (iterations >= next_vram_dump)
         {
             char filename[64];
             sprintf(filename, "vram_%u.bin", (unsigned)iterations);
             extern void DumpVRAM(const char *);
             DumpVRAM(filename);
             DLOG("VRAM Dumped to %s\n", filename);
+            next_vram_dump += 1000000;
         }
 #endif
     }

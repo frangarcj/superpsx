@@ -2,7 +2,8 @@ EE_BIN = superpsx.elf
 EE_OBJS = src/main.o src/memory.o src/cpu.o src/hardware.o \
           src/gpu_core.o src/gpu_gif.o src/gpu_vram.o src/gpu_texture.o \
           src/gpu_primitives.o src/gpu_commands.o src/gpu_dma.o \
-          src/dynarec.o src/gte.o src/cdrom.o src/loader.o src/joystick.o
+          src/dynarec.o src/gte.o src/cdrom.o src/loader.o src/joystick.o \
+          src/scheduler.o
 EE_LIBS = -lpatches -lps2_drivers -ldebug -lgraph -ldma -ldraw -lmath3d
 
 # Remove -DENABLE_VRAM_DUMP to disable VRAM dumping (improves performance)
