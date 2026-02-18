@@ -15,14 +15,9 @@
 #include "iso_image.h"
 #include "iso_fs.h"
 
+
 #include <string.h>
 #include <limits.h>
-
-#ifdef ENABLE_PROFILING
-/* gprof profiling support via libprofglue */
-extern void monstartup(void);
-extern void _mcleanup(void);
-#endif
 
 /* Default executable filename; store in an internal buffer to avoid
  * depending on `argv` pointer lifetime or external mutation. */
@@ -93,11 +88,6 @@ int main(int argc, char *argv[])
     prepare_IOP();
     init_drivers();
 
-#ifdef ENABLE_PROFILING
-    printf("[PROFILING] Starting gprof instrumentation...\n");
-    monstartup();
-#endif
-
     init_scr();
     scr_printf("SuperPSX v0.2 - Native Dynarec\n");
     printf("SuperPSX v0.2 - Native Dynarec\n");
@@ -146,12 +136,6 @@ int main(int argc, char *argv[])
     Init_SuperPSX();
 
     scr_printf("SuperPSX finished.\n");
-
-#ifdef ENABLE_PROFILING
-    printf("[PROFILING] Writing gmon.out...\n");
-    _mcleanup();
-    printf("[PROFILING] Done. Copy gmon.out from host: directory.\n");
-#endif
 
     deinit_drivers();
 

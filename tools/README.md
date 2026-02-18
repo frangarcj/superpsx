@@ -46,10 +46,10 @@ Convenience script for automated VRAM analysis.
 
 ## VRAM Dumping Control
 
-VRAM dumping is controlled by the `ENABLE_VRAM_DUMP` define in the Makefile:
+VRAM dumping is controlled by the `ENABLE_VRAM_DUMP` CMake option:
 
-- **Enabled by default**: `-DENABLE_VRAM_DUMP` in `EE_CFLAGS`
-- **To disable**: Comment out or remove `-DENABLE_VRAM_DUMP` from the Makefile
+- **Enabled by default**: `cmake -B build -DENABLE_VRAM_DUMP=ON`
+- **To disable**: `cmake -B build -DENABLE_VRAM_DUMP=OFF`
 - **Performance impact**: Dumping VRAM every 1M iterations can slow down emulation
 - **When to disable**: For performance testing or when VRAM dumps are not needed
 

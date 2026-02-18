@@ -2,30 +2,80 @@ name: CI
 
 on:
   push:
-    branches: 
+    branches:
       - '*'
     tags:
       - v*
   pull_request:
   repository_dispatch:
     types: [run_build]
+  workflow_dispatch: {}
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     container: ps2dev/ps2dev:latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "Default"
+            vram_dump: "OFF"
+            host_log: "OFF"
+            debug_log: "OFF"
+            stuck_detection: "ON"
+          - name: "Debug"
+            vram_dump: "OFF"
+            host_log: "OFF"
+            debug_log: "ON"
+            stuck_detection: "ON"
+          - name: "Full logging"
+            vram_dump: "ON"
+            host_log: "ON"
+            debug_log: "ON"
+            stuck_detection: "ON"
+          - name: "VRAM dump"
+            vram_dump: "ON"
+            host_log: "OFF"
+            debug_log: "OFF"
+            stuck_detection: "ON"
+          - name: "Profiling"
+            vram_dump: "OFF"
+            host_log: "OFF"
+            debug_log: "OFF"
+            stuck_detection: "OFF"
+            profiling: "ON"
+          - name: "Release"
+            vram_dump: "OFF"
+            host_log: "OFF"
+            debug_log: "OFF"
+            stuck_detection: "OFF"
+            lto: "ON"
+
+    name: "${{ matrix.name }}"
+
     steps:
     - uses: actions/checkout@v4
 
     - name: Install dependencies
       run: |
-        apk add build-base git bash
-    
-    - name: Compile project
+        apk update
+        apk add cmake gmp mpc1 mpfr4 make
+
+    - name: Configure with CMake
       run: |
-        make -j$(nproc) clean
-        make -j$(nproc) all
+        cmake -B build \
+          -DENABLE_VRAM_DUMP=${{ matrix.vram_dump }} \
+          -DENABLE_HOST_LOG=${{ matrix.host_log }} \
+          -DENABLE_DEBUG_LOG=${{ matrix.debug_log }} \
+          -DENABLE_STUCK_DETECTION=${{ matrix.stuck_detection }} \
+          -DENABLE_PROFILING=${{ matrix.profiling || 'OFF' }} \
+          -DENABLE_LTO=${{ matrix.lto || 'OFF' }}
+
+    - name: Build project with CMake
+      run: |
+        cmake --build build -j $(getconf _NPROCESSORS_ONLN)
 
     - name: Get short SHA
       id: slug
@@ -35,6 +85,6 @@ jobs:
       if: ${{ success() }}
       uses: actions/upload-artifact@v4
       with:
-        name: superpsx-${{ steps.slug.outputs.sha8 }}
+        name: superpsx-${{ matrix.name }}-${{ steps.slug.outputs.sha8 }}
         path: |
-          superpsx.elf
+          build/superpsx.elf
