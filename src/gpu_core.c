@@ -237,8 +237,8 @@ void Update_GS_Display(void)
                        ((uint64_t)(dw & 0xFFF) << 32) |
                        ((uint64_t)(dh & 0x7FF) << 44);
 
-    *((volatile uint64_t *)0xB2000080) = display; /* DISPLAY1 */
-    *((volatile uint64_t *)0xB20000A0) = display; /* DISPLAY2 */
+    *((volatile uint64_t *)0x12000080) = display; /* DISPLAY1 */
+    *((volatile uint64_t *)0x120000A0) = display; /* DISPLAY2 */
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -277,8 +277,8 @@ void Init_Graphics(void)
         dispfb |= (uint64_t)GS_PSM_16S << 15;        /* PSM (CT16S — matches PSX 15-bit VRAM) */
         dispfb |= (uint64_t)0 << 32;                 /* DBX */
         dispfb |= (uint64_t)0 << 43;                 /* DBY */
-        *((volatile uint64_t *)0xB2000070) = dispfb; /* DISPFB1 */
-        *((volatile uint64_t *)0xB2000090) = dispfb; /* DISPFB2 */
+        *((volatile uint64_t *)0x12000070) = dispfb; /* DISPFB1 */
+        *((volatile uint64_t *)0x12000090) = dispfb; /* DISPFB2 */
     }
 
     /* Allocate PSX VRAM shadow (1024x512 x 16-bit) for VRAM read-back */
