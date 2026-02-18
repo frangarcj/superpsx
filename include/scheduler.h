@@ -30,12 +30,14 @@
 #define CDROM_READ_CYCLES_FAST 50000U
 
 /* ---- Event IDs ---- */
-#define SCHED_EVENT_TIMER0  0
-#define SCHED_EVENT_TIMER1  1
-#define SCHED_EVENT_TIMER2  2
-#define SCHED_EVENT_VBLANK  3
-#define SCHED_EVENT_CDROM   4
-#define SCHED_EVENT_COUNT   5
+#define SCHED_EVENT_TIMER0          0
+#define SCHED_EVENT_TIMER1          1
+#define SCHED_EVENT_TIMER2          2
+#define SCHED_EVENT_VBLANK          3
+#define SCHED_EVENT_CDROM           4
+#define SCHED_EVENT_CDROM_DEFERRED  5
+#define SCHED_EVENT_CDROM_IRQ       6
+#define SCHED_EVENT_COUNT           7
 
 /* ---- Callback type ---- */
 typedef void (*sched_callback_t)(void);

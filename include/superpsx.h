@@ -118,7 +118,6 @@ void CDROM_Init(void);
 void CDROM_InsertDisc(void);
 uint32_t CDROM_Read(uint32_t addr);
 void CDROM_Write(uint32_t addr, uint32_t data);
-void CDROM_Update(uint32_t cycles);
 void CDROM_ScheduleEvent(void);
 uint32_t CDROM_ReadDataFIFO(uint8_t *dst, uint32_t count);
 

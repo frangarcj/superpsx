@@ -294,5 +294,19 @@ void Init_Graphics(void)
     /* Setup GS environment for rendering */
     Setup_GS_Environment();
 
+    /* Clear the visible VRAM to black so nothing flashes before the PSX
+     * BIOS/game draws its first frame.  We draw a full-screen sprite
+     * covering the entire 1024×512 PSX VRAM area. */
+    {
+        /* GIF tag: NLOOP=3, EOP=1, PRE=1, PRIM=sprite(6), FLG=PACKED, NREG=1, REGS=AD */
+        Push_GIF_Tag(3, 1, 1, 6, 0, 1, 0xE);
+        /* RGBAQ = black, full alpha */
+        Push_GIF_Data(GS_set_RGBAQ(0, 0, 0, 0x80, 0x3F800000), 0x01);
+        /* XYZ2: top-left and bottom-right with 2048 offset already baked into GS coords */
+        Push_GIF_Data(GS_set_XYZ(2048 << 4, 2048 << 4, 0), 0x05);
+        Push_GIF_Data(GS_set_XYZ((2048 + PSX_VRAM_WIDTH) << 4, (2048 + PSX_VRAM_HEIGHT) << 4, 0), 0x05);
+        Flush_GIF();
+    }
+
     printf("Graphics Initialized. GS rendering state set.\n");
 }
