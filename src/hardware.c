@@ -95,6 +95,13 @@ static uint16_t serial_mode = 0;
 static uint16_t serial_ctrl = 0;
 static uint16_t serial_baud = 0;
 
+/* Delayed IRQ7: the PSX BIOS kernel waits ~100 cycles after sending a byte
+ * before acknowledging any old IRQ7 and then polling for the new one.
+ * Firing IRQ7 immediately causes the ack to eat the pending bit.  We defer
+ * the SignalInterrupt(7) call until this many cycles later. */
+#define SIO_IRQ_DELAY 500
+volatile uint64_t sio_irq_delay_cycle = 0;
+
 /* SPU */
 static uint16_t spu_regs[512]; /* 0x1F801C00-0x1F801DFF */
 
@@ -523,7 +530,8 @@ void WriteHardware(uint32_t addr, uint32_t data)
                 sio_data = sio_response[0]; /* 0xFF */
                 sio_state = 1;
                 sio_tx_pending = 1;
-                SignalInterrupt(7); /* IRQ7 - controller */
+                /* Delay IRQ7 — the BIOS acks the old IRQ ~100 cycles later */
+                sio_irq_delay_cycle = global_cycles + SIO_IRQ_DELAY;
             }
             else
             {
@@ -537,28 +545,30 @@ void WriteHardware(uint32_t addr, uint32_t data)
             sio_data = sio_response[1]; /* 0x41 = digital pad ID */
             sio_state = 2;
             sio_tx_pending = 1;
-            SignalInterrupt(7);
+            sio_irq_delay_cycle = global_cycles + SIO_IRQ_DELAY;
             break;
         case 2:
             /* Byte 2: Host sends 0x00, controller responds 0x5A */
             sio_data = sio_response[2]; /* 0x5A */
             sio_state = 3;
             sio_tx_pending = 1;
-            SignalInterrupt(7);
+            sio_irq_delay_cycle = global_cycles + SIO_IRQ_DELAY;
             break;
         case 3:
             /* Byte 3: Host sends 0x00, controller responds button low byte */
             sio_data = sio_response[3];
             sio_state = 4;
             sio_tx_pending = 1;
-            SignalInterrupt(7);
+            sio_irq_delay_cycle = global_cycles + SIO_IRQ_DELAY;
             break;
         case 4:
-            /* Byte 4: Host sends 0x00, controller responds button high byte */
+            /* Byte 4: Host sends 0x00, controller responds button high byte.
+             * This is the LAST byte — the real controller does NOT pulse /ACK
+             * after it, so no IRQ7 should be generated. */
             sio_data = sio_response[4];
             sio_state = 5; /* transfer complete */
             sio_tx_pending = 1;
-            SignalInterrupt(7);
+            /* No IRQ7 for last byte — /ACK is "more-data-request" */
             break;
         default:
             /* Beyond protocol length - return hi-z */
@@ -586,6 +596,7 @@ void WriteHardware(uint32_t addr, uint32_t data)
             sio_state = 0;
             sio_selected = 0;
             sio_data = 0xFF;
+            sio_irq_delay_cycle = 0; /* Cancel any pending SIO IRQ */
             return;
         }
         if (data & 0x10)
@@ -607,6 +618,7 @@ void WriteHardware(uint32_t addr, uint32_t data)
         {
             sio_selected = 0;
             sio_state = 0;
+            sio_irq_delay_cycle = 0; /* Cancel any pending SIO IRQ */
         }
         return;
     }

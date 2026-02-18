@@ -121,6 +121,14 @@ void CDROM_Write(uint32_t addr, uint32_t data);
 /* Set by scheduler when CD-ROM int_flag is active and signal delay expired.
  * Checked inline in dynarec loop for cheap level-triggered re-assertion. */
 extern uint8_t cdrom_irq_active;
+
+/* SIO (controller) delayed IRQ7 support.
+ * The PSX BIOS kernel acknowledges any old IRQ7 ~100 cycles after sending a
+ * byte, then waits for the new IRQ7.  Firing IRQ7 immediately would cause the
+ * acknowledge to clear the pending IRQ before the kernel polls for it.
+ * Set to the global_cycles deadline at which IRQ7 should actually fire;
+ * 0 means no pending SIO IRQ. */
+extern volatile uint64_t sio_irq_delay_cycle;
 void CDROM_ScheduleEvent(void);
 uint32_t CDROM_ReadDataFIFO(uint8_t *dst, uint32_t count);
 
