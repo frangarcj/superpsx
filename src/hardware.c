@@ -100,8 +100,45 @@ static uint16_t spu_regs[512]; /* 0x1F801C00-0x1F801DFF */
 /* Cache control */
 static uint32_t cache_control = 0;
 
-/* Forward declaration for timer interpolation in ReadHardware */
-static uint32_t timer_clock_divider(int t);
+/* ---- Timer clock divider for a given timer + mode ---- */
+static inline uint32_t timer_clock_divider(int t)
+{
+    uint32_t src = (timers[t].mode >> 8) & 3;
+    if (t == 1 && src == 1)
+        return CYCLES_PER_HBLANK; /* HBlank mode */
+    if (t == 2 && src == 2)
+        return 8; /* Sysclk/8 */
+    return 1;     /* Sysclk (default) */
+}
+
+/* Sync timer value to current global_cycles (call before reading/modifying value) */
+static inline void Timer_SyncValue(int t)
+{
+    uint32_t divider = timer_clock_divider(t);
+    uint64_t elapsed = global_cycles - timers[t].last_sync_cycle;
+    uint32_t ticks;
+
+    if (divider == 1)
+    {
+        ticks = (uint32_t)elapsed;
+    }
+    else if (divider == 8)
+    {
+        ticks = (uint32_t)(elapsed >> 3);
+    }
+    else if (divider == CYCLES_PER_HBLANK)
+    {
+        ticks = (uint32_t)(elapsed / CYCLES_PER_HBLANK);
+    }
+    else
+    {
+        /* HBlank or other non-power-of-2 */
+        ticks = (uint32_t)(elapsed / divider);
+    }
+
+    timers[t].value = (timers[t].value + ticks) & 0xFFFF;
+    timers[t].last_sync_cycle = global_cycles;
+}
 
 /* ---- Read ---- */
 uint32_t ReadHardware(uint32_t addr)
@@ -156,7 +193,9 @@ uint32_t ReadHardware(uint32_t addr)
     if (phys == 0x1F801060)
         return ram_size;
 
-    /* Interrupt Controller */
+    /* Hot paths first */
+    if (phys == 0x1F801814)
+        return GPU_ReadStatus();
     if (phys == 0x1F801070)
         return cpu.i_stat;
     if (phys == 0x1F801074)
@@ -165,6 +204,21 @@ uint32_t ReadHardware(uint32_t addr)
     /* DMA registers */
     if (phys >= 0x1F801080 && phys < 0x1F801100)
     {
+        if (phys == 0x1F8010F0)
+            return dma_dpcr;
+        if (phys == 0x1F8010F4)
+        {
+            uint32_t read_val = dma_dicr & 0x7F000000;
+            read_val |= dma_dicr & 0x00FF803F;
+            uint32_t force = (dma_dicr >> 15) & 1;
+            uint32_t master_en = (dma_dicr >> 23) & 1;
+            uint32_t en = (dma_dicr >> 16) & 0x7F;
+            uint32_t flg = (dma_dicr >> 24) & 0x7F;
+            if (force || (master_en && (en & flg)))
+                read_val |= 0x80000000;
+            return read_val;
+        }
+
         int ch = (phys - 0x1F801080) / 0x10;
         int reg = ((phys - 0x1F801080) % 0x10) / 4;
         if (ch < 7)
@@ -182,30 +236,6 @@ uint32_t ReadHardware(uint32_t addr)
             }
         }
     }
-    if (phys == 0x1F8010F0)
-        return dma_dpcr;
-    if (phys == 0x1F8010F4)
-    {
-        /* DICR format:
-         *   Bits 0-5:   R/W (unknown purpose)
-         *   Bits 6-14:  Always 0 on read
-         *   Bit 15:     Force IRQ (R/W)
-         *   Bits 16-22: IRQ Enable per channel (R/W)
-         *   Bit 23:     IRQ Master Enable (R/W)
-         *   Bits 24-30: IRQ Flags per channel (R/W1C - write 1 to clear)
-         *   Bit 31:     IRQ Master Flag (Read-only, computed)
-         */
-        uint32_t read_val = dma_dicr & 0x7F000000; /* flags bits 24-30 */
-        read_val |= dma_dicr & 0x00FF803F;         /* enable, master en, force, bits 0-5 */
-        /* Bit 31 = force || (master_en && (en & flg) != 0) */
-        uint32_t force = (dma_dicr >> 15) & 1;
-        uint32_t master_en = (dma_dicr >> 23) & 1;
-        uint32_t en = (dma_dicr >> 16) & 0x7F;
-        uint32_t flg = (dma_dicr >> 24) & 0x7F;
-        if (force || (master_en && (en & flg)))
-            read_val |= 0x80000000;
-        return read_val;
-    }
 
     /* Timers */
     if (phys >= 0x1F801100 && phys < 0x1F801130)
@@ -218,12 +248,9 @@ uint32_t ReadHardware(uint32_t addr)
             {
             case 0:
             {
-                /* Interpolate current counter value based on elapsed cycles */
-                uint32_t divider = timer_clock_divider(t);
-                uint64_t elapsed = global_cycles - timers[t].last_sync_cycle;
-                uint32_t ticks = (uint32_t)(elapsed / divider);
-                uint32_t current = (timers[t].value + ticks) & 0xFFFF;
-                return current;
+                /* Use optimized sync function */
+                Timer_SyncValue(t);
+                return timers[t].value;
             }
             case 1:
             {
@@ -240,6 +267,12 @@ uint32_t ReadHardware(uint32_t addr)
         }
     }
 
+    /* Memory Control */
+    if (phys >= 0x1F801000 && phys < 0x1F801024)
+    {
+        return mem_ctrl[(phys - 0x1F801000) >> 2];
+    }
+
     /* CD-ROM (0x1F801800-0x1F801803) - byte-wide controller */
     if (phys >= 0x1F801800 && phys <= 0x1F801803)
     {
@@ -251,8 +284,6 @@ uint32_t ReadHardware(uint32_t addr)
     /* GPU */
     if (phys == 0x1F801810)
         return GPU_Read();
-    if (phys == 0x1F801814)
-        return GPU_ReadStatus();
 
     /* MDEC */
     if (phys == 0x1F801820)
@@ -278,16 +309,6 @@ uint32_t ReadHardware(uint32_t addr)
     return 0;
 }
 
-/* ---- Timer clock divider for a given timer + mode ---- */
-static uint32_t timer_clock_divider(int t)
-{
-    uint32_t src = (timers[t].mode >> 8) & 3;
-    if (t == 1 && src == 1)
-        return CYCLES_PER_HBLANK; /* HBlank mode */
-    if (t == 2 && src == 2)
-        return 8; /* Sysclk/8 */
-    return 1;     /* Sysclk (default) */
-}
 
 /* ---- Calculate cycles until the next timer event and schedule it ---- */
 static void Timer_Callback0(void);
@@ -296,16 +317,6 @@ static void Timer_Callback2(void);
 
 static const sched_callback_t timer_callbacks[3] = {
     Timer_Callback0, Timer_Callback1, Timer_Callback2};
-
-/* Sync timer value to current global_cycles (call before reading/modifying value) */
-static void Timer_SyncValue(int t)
-{
-    uint32_t divider = timer_clock_divider(t);
-    uint64_t elapsed = global_cycles - timers[t].last_sync_cycle;
-    uint32_t ticks = (uint32_t)(elapsed / divider);
-    timers[t].value = (timers[t].value + ticks) & 0xFFFF;
-    timers[t].last_sync_cycle = global_cycles;
-}
 
 /* Schedule the next event for timer t based on its current value/target/mode */
 static void Timer_ScheduleOne(int t)
@@ -478,192 +489,44 @@ void WriteHardware(uint32_t addr, uint32_t data)
 {
     uint32_t phys = addr & 0x1FFFFFFF;
 
-    /* Memory Control */
-    if (phys >= 0x1F801000 && phys < 0x1F801024)
+    /* Hot paths first */
+    if (phys == 0x1F801810)
     {
-        mem_ctrl[(phys - 0x1F801000) >> 2] = data;
+        GPU_WriteGP0(data);
         return;
     }
-
-    /* SIO (Joypad/Memcard) */
-    if (phys == 0x1F801040)
+    if (phys == 0x1F801814)
     {
-        /* JOY_DATA - TX byte: PSX controller protocol state machine */
-        uint8_t tx = (uint8_t)(data & 0xFF);
-
-        if (!sio_selected)
-        {
-            /* No device selected, respond with 0xFF (hi-z) */
-            sio_data = 0xFF;
-            sio_tx_pending = 1;
-            return;
-        }
-
-        switch (sio_state)
-        {
-        case 0:
-            /* Byte 0: Host sends 0x01 to select controller */
-            if (tx == 0x01)
-            {
-                /* Snapshot the buttons now for this entire transfer */
-                Joystick_GetPSXDigitalResponse(sio_response + 1);
-                sio_response[0] = 0xFF; /* hi-z during address byte */
-                /* response[1]=0x41  response[2]=0x5A  put button bytes after */
-                /* Rearrange: [0]=0xFF [1]=0x41 [2]=0x5A [3]=btnLo [4]=btnHi */
-                {
-                    uint8_t id = sio_response[1]; /* 0x41 */
-                    uint8_t lo = sio_response[2]; /* buttons low */
-                    uint8_t hi = sio_response[3]; /* buttons high */
-                    sio_response[1] = id;         /* 0x41 */
-                    sio_response[2] = 0x5A;       /* data-start marker */
-                    sio_response[3] = lo;
-                    sio_response[4] = hi;
-                }
-                sio_data = sio_response[0]; /* 0xFF */
-                sio_state = 1;
-                sio_tx_pending = 1;
-                SignalInterrupt(7); /* IRQ7 - controller */
-            }
-            else
-            {
-                /* Not addressing controller - ignore */
-                sio_data = 0xFF;
-                sio_tx_pending = 1;
-            }
-            break;
-        case 1:
-            /* Byte 1: Host sends 0x42 (Read command) */
-            sio_data = sio_response[1]; /* 0x41 = digital pad ID */
-            sio_state = 2;
-            sio_tx_pending = 1;
-            SignalInterrupt(7);
-            break;
-        case 2:
-            /* Byte 2: Host sends 0x00, controller responds 0x5A */
-            sio_data = sio_response[2]; /* 0x5A */
-            sio_state = 3;
-            sio_tx_pending = 1;
-            SignalInterrupt(7);
-            break;
-        case 3:
-            /* Byte 3: Host sends 0x00, controller responds button low byte */
-            sio_data = sio_response[3];
-            sio_state = 4;
-            sio_tx_pending = 1;
-            SignalInterrupt(7);
-            break;
-        case 4:
-            /* Byte 4: Host sends 0x00, controller responds button high byte */
-            sio_data = sio_response[4];
-            sio_state = 5; /* transfer complete */
-            sio_tx_pending = 1;
-            SignalInterrupt(7);
-            break;
-        default:
-            /* Beyond protocol length - return hi-z */
-            sio_data = 0xFF;
-            sio_tx_pending = 1;
-            break;
-        }
+        GPU_WriteGP1(data);
         return;
     }
-    if (phys == 0x1F801048)
-    {
-        sio_mode = (uint16_t)(data & 0x003F); /* Only bits 0-5 valid */
-        return;
-    }
-    if (phys == 0x1F80104A)
-    {
-        sio_ctrl = (uint16_t)data;
-        if (data & 0x40)
-        {
-            /* Reset - clear all state including JOY_CTRL itself */
-            sio_ctrl = 0;
-            sio_mode = 0;
-            sio_baud = 0;
-            sio_tx_pending = 0;
-            sio_state = 0;
-            sio_selected = 0;
-            sio_data = 0xFF;
-            return;
-        }
-        if (data & 0x10)
-        {
-            /* ACK - acknowledge interrupt */
-            sio_stat &= ~(1 << 9); /* Clear IRQ flag */
-        }
-        /* Bit 1: JOYn output select - directly controls /SEL line */
-        if (data & 0x02)
-        {
-            if (!sio_selected)
-            {
-                /* Freshly asserted: reset protocol state */
-                sio_state = 0;
-            }
-            sio_selected = 1;
-        }
-        else
-        {
-            sio_selected = 0;
-            sio_state = 0;
-        }
-        return;
-    }
-    if (phys == 0x1F80104E)
-    {
-        sio_baud = (uint16_t)data;
-        return;
-    }
-
-    /* SIO Serial Port writes */
-    if (phys == 0x1F801058)
-    {
-        serial_mode = (uint16_t)(data & 0xFF);
-        return;
-    }
-    if (phys == 0x1F80105A)
-    {
-        serial_ctrl = (uint16_t)data;
-        if (data & 0x40)
-        {
-            /* Reset serial port */
-            serial_ctrl = 0;
-            serial_mode = 0;
-            serial_baud = 0;
-        }
-        return;
-    }
-    if (phys == 0x1F80105E)
-    {
-        serial_baud = (uint16_t)data;
-        return;
-    }
-
-    /* RAM Size */
-    if (phys == 0x1F801060)
-    {
-        ram_size = data;
-        return;
-    }
-
-    /* Interrupt Controller */
     if (phys == 0x1F801070)
     {
-        cpu.i_stat &= data; /* Write-to-acknowledge (AND with written value) */
+        cpu.i_stat &= data;
         return;
     }
     if (phys == 0x1F801074)
     {
-        cpu.i_mask = data & 0xFFFF07FF; /* Bits 11-15 always 0; rest preserved */
-        DLOG("I_MASK = %08X (VSync=%d CD=%d Timer0=%d Timer1=%d Timer2=%d)\n",
-             (unsigned)cpu.i_mask, (int)(cpu.i_mask & 1), (int)((cpu.i_mask >> 2) & 1),
-             (int)((cpu.i_mask >> 4) & 1), (int)((cpu.i_mask >> 5) & 1), (int)((cpu.i_mask >> 6) & 1));
+        cpu.i_mask = data & 0xFFFF07FF;
         return;
     }
 
     /* DMA channel registers (0x1F801080-0x1F8010EF) */
-    if (phys >= 0x1F801080 && phys < 0x1F8010F0)
+    if (phys >= 0x1F801080 && phys < 0x1F801100)
     {
+        if (phys == 0x1F8010F0)
+        {
+            dma_dpcr = data;
+            return;
+        }
+        if (phys == 0x1F8010F4)
+        {
+            uint32_t rw_mask = 0x00FF803F;
+            uint32_t ack_bits = data & 0x7F000000;
+            dma_dicr = (data & rw_mask) | ((dma_dicr & 0x7F000000) & ~ack_bits);
+            return;
+        }
+
         int ch = (phys - 0x1F801080) / 0x10;
         int reg = ((phys - 0x1F801080) % 0x10) / 4;
         if (ch < 7)
@@ -671,76 +534,35 @@ void WriteHardware(uint32_t addr, uint32_t data)
             switch (reg)
             {
             case 0:
-                dma_channels[ch].madr = data & 0x00FFFFFF; /* 24-bit address */
+                dma_channels[ch].madr = data & 0x00FFFFFF;
                 break;
             case 1:
                 dma_channels[ch].bcr = data;
                 break;
             case 2:
                 dma_channels[ch].chcr = data;
-                /* If starting a DMA transfer */
                 if (data & 0x01000000)
                 {
                     if (ch == 2)
-                    {
-                        /* GPU DMA */
                         GPU_DMA2(dma_channels[ch].madr, dma_channels[ch].bcr, dma_channels[ch].chcr);
-                    }
                     else if (ch == 3)
-                    {
-                        /* CD-ROM DMA */
                         CDROM_DMA3(dma_channels[ch].madr, dma_channels[ch].bcr, dma_channels[ch].chcr);
-                    }
                     else if (ch == 6)
-                    {
-                        /* OTC DMA */
                         GPU_DMA6(dma_channels[ch].madr, dma_channels[ch].bcr, dma_channels[ch].chcr);
-                    }
                     dma_channels[ch].chcr &= ~0x01000000;
-
-                    /* Handle DMA Interrupts */
-                    /* DICR (0x1F8010F4) */
-                    /* Bits 16-22: IM (Interrupt Mask/Enable) for Ch 0-6 */
-                    /* Bits 23: Master Enable */
-                    /* Bits 24-30: IP (Interrupt Pending) for Ch 0-6 */
-
-                    /* Set IP bit only if this channel's IRQ is enabled (IM bit) */
                     if (dma_dicr & (1 << (16 + ch)))
                     {
                         dma_dicr |= (1 << (24 + ch));
-
-                        /* Check for master IRQ generation */
                         if (dma_dicr & 0x00800000)
                         {
                             dma_dicr |= 0x80000000;
-                            SignalInterrupt(3); /* DMA IRQ */
+                            SignalInterrupt(3);
                         }
                     }
                 }
                 break;
             }
         }
-        return;
-    }
-    if (phys == 0x1F8010F0)
-    {
-        dma_dpcr = data;
-        return;
-    }
-    if (phys == 0x1F8010F4)
-    {
-        /* DICR write behavior:
-         *   Bits 0-5:   R/W
-         *   Bits 6-14:  Not used (ignored)
-         *   Bit 15:     Force IRQ (R/W)
-         *   Bits 16-22: IRQ Enable per channel (R/W)
-         *   Bit 23:     IRQ Master Enable (R/W)
-         *   Bits 24-30: Write-1-to-clear (acknowledge flags)
-         *   Bit 31:     Read-only (ignored on write)
-         */
-        uint32_t rw_mask = 0x00FF803F;         /* bits 0-5, 15-23 */
-        uint32_t ack_bits = data & 0x7F000000; /* bits 24-30 written as 1 clear the flag */
-        dma_dicr = (data & rw_mask) | ((dma_dicr & 0x7F000000) & ~ack_bits);
         return;
     }
 
@@ -756,18 +578,17 @@ void WriteHardware(uint32_t addr, uint32_t data)
             case 0:
                 timers[t].value = data;
                 timers[t].last_sync_cycle = global_cycles;
-                Timer_ScheduleOne(t); /* Reschedule on value change */
+                Timer_ScheduleOne(t);
                 break;
             case 1:
-                /* PSX hardware: writing mode resets counter to 0 */
                 timers[t].value = 0;
                 timers[t].mode = data;
                 timers[t].last_sync_cycle = global_cycles;
-                Timer_ScheduleOne(t); /* Reschedule on mode change */
+                Timer_ScheduleOne(t);
                 break;
             case 2:
                 timers[t].target = data;
-                Timer_ScheduleOne(t); /* Reschedule on target change */
+                Timer_ScheduleOne(t);
                 break;
             }
         }
@@ -781,23 +602,99 @@ void WriteHardware(uint32_t addr, uint32_t data)
         return;
     }
 
-    /* GPU */
-    if (phys == 0x1F801810)
+    /* SIO (Joypad/Memcard) */
+    if (phys == 0x1F801040)
     {
-        /* GP0 command */
-        GPU_WriteGP0(data);
+        uint8_t tx = (uint8_t)(data & 0xFF);
+        if (!sio_selected)
+        {
+            sio_data = 0xFF;
+            sio_tx_pending = 1;
+            return;
+        }
+        switch (sio_state)
+        {
+        case 0:
+            if (tx == 0x01)
+            {
+                Joystick_GetPSXDigitalResponse(sio_response + 1);
+                sio_response[0] = 0xFF;
+                sio_response[1] = 0x41;
+                sio_response[2] = 0x5A;
+                sio_data = sio_response[0];
+                sio_state = 1;
+                sio_tx_pending = 1;
+                SignalInterrupt(7);
+            }
+            else
+            {
+                sio_data = 0xFF;
+                sio_tx_pending = 1;
+            }
+            break;
+        case 1:
+            sio_data = sio_response[1];
+            sio_state = 2;
+            sio_tx_pending = 1;
+            SignalInterrupt(7);
+            break;
+        case 2:
+            sio_data = sio_response[2];
+            sio_state = 3;
+            sio_tx_pending = 1;
+            SignalInterrupt(7);
+            break;
+        case 3:
+            sio_data = sio_response[3];
+            sio_state = 4;
+            sio_tx_pending = 1;
+            SignalInterrupt(7);
+            break;
+        case 4:
+            sio_data = sio_response[4];
+            sio_state = 5;
+            sio_tx_pending = 1;
+            SignalInterrupt(7);
+            break;
+        default:
+            sio_data = 0xFF;
+            sio_tx_pending = 1;
+            break;
+        }
         return;
     }
-    if (phys == 0x1F801814)
+    if (phys == 0x1F801048) { sio_mode = (uint16_t)(data & 0x003F); return; }
+    if (phys == 0x1F80104A)
     {
-        /* GP1 command */
-        GPU_WriteGP1(data);
+        sio_ctrl = (uint16_t)data;
+        if (data & 0x40) {
+            sio_ctrl = 0; sio_mode = 0; sio_baud = 0; sio_tx_pending = 0;
+            sio_state = 0; sio_selected = 0; sio_data = 0xFF;
+            return;
+        }
+        if (data & 0x10) sio_stat &= ~(1 << 9);
+        if (data & 0x02) {
+            if (!sio_selected) sio_state = 0;
+            sio_selected = 1;
+        } else {
+            sio_selected = 0; sio_state = 0;
+        }
+        return;
+    }
+    if (phys == 0x1F80104E) { sio_baud = (uint16_t)data; return; }
+
+    /* Memory Control */
+    if (phys >= 0x1F801000 && phys < 0x1F801024)
+    {
+        mem_ctrl[(phys - 0x1F801000) >> 2] = data;
         return;
     }
 
+    /* RAM Size */
+    if (phys == 0x1F801060) { ram_size = data; return; }
+
     /* MDEC */
-    if (phys == 0x1F801820 || phys == 0x1F801824)
-        return;
+    if (phys == 0x1F801820 || phys == 0x1F801824) return;
 
     /* SPU */
     if (phys >= 0x1F801C00 && phys < 0x1F801E00)
@@ -807,18 +704,6 @@ void WriteHardware(uint32_t addr, uint32_t data)
         return;
     }
 
-    /* Expansion 2 */
-    if (phys >= 0x1F802000 && phys < 0x1F803000)
-    {
-        if (phys == 0x1F802002)
-            printf("%c", (char)data);
-        return;
-    }
-
     /* Cache control */
-    if (phys == 0x1FFE0130 || addr == 0xFFFE0130)
-    {
-        cache_control = data;
-        return;
-    }
+    if (phys == 0x1FFE0130 || addr == 0xFFFE0130) { cache_control = data; return; }
 }

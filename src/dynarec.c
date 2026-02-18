@@ -795,16 +795,13 @@ static uint32_t *compile_block(uint32_t psx_pc)
                 branch_opcode = (uint32_t)bp;
 
                 /* Not taken: fall through PC */
-                emit_load_imm32(REG_T0, cur_pc);
-                EMIT_SW(REG_T0, CPU_PC, REG_S0);
-                emit_block_epilogue();
+                /* Not taken: fall through PC */
+                emit_branch_epilogue(cur_pc);
                 /* Taken path target */
                 uint32_t *taken_addr = code_ptr;
                 int32_t offset = (int32_t)(taken_addr - bp - 1);
                 *bp = (*bp & 0xFFFF0000) | (offset & 0xFFFF);
-                emit_load_imm32(REG_T0, branch_target);
-                EMIT_SW(REG_T0, CPU_PC, REG_S0);
-                emit_block_epilogue();
+                emit_branch_epilogue(branch_target);
             }
             else if (branch_type == 3)
             {
@@ -1105,9 +1102,7 @@ static uint32_t *compile_block(uint32_t psx_pc)
                 emit_store_psx_reg(pending_load_reg, REG_T0);
                 pending_load_reg = 0;
             }
-            emit_load_imm32(REG_T0, cur_pc);
-            EMIT_SW(REG_T0, CPU_PC, REG_S0);
-            emit_block_epilogue();
+            emit_branch_epilogue(cur_pc);
             block_ended = 1;
         }
     }

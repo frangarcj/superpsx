@@ -163,12 +163,48 @@ extern int buf_image_ptr;
 
 /* gpu_gif.c — GIF buffer management */
 void Flush_GIF(void);
-void Push_GIF_Tag(uint64_t nloop, uint64_t eop, uint64_t pre,
-                  uint64_t prim, uint64_t flg, uint64_t nreg, uint64_t regs);
-void Push_GIF_Data(uint64_t d0, uint64_t d1);
 void Setup_GS_Environment(void);
 uint64_t Get_Alpha_Reg(int mode);
 uint64_t Get_Base_TEST(void);
+
+/* Inline GIF Pushing functions to avoid call overhead and use Uncached writes */
+static inline void Push_GIF_Data(uint64_t d0, uint64_t d1)
+{
+    // Write to Uncached address (OR with 0x20000000) to bypass D-Cache
+    // This avoids the need for expensive FlushCache(0) in Flush_GIF
+    volatile unsigned __int128 *buf_uncached = 
+        (volatile unsigned __int128 *)((uint32_t)gif_packet_buf[current_buffer] | 0x20000000);
+    
+    unsigned __int128 *p = (unsigned __int128 *)&buf_uncached[gif_packet_ptr];
+    
+    // Construct int128 from two 64-bit values
+    // MIPS64 little-endian: lower address = lower 64 bits
+    unsigned __int128 val = ((unsigned __int128)d1 << 64) | d0;
+    *p = val;
+    
+    gif_packet_ptr++;
+}
+
+static inline void Push_GIF_Tag(uint64_t nloop, uint64_t eop, uint64_t pre,
+                  uint64_t prim, uint64_t flg, uint64_t nreg, uint64_t regs)
+{
+    if (gif_packet_ptr > (GIF_BUFFER_SIZE - 256))
+        Flush_GIF();
+
+    GifTag tag;
+    tag.NLOOP = nloop;
+    tag.EOP = eop;
+    tag.pad1 = 0;
+    tag.PRE = pre;
+    tag.PRIM = prim;
+    tag.FLG = flg;
+    tag.NREG = nreg;
+    tag.REGS = regs;
+    
+    // Cast tag structure to 2x 64-bit or 1x 128-bit
+    uint64_t *d = (uint64_t *)&tag;
+    Push_GIF_Data(d[0], d[1]);
+}
 
 /* gpu_vram.c — VRAM transfer operations */
 void Start_VRAM_Transfer(int x, int y, int w, int h);
