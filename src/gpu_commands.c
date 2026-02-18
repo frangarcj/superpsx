@@ -778,8 +778,8 @@ void GPU_WriteGP1(uint32_t data)
             dispfb |= (uint64_t)x << 32;
             dispfb |= (uint64_t)y << 43;
 
-            *((volatile uint64_t *)0xB2000070) = dispfb;
-            *((volatile uint64_t *)0xB2000090) = dispfb;
+            *((volatile uint64_t *)0x12000070) = dispfb;
+            *((volatile uint64_t *)0x12000090) = dispfb;
         }
     }
     break;
