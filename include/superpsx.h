@@ -84,6 +84,12 @@ void GTE_WriteData(R3000CPU *cpu, int reg, uint32_t val);
 uint32_t GTE_ReadCtrl(R3000CPU *cpu, int reg);
 void GTE_WriteCtrl(R3000CPU *cpu, int reg, uint32_t val);
 
+/* GTE inline command wrappers (skip GTE_Execute dispatcher) */
+void GTE_Inline_NCLIP(R3000CPU *cpu);
+void GTE_Inline_SQR(R3000CPU *cpu, int sf, int lm);
+void GTE_Inline_AVSZ3(R3000CPU *cpu);
+void GTE_Inline_AVSZ4(R3000CPU *cpu);
+
 /*=== CPU Helper Functions (called from dynarec) ===*/
 uint32_t Helper_LWL(uint32_t addr, uint32_t cur_rt);
 uint32_t Helper_LWR(uint32_t addr, uint32_t cur_rt);

@@ -1342,3 +1342,43 @@ void GTE_Execute(uint32_t opcode, R3000CPU *cpu)
     flag_update_bit31();
     C(c_FLAG) = gte_flag;
 }
+
+/* ================================================================
+ * Standalone GTE command wrappers for dynarec inlining.
+ * Each wrapper does: flag_reset() + command + flag_update_bit31() + FLAG write.
+ * This allows the dynarec to JAL directly to these instead of the generic
+ * GTE_Execute dispatcher, eliminating the dispatcher switch overhead and
+ * runtime opcode re-read from RAM.
+ * ================================================================ */
+
+void GTE_Inline_NCLIP(R3000CPU *cpu)
+{
+    flag_reset();
+    gte_cmd_nclip(cpu);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_SQR(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_sqr(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_AVSZ3(R3000CPU *cpu)
+{
+    flag_reset();
+    gte_cmd_avsz3(cpu);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_AVSZ4(R3000CPU *cpu)
+{
+    flag_reset();
+    gte_cmd_avsz4(cpu);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}

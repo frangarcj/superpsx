@@ -1916,19 +1916,51 @@ emit_store_psx_reg(rt, REG_V0); /* rt = result */
         }
         else
         {
-            /* GTE Command (Bit 25 = 1) */
-            /* Read opcode from PSX RAM at runtime to handle self-modifying code.
-             * The COP2 opcode may change between calls (e.g. ps1-tests GTE suite
-             * uses self-modifying code to patch COP2 instructions at runtime). */
-            {
-                uint32_t phys = psx_pc & 0x1FFFFFFF;
-                emit_load_imm32(REG_T0, phys);     /* t0 = physical PSX address */
-                EMIT_ADDU(REG_T0, REG_T0, REG_S1); /* t0 = psx_ram + phys */
-                EMIT_LW(REG_A0, 0, REG_T0);        /* a0 = *(psx_ram + phys) = current opcode */
-            }
-            EMIT_MOVE(REG_A1, REG_S0);
-            emit_call_c((uint32_t)GTE_Execute);
-}
+             /* GTE Command (Bit 25 = 1) */
+             /* Inline dispatch for simple GTE commands: call specific wrapper
+              * directly instead of the generic GTE_Execute dispatcher. This
+              * eliminates runtime opcode re-read and dispatcher overhead.
+              * Note: uses compile-time opcode; self-modifying code for these
+              * specific opcodes would use stale values (extremely rare). */
+             uint32_t gte_func = opcode & 0x3F;
+             switch (gte_func)
+             {
+             case 0x06: /* NCLIP */
+                 EMIT_MOVE(REG_A0, REG_S0);
+                 emit_call_c((uint32_t)GTE_Inline_NCLIP);
+                 break;
+             case 0x28: /* SQR */
+             {
+                 int gte_sf = (opcode >> 19) & 1;
+                 int gte_lm = (opcode >> 10) & 1;
+                 EMIT_MOVE(REG_A0, REG_S0);
+                 emit_load_imm32(REG_A1, gte_sf);
+                 emit_load_imm32(REG_A2, gte_lm);
+                 emit_call_c((uint32_t)GTE_Inline_SQR);
+                 break;
+             }
+             case 0x2D: /* AVSZ3 */
+                 EMIT_MOVE(REG_A0, REG_S0);
+                 emit_call_c((uint32_t)GTE_Inline_AVSZ3);
+                 break;
+             case 0x2E: /* AVSZ4 */
+                 EMIT_MOVE(REG_A0, REG_S0);
+                 emit_call_c((uint32_t)GTE_Inline_AVSZ4);
+                 break;
+             default:
+                 /* Fallback: read opcode from PSX RAM at runtime to handle
+                  * self-modifying code, then dispatch through GTE_Execute */
+                 {
+                     uint32_t phys = psx_pc & 0x1FFFFFFF;
+                     emit_load_imm32(REG_T0, phys);     /* t0 = physical PSX address */
+                     EMIT_ADDU(REG_T0, REG_T0, REG_S1); /* t0 = psx_ram + phys */
+                     EMIT_LW(REG_A0, 0, REG_T0);        /* a0 = *(psx_ram + phys) = current opcode */
+                 }
+                 EMIT_MOVE(REG_A1, REG_S0);
+                 emit_call_c((uint32_t)GTE_Execute);
+                 break;
+             }
+        }
         break;
     }
 
