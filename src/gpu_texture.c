@@ -8,6 +8,23 @@
  */
 #include "gpu_state.h"
 
+/* Static decode buffer — avoids memalign/free per call (max 256×256 texels) */
+static uint16_t decode_buf[256 * 256] __attribute__((aligned(64)));
+
+/* VRAM write generation counter — bumped on every shadow VRAM modification */
+uint32_t vram_gen_counter = 0;
+
+/* Cache of last successful decode to skip redundant work */
+static struct {
+    int tex_format;
+    int tex_page_x, tex_page_y;
+    int clut_x, clut_y;
+    int u0_cmd, v0_cmd, w, h;
+    int flip_x, flip_y;
+    uint32_t tw_mask_x, tw_mask_y, tw_off_x, tw_off_y;
+    uint32_t vram_gen;
+} decode_cache;
+
 /* ── Texture window coordinate transform ─────────────────────────── */
 
 // Apply PSX texture window formula to a texture coordinate
@@ -37,57 +54,154 @@ uint32_t Apply_Tex_Window_V(uint32_t v)
 // tex_format: 0=4BPP, 1=8BPP, 2=15BPP
 // Reads from psx_vram_shadow (CPU shadow copy).
 // Uploads result to CLUT_DECODED area.
+
 int Decode_TexWindow_Rect(int tex_format,
                           int tex_page_x, int tex_page_y,
                           int clut_x, int clut_y,
                           int u0_cmd, int v0_cmd, int w, int h,
                           int flip_x, int flip_y)
 {
-    uint16_t *decoded = (uint16_t *)memalign(64, w * h * 2);
-    if (!decoded)
+    /* Clamp to static buffer capacity */
+    if (w <= 0 || h <= 0 || w > 256 || h > 256)
         return 0;
 
-    for (int row = 0; row < h; row++)
+    /* ── Check cache: skip decode + upload if inputs unchanged ──── */
+    if (decode_cache.vram_gen     == vram_gen_counter &&
+        decode_cache.tex_format  == tex_format  &&
+        decode_cache.tex_page_x  == tex_page_x  &&
+        decode_cache.tex_page_y  == tex_page_y  &&
+        decode_cache.clut_x      == clut_x      &&
+        decode_cache.clut_y      == clut_y      &&
+        decode_cache.u0_cmd      == u0_cmd      &&
+        decode_cache.v0_cmd      == v0_cmd      &&
+        decode_cache.w           == w            &&
+        decode_cache.h           == h            &&
+        decode_cache.flip_x      == flip_x      &&
+        decode_cache.flip_y      == flip_y      &&
+        decode_cache.tw_mask_x   == tex_win_mask_x &&
+        decode_cache.tw_mask_y   == tex_win_mask_y &&
+        decode_cache.tw_off_x    == tex_win_off_x  &&
+        decode_cache.tw_off_y    == tex_win_off_y)
     {
-        for (int col = 0; col < w; col++)
+        return 1; /* Already decoded & uploaded — reuse GS CLUT area */
+    }
+
+    uint16_t *decoded = decode_buf;
+
+    /* ── Pre-compute texture window masks inline ────────────────── */
+    const uint32_t tw_mx = tex_win_mask_x;
+    const uint32_t tw_my = tex_win_mask_y;
+    const uint32_t mask_u  = tw_mx * 8;
+    const uint32_t off_u   = (tex_win_off_x & tw_mx) * 8;
+    const uint32_t mask_v  = tw_my * 8;
+    const uint32_t off_v   = (tex_win_off_y & tw_my) * 8;
+    const int has_tw_u = (tw_mx != 0);
+    const int has_tw_v = (tw_my != 0);
+
+    /* ── Pre-compute CLUT base pointer for indexed modes ───────── */
+    const uint16_t *clut_ptr = &psx_vram_shadow[clut_y * 1024 + clut_x];
+
+    /* ── Format-specialised decode loops ───────────────────────── */
+    if (tex_format == 0) /* 4BPP CLUT */
+    {
+        for (int row = 0; row < h; row++)
         {
-            // Per-pixel UV with texture window applied
-            int u_iter = flip_x ? (u0_cmd - col) : (u0_cmd + col);
             int v_iter = flip_y ? (v0_cmd - row) : (v0_cmd + row);
-            uint32_t u_win = Apply_Tex_Window_U(u_iter & 0xFF);
-            uint32_t v_win = Apply_Tex_Window_V(v_iter & 0xFF);
+            uint32_t v_win = (uint32_t)(v_iter & 0xFF);
+            if (has_tw_v)
+                v_win = (v_win & ~mask_v) | off_v;
+            const uint16_t *tex_row = &psx_vram_shadow[(tex_page_y + v_win) * 1024];
+            uint16_t *dst = &decoded[row * w];
 
-            uint16_t pixel;
-            if (tex_format == 0) // 4BPP CLUT
+            for (int col = 0; col < w; col++)
             {
-                int hw_x = tex_page_x + u_win / 4;
-                int nibble = u_win % 4;
-                uint16_t packed = psx_vram_shadow[(tex_page_y + v_win) * 1024 + hw_x];
-                int idx = (packed >> (nibble * 4)) & 0xF;
-                pixel = psx_vram_shadow[clut_y * 1024 + clut_x + idx];
-            }
-            else if (tex_format == 1) // 8BPP CLUT
-            {
-                int hw_x = tex_page_x + u_win / 2;
-                int byte_idx = u_win % 2;
-                uint16_t packed = psx_vram_shadow[(tex_page_y + v_win) * 1024 + hw_x];
-                int idx = (packed >> (byte_idx * 8)) & 0xFF;
-                pixel = psx_vram_shadow[clut_y * 1024 + clut_x + idx];
-            }
-            else // 15BPP (format 2 or 3)
-            {
-                pixel = psx_vram_shadow[(tex_page_y + v_win) * 1024 + (tex_page_x + u_win)];
-            }
+                int u_iter = flip_x ? (u0_cmd - col) : (u0_cmd + col);
+                uint32_t u_win = (uint32_t)(u_iter & 0xFF);
+                if (has_tw_u)
+                    u_win = (u_win & ~mask_u) | off_u;
 
-            // STP bit: only 0x0000 is transparent
-            if (pixel != 0)
-                pixel |= 0x8000;
-            decoded[row * w + col] = pixel;
+                uint16_t packed = tex_row[tex_page_x + (u_win >> 2)];
+                int idx = (packed >> ((u_win & 3) * 4)) & 0xF;
+                uint16_t pixel = clut_ptr[idx];
+                if (pixel != 0)
+                    pixel |= 0x8000;
+                dst[col] = pixel;
+            }
+        }
+    }
+    else if (tex_format == 1) /* 8BPP CLUT */
+    {
+        for (int row = 0; row < h; row++)
+        {
+            int v_iter = flip_y ? (v0_cmd - row) : (v0_cmd + row);
+            uint32_t v_win = (uint32_t)(v_iter & 0xFF);
+            if (has_tw_v)
+                v_win = (v_win & ~mask_v) | off_v;
+            const uint16_t *tex_row = &psx_vram_shadow[(tex_page_y + v_win) * 1024];
+            uint16_t *dst = &decoded[row * w];
+
+            for (int col = 0; col < w; col++)
+            {
+                int u_iter = flip_x ? (u0_cmd - col) : (u0_cmd + col);
+                uint32_t u_win = (uint32_t)(u_iter & 0xFF);
+                if (has_tw_u)
+                    u_win = (u_win & ~mask_u) | off_u;
+
+                uint16_t packed = tex_row[tex_page_x + (u_win >> 1)];
+                int idx = (packed >> ((u_win & 1) * 8)) & 0xFF;
+                uint16_t pixel = clut_ptr[idx];
+                if (pixel != 0)
+                    pixel |= 0x8000;
+                dst[col] = pixel;
+            }
+        }
+    }
+    else /* 15BPP (format 2 or 3) */
+    {
+        for (int row = 0; row < h; row++)
+        {
+            int v_iter = flip_y ? (v0_cmd - row) : (v0_cmd + row);
+            uint32_t v_win = (uint32_t)(v_iter & 0xFF);
+            if (has_tw_v)
+                v_win = (v_win & ~mask_v) | off_v;
+            const uint16_t *tex_row = &psx_vram_shadow[(tex_page_y + v_win) * 1024 + tex_page_x];
+            uint16_t *dst = &decoded[row * w];
+
+            for (int col = 0; col < w; col++)
+            {
+                int u_iter = flip_x ? (u0_cmd - col) : (u0_cmd + col);
+                uint32_t u_win = (uint32_t)(u_iter & 0xFF);
+                if (has_tw_u)
+                    u_win = (u_win & ~mask_u) | off_u;
+
+                uint16_t pixel = tex_row[u_win];
+                if (pixel != 0)
+                    pixel |= 0x8000;
+                dst[col] = pixel;
+            }
         }
     }
 
     GS_UploadRegion(CLUT_DECODED_X, CLUT_DECODED_Y, w, h, decoded);
-    free(decoded);
+
+    /* ── Update cache ──────────────────────────────────────────── */
+    decode_cache.tex_format  = tex_format;
+    decode_cache.tex_page_x  = tex_page_x;
+    decode_cache.tex_page_y  = tex_page_y;
+    decode_cache.clut_x      = clut_x;
+    decode_cache.clut_y      = clut_y;
+    decode_cache.u0_cmd      = u0_cmd;
+    decode_cache.v0_cmd      = v0_cmd;
+    decode_cache.w           = w;
+    decode_cache.h           = h;
+    decode_cache.flip_x      = flip_x;
+    decode_cache.flip_y      = flip_y;
+    decode_cache.tw_mask_x   = tex_win_mask_x;
+    decode_cache.tw_mask_y   = tex_win_mask_y;
+    decode_cache.tw_off_x    = tex_win_off_x;
+    decode_cache.tw_off_y    = tex_win_off_y;
+    decode_cache.vram_gen    = vram_gen_counter;
+
     return 1;
 }
 

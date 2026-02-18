@@ -98,13 +98,26 @@ static struct
     uint8_t deferred_count;
     uint8_t deferred_int;   /* INT type for deferred response */
     uint8_t has_deferred;   /* 1 if a deferred response is queued */
+    int32_t deferred_delay; /* Cycles until deferred response delivery */
+
+    /* IRQ signal delay — models propagation latency from CD-ROM controller
+     * to CPU interrupt line.  On real hardware the polling loop at
+     * 0x1F801803 can see int_flag a few µs before the CPU exception
+     * fires, which allows poll-based CD libraries (PSXSDK) to read the
+     * response before the ISR clears int_flag. */
+    int32_t irq_signal_delay;
 } cdrom;
+
+/* Global flag: 1 = int_flag is active and signal delay has expired.
+ * Checked inline in dynarec loop for cheap level-triggered re-assertion
+ * without a function call per block. */
+uint8_t cdrom_irq_active = 0;
 
 /* ---- Forward declarations for scheduler ---- */
 static void CDROM_EventCallback(void);
 static void CDROM_PendingCallback(void);
 static void CDROM_DeferredCallback(void);
-static void CDROM_IRQSignalCallback(void);
+static void CDROM_DeferredIRQActivate(void);
 
 /* ---- Update stat preserving ShellOpen when no disc ---- */
 static void cdrom_set_stat(uint8_t new_stat)
@@ -161,7 +174,6 @@ static void cdrom_queue_response(const uint8_t *data, int count, uint8_t irq_typ
     cdrom.deferred_int = irq_type;
     cdrom.has_deferred = 1;
     cdrom.busy = 1;              /* Stay busy until response is delivered */
-    /* Schedule deferred delivery via scheduler instead of polling */
     Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_DEFERRED,
                             global_cycles + 4000,
                             CDROM_DeferredCallback);
@@ -591,10 +603,12 @@ static void cdrom_deliver_pending(void)
     cdrom.int_flag = cdrom.pending_int;
     cdrom.has_pending = 0;
 
-    /* Schedule I_STAT assertion after propagation delay */
+    /* Schedule I_STAT assertion after signal propagation delay.
+     * Sets cdrom_irq_active so the dynarec inline check picks it up. */
+    cdrom_irq_active = 0;
     Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_IRQ,
                             global_cycles + 800,
-                            CDROM_IRQSignalCallback);
+                            CDROM_DeferredIRQActivate);
 }
 
 /* ---- Deliver deferred (first) response ---- */
@@ -611,10 +625,12 @@ static void cdrom_deliver_deferred(void)
     cdrom.has_deferred = 0;
     cdrom.busy = 0;
 
-    /* Schedule I_STAT assertion after propagation delay */
+    /* Schedule I_STAT assertion after signal propagation delay.
+     * Sets cdrom_irq_active so the dynarec inline check picks it up. */
+    cdrom_irq_active = 0;
     Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_IRQ,
                             global_cycles + 800,
-                            CDROM_IRQSignalCallback);
+                            CDROM_DeferredIRQActivate);
 }
 
 /* ---- Read CD-ROM register ---- */
@@ -763,18 +779,21 @@ void CDROM_ScheduleEvent(void)
     }
 }
 
-/* ---- Scheduler callback: deliver deferred response after delay ---- */
+/* ---- Scheduler callback: deliver deferred first response ---- */
 static void CDROM_DeferredCallback(void)
 {
     if (cdrom.has_deferred)
         cdrom_deliver_deferred();
 }
 
-/* ---- Scheduler callback: assert I_STAT bit 2 after propagation delay ---- */
-static void CDROM_IRQSignalCallback(void)
+/* ---- Scheduler callback: activate IRQ after signal delay ---- */
+static void CDROM_DeferredIRQActivate(void)
 {
     if (cdrom.int_flag != 0)
-        SignalInterrupt(2);
+    {
+        cdrom_irq_active = 1;
+        SignalInterrupt(2); /* Initial I_STAT assertion */
+    }
 }
 
 /* ---- Write CD-ROM register ---- */
@@ -847,6 +866,11 @@ void CDROM_Write(uint32_t addr, uint32_t data)
             cdrom.int_flag &= ~(val & 0x07);
             DLOG("ACK: val=%02X old_flag=%d new_flag=%d has_pending=%d\n",
                  val, old_flag, cdrom.int_flag, cdrom.has_pending);
+            if (cdrom.int_flag == 0)
+            {
+                cdrom_irq_active = 0; /* No longer level-triggering */
+                Scheduler_RemoveEvent(SCHED_EVENT_CDROM_IRQ); /* Cancel pending signal */
+            }
             if (val & 0x40)
             {
                 /* Reset parameter FIFO */

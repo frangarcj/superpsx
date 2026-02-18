@@ -243,6 +243,7 @@ void GPU_WriteGP0(uint32_t data)
                 vram_tx_h = h;
                 vram_tx_pixel = 0;
 
+                vram_gen_counter++;
                 Start_VRAM_Transfer(vram_tx_x, vram_tx_y, w, h);
             }
             else if (cmd == 0xC0)
@@ -285,6 +286,7 @@ void GPU_WriteGP0(uint32_t data)
 
                 if (psx_vram_shadow)
                 {
+                    vram_gen_counter++;
                     for (int row = 0; row < h; row++)
                     {
                         for (int col = 0; col < w; col++)

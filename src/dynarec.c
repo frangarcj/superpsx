@@ -2552,6 +2552,12 @@ void Run_CPU(void)
             stat_total_cycles += cycles;
 #endif
 
+            /* Level-triggered CD-ROM IRQ re-assertion (inline, no function call).
+             * cdrom_irq_active is set by scheduler when int_flag != 0 and the
+             * signal delay has expired. This replaces the old CDROM_Update(). */
+            if (cdrom_irq_active)
+                SignalInterrupt(2);
+
             /* Check for interrupts after each block */
             if (CheckInterrupts())
             {
