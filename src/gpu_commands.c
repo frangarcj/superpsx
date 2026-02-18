@@ -105,10 +105,18 @@ void GPU_WriteGP0(uint32_t data)
         }
 
         // For CT16S: accumulate raw 32-bit words into 128-bit qwords
+        // Set STP bit for non-zero pixels → GS alpha=0x80 for opaque, 0x00 for transparent
         static uint32_t pending_words[4];
         static int pending_count = 0;
 
-        pending_words[pending_count++] = data;
+        {
+            uint16_t gs_p0 = (uint16_t)(data & 0xFFFF);
+            uint16_t gs_p1 = (uint16_t)(data >> 16);
+            // Only 0x0000 is transparent; 0x8000 (black + STP=1) is opaque
+            if (gs_p0 != 0) gs_p0 |= 0x8000;
+            if (gs_p1 != 0) gs_p1 |= 0x8000;
+            pending_words[pending_count++] = (uint32_t)gs_p0 | ((uint32_t)gs_p1 << 16);
+        }
 
         if (pending_count >= 4)
         {
@@ -153,6 +161,11 @@ void GPU_WriteGP0(uint32_t data)
                 }
                 buf_image_ptr = 0;
             }
+            Flush_GIF();
+
+            // Flush GS texture cache after VRAM upload
+            Push_GIF_Tag(1, 1, 0, 0, 0, 1, 0xE);
+            Push_GIF_Data(0, 0x3F); // TEXFLUSH
             Flush_GIF();
 
             if (vram_tx_x + vram_tx_w > 1024)
@@ -545,22 +558,7 @@ void GPU_WriteGP0(uint32_t data)
             Push_GIF_Data(dither_enable, 0x45);
 
             {
-                uint64_t alpha_reg;
-                switch (trans_mode)
-                {
-                case 0:
-                    alpha_reg = (uint64_t)0 | ((uint64_t)1 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x40 << 32);
-                    break;
-                case 1:
-                    alpha_reg = (uint64_t)0 | ((uint64_t)2 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x80 << 32);
-                    break;
-                case 2:
-                    alpha_reg = (uint64_t)1 | ((uint64_t)0 << 2) | ((uint64_t)2 << 4) | ((uint64_t)2 << 6) | ((uint64_t)0x80 << 32);
-                    break;
-                case 3:
-                    alpha_reg = (uint64_t)0 | ((uint64_t)2 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x20 << 32);
-                    break;
-                }
+                uint64_t alpha_reg = Get_Alpha_Reg(trans_mode);
                 Push_GIF_Data(alpha_reg, 0x42);
             }
 
@@ -585,9 +583,11 @@ void GPU_WriteGP0(uint32_t data)
             {
                 Push_GIF_Tag(1, 1, 0, 0, 0, 1, 0xE);
                 uint64_t scax0 = draw_clip_x1;
-                uint64_t scax1 = draw_clip_x2;
+                // PSX E4 boundary is EXCLUSIVE: area is [X1,X2) x [Y1,Y2)
+                // GS SCISSOR is inclusive, so use X2-1 and Y2-1
+                uint64_t scax1 = (draw_clip_x2 > 0) ? (draw_clip_x2 - 1) : 0;
                 uint64_t scay0 = draw_clip_y1;
-                uint64_t scay1 = draw_clip_y2;
+                uint64_t scay1 = (draw_clip_y2 > 0) ? (draw_clip_y2 - 1) : 0;
                 Push_GIF_Data(scax0 | (scax1 << 16) | (scay0 << 32) | (scay1 << 48), 0x40);
             }
         }
@@ -604,9 +604,11 @@ void GPU_WriteGP0(uint32_t data)
             {
                 Push_GIF_Tag(1, 1, 0, 0, 0, 1, 0xE);
                 uint64_t scax0 = draw_clip_x1;
-                uint64_t scax1 = draw_clip_x2;
+                // PSX E4 boundary is EXCLUSIVE: area is [X1,X2) x [Y1,Y2)
+                // GS SCISSOR is inclusive, so use X2-1 and Y2-1
+                uint64_t scax1 = (draw_clip_x2 > 0) ? (draw_clip_x2 - 1) : 0;
                 uint64_t scay0 = draw_clip_y1;
-                uint64_t scay1 = draw_clip_y2;
+                uint64_t scay1 = (draw_clip_y2 > 0) ? (draw_clip_y2 - 1) : 0;
                 Push_GIF_Data(scax0 | (scax1 << 16) | (scay0 << 32) | (scay1 << 48), 0x40);
             }
         }
@@ -637,6 +639,13 @@ void GPU_WriteGP0(uint32_t data)
         mask_set_bit = data & 1;
         mask_check_bit = (data >> 1) & 1;
         gpu_stat = (gpu_stat & ~0x1800) | (mask_set_bit << 11) | (mask_check_bit << 12);
+        // GS: FBA_1 forces bit 15 on all written pixels (mask_set_bit)
+        // GS: DATE+DATM in TEST_1 prevents writing to pixels with bit 15 set (mask_check_bit)
+        {
+            Push_GIF_Tag(2, 1, 0, 0, 0, 1, 0xE);
+            Push_GIF_Data((uint64_t)mask_set_bit, 0x4A); // FBA_1
+            Push_GIF_Data(Get_Base_TEST(), 0x47); // TEST_1
+        }
         break;
     case 0x00: // NOP
     case 0x01: // Clear Cache
@@ -681,6 +690,51 @@ void GPU_WriteGP1(uint32_t data)
         draw_clip_y2 = 240;
         gpu_cmd_remaining = 0;
         gpu_transfer_words = 0;
+        tex_page_x = 0;
+        tex_page_y = 0;
+        tex_page_format = 0;
+        semi_trans_mode = 0;
+        tex_flip_x = 0;
+        tex_flip_y = 0;
+        tex_win_mask_x = 0;
+        tex_win_mask_y = 0;
+        tex_win_off_x = 0;
+        tex_win_off_y = 0;
+        dither_enabled = 0;
+        mask_set_bit = 0;
+        mask_check_bit = 0;
+
+        // Clear GS VRAM to black (PSX GPU reset clears VRAM)
+        {
+            Flush_GIF();
+            Push_GIF_Tag(5, 1, 0, 0, 0, 1, 0xE);
+            // Temporarily set full VRAM scissor
+            uint64_t full_scissor = 0 | ((uint64_t)(PSX_VRAM_WIDTH - 1) << 16) |
+                                    ((uint64_t)0 << 32) | ((uint64_t)(PSX_VRAM_HEIGHT - 1) << 48);
+            Push_GIF_Data(full_scissor, 0x40);
+            Push_GIF_Data(6, 0x00); // PRIM = SPRITE
+            Push_GIF_Data(GS_set_RGBAQ(0, 0, 0, 0, 0x3F800000), 0x01);
+            int32_t x1 = (0 + 2048) << 4;
+            int32_t y1 = (0 + 2048) << 4;
+            int32_t x2 = (PSX_VRAM_WIDTH + 2048) << 4;
+            int32_t y2 = (PSX_VRAM_HEIGHT + 2048) << 4;
+            Push_GIF_Data(GS_set_XYZ(x1, y1, 0), 0x05);
+            Push_GIF_Data(GS_set_XYZ(x2, y2, 0), 0x05);
+            Flush_GIF();
+
+            // Restore scissor to current drawing area (PSX E4 is exclusive)
+            Push_GIF_Tag(1, 1, 0, 0, 0, 1, 0xE);
+            uint64_t sc_x2 = (draw_clip_x2 > 0) ? (draw_clip_x2 - 1) : 0;
+            uint64_t sc_y2 = (draw_clip_y2 > 0) ? (draw_clip_y2 - 1) : 0;
+            uint64_t orig_scissor = (uint64_t)draw_clip_x1 | (sc_x2 << 16) |
+                                    ((uint64_t)draw_clip_y1 << 32) | (sc_y2 << 48);
+            Push_GIF_Data(orig_scissor, 0x40);
+            Flush_GIF();
+
+            // Clear shadow VRAM
+            if (psx_vram_shadow)
+                memset(psx_vram_shadow, 0, PSX_VRAM_WIDTH * PSX_VRAM_HEIGHT * 2);
+        }
         break;
     case 0x01: // Reset Command Buffer
         gpu_cmd_remaining = 0;

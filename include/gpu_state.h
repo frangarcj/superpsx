@@ -168,6 +168,7 @@ void Push_GIF_Tag(uint64_t nloop, uint64_t eop, uint64_t pre,
 void Push_GIF_Data(uint64_t d0, uint64_t d1);
 void Setup_GS_Environment(void);
 uint64_t Get_Alpha_Reg(int mode);
+uint64_t Get_Base_TEST(void);
 
 /* gpu_vram.c — VRAM transfer operations */
 void Start_VRAM_Transfer(int x, int y, int w, int h);
@@ -184,6 +185,11 @@ int Decode_CLUT4_Texture(int clut_x, int clut_y, int tex_x, int tex_y,
                          int u0, int v0, int tw, int th);
 int Decode_CLUT8_Texture(int clut_x, int clut_y, int tex_x, int tex_y,
                          int u0, int v0, int tw, int th);
+int Decode_TexWindow_Rect(int tex_format,
+                          int tex_page_x, int tex_page_y,
+                          int clut_x, int clut_y,
+                          int u0_cmd, int v0_cmd, int w, int h,
+                          int flip_x, int flip_y);
 
 /* gpu_primitives.c — GP0 command translation to GS */
 void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor);

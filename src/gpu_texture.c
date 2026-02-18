@@ -30,6 +30,65 @@ uint32_t Apply_Tex_Window_V(uint32_t v)
     return (v & ~mask) | off;
 }
 
+/* ── Per-pixel texture window decode ──────────────────────────────── */
+
+// Decode a textured rect region with per-pixel texture window masking.
+// This correctly handles texture repeat/mirror that GS SPRITE cannot do.
+// tex_format: 0=4BPP, 1=8BPP, 2=15BPP
+// Reads from psx_vram_shadow (CPU shadow copy).
+// Uploads result to CLUT_DECODED area.
+int Decode_TexWindow_Rect(int tex_format,
+                          int tex_page_x, int tex_page_y,
+                          int clut_x, int clut_y,
+                          int u0_cmd, int v0_cmd, int w, int h,
+                          int flip_x, int flip_y)
+{
+    uint16_t *decoded = (uint16_t *)memalign(64, w * h * 2);
+    if (!decoded) return 0;
+
+    for (int row = 0; row < h; row++)
+    {
+        for (int col = 0; col < w; col++)
+        {
+            // Per-pixel UV with texture window applied
+            int u_iter = flip_x ? (u0_cmd - col) : (u0_cmd + col);
+            int v_iter = flip_y ? (v0_cmd - row) : (v0_cmd + row);
+            uint32_t u_win = Apply_Tex_Window_U(u_iter & 0xFF);
+            uint32_t v_win = Apply_Tex_Window_V(v_iter & 0xFF);
+
+            uint16_t pixel;
+            if (tex_format == 0) // 4BPP CLUT
+            {
+                int hw_x = tex_page_x + u_win / 4;
+                int nibble = u_win % 4;
+                uint16_t packed = psx_vram_shadow[(tex_page_y + v_win) * 1024 + hw_x];
+                int idx = (packed >> (nibble * 4)) & 0xF;
+                pixel = psx_vram_shadow[clut_y * 1024 + clut_x + idx];
+            }
+            else if (tex_format == 1) // 8BPP CLUT
+            {
+                int hw_x = tex_page_x + u_win / 2;
+                int byte_idx = u_win % 2;
+                uint16_t packed = psx_vram_shadow[(tex_page_y + v_win) * 1024 + hw_x];
+                int idx = (packed >> (byte_idx * 8)) & 0xFF;
+                pixel = psx_vram_shadow[clut_y * 1024 + clut_x + idx];
+            }
+            else // 15BPP (format 2 or 3)
+            {
+                pixel = psx_vram_shadow[(tex_page_y + v_win) * 1024 + (tex_page_x + u_win)];
+            }
+
+            // STP bit: only 0x0000 is transparent
+            if (pixel != 0) pixel |= 0x8000;
+            decoded[row * w + col] = pixel;
+        }
+    }
+
+    GS_UploadRegion(CLUT_DECODED_X, CLUT_DECODED_Y, w, h, decoded);
+    free(decoded);
+    return 1;
+}
+
 /* ── 4-bit CLUT texture decode ───────────────────────────────────── */
 
 // Decode a 4-bit CLUT texture region and upload to GS VRAM at CLUT_DECODED_Y.
