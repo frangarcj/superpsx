@@ -65,7 +65,9 @@ typedef struct
 
 static PatchSite patch_sites[PATCH_SITE_MAX];
 static int patch_sites_count = 0;
+#ifdef ENABLE_DYNAREC_STATS
 static uint64_t stat_dbl_patches = 0; /* # of back-patches applied */
+#endif
 
 /* Forward declarations (defined after emit helpers) */
 static void emit_direct_link(uint32_t target_psx_pc);
@@ -246,7 +248,9 @@ static void apply_pending_patches(uint32_t target_psx_pc, uint32_t *native_addr)
         {
             uint32_t j_target = ((uint32_t)native_addr >> 2) & 0x03FFFFFF;
             *ps->site_word = MK_J(2, j_target);
+#ifdef ENABLE_DYNAREC_STATS
             stat_dbl_patches++;
+#endif
         }
         else
         {
@@ -309,27 +313,31 @@ static uint32_t blocks_compiled = 0;
 static uint32_t total_instructions = 0;
 
 /* ---- Dynarec Performance Counters (Baseline) ---- */
+#ifdef ENABLE_DYNAREC_STATS
 static uint64_t stat_cache_hits = 0;       /* lookup_block found a block */
 static uint64_t stat_cache_misses = 0;     /* lookup_block returned NULL -> compile */
 static uint64_t stat_cache_collisions = 0; /* hash slot had different psx_pc */
 static uint64_t stat_blocks_executed = 0;  /* total block executions */
 static uint64_t stat_total_cycles = 0;     /* accumulated PSX cycles */
+#endif
 
 static void dynarec_print_stats(void)
 {
+#ifdef ENABLE_DYNAREC_STATS
     uint64_t total_lookups = stat_cache_hits + stat_cache_misses;
-    printf("[DYNAREC STATS]\n");
-    printf("  Blocks executed : %llu\n", (unsigned long long)stat_blocks_executed);
-    printf("  Cache hits      : %llu (%.1f%%)\n",
+    DLOG("[DYNAREC STATS]\n");
+    DLOG_RAW("  Blocks executed : %llu\n", (unsigned long long)stat_blocks_executed);
+    DLOG_RAW("  Cache hits      : %llu (%.1f%%)\n",
            (unsigned long long)stat_cache_hits,
            total_lookups ? (double)stat_cache_hits * 100.0 / total_lookups : 0.0);
-    printf("  Cache misses    : %llu (compiles)\n", (unsigned long long)stat_cache_misses);
-    printf("  Cache collisions: %llu\n", (unsigned long long)stat_cache_collisions);
-    printf("  Blocks compiled : %u\n", (unsigned)blocks_compiled);
-    printf("  PSX cycles      : %llu\n", (unsigned long long)stat_total_cycles);
-    printf("  DBL patches     : %llu\n", (unsigned long long)stat_dbl_patches);
-    printf("  DBL pending     : %d\n", patch_sites_count);
+    DLOG_RAW("  Cache misses    : %llu (compiles)\n", (unsigned long long)stat_cache_misses);
+    DLOG_RAW("  Cache collisions: %llu\n", (unsigned long long)stat_cache_collisions);
+    DLOG_RAW("  Blocks compiled : %u\n", (unsigned)blocks_compiled);
+    DLOG_RAW("  PSX cycles      : %llu\n", (unsigned long long)stat_total_cycles);
+    DLOG_RAW("  DBL patches     : %llu\n", (unsigned long long)stat_dbl_patches);
+    DLOG_RAW("  DBL pending     : %d\n", patch_sites_count);
     fflush(stdout);
+#endif
 }
 
 /* Accumulated cycle cost during compile_block */
@@ -2122,15 +2130,23 @@ static uint32_t *lookup_block(uint32_t psx_pc)
     {
         if (e->native && e->psx_pc == psx_pc)
         {
+#ifdef ENABLE_DYNAREC_STATS
             stat_cache_hits++;
+#endif
             return e->native;
         }
         e = e->next;
     }
     /* Not found - check if bucket is occupied (collision) */
     if (block_cache[idx].native && block_cache[idx].psx_pc != psx_pc)
+    {
+#ifdef ENABLE_DYNAREC_STATS
         stat_cache_collisions++;
+#endif
+    }
+#ifdef ENABLE_DYNAREC_STATS
     stat_cache_misses++;
+#endif
     return NULL;
 }
 
@@ -2423,8 +2439,10 @@ void Run_CPU(void)
             if (cycles == 0)
                 cycles = 8;
             global_cycles += cycles;
+#ifdef ENABLE_DYNAREC_STATS
             stat_blocks_executed++;
             stat_total_cycles += cycles;
+#endif
 
             /* Update CD-ROM deferred delivery + IRQ signal delay */
             CDROM_Update(cycles);

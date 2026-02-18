@@ -25,6 +25,7 @@ option(ENABLE_DEBUG_LOG "Enable debug logging" ON)
 option(ENABLE_STUCK_DETECTION "Enable stuck detection" ON)
 option(ENABLE_PROFILING "Build with gprof instrumentation (libprofglue)" OFF)
 option(ENABLE_LTO "Enable Link-Time Optimization" OFF)
+option(ENABLE_DYNAREC_STATS "Enable dynarec execution statistics" OFF)
 
 # ============================================================================
 # Source files
@@ -77,6 +78,10 @@ endif()
 
 if(ENABLE_STUCK_DETECTION)
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_STUCK_DETECTION)
+endif()
+
+if(ENABLE_DYNAREC_STATS)
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_DYNAREC_STATS)
 endif()
 
 # ============================================================================
@@ -180,6 +185,7 @@ message(STATUS "  ENABLE_STUCK_DETECTION: ${ENABLE_STUCK_DETECTION}")
 message(STATUS "  ENABLE_PROFILING:      ${ENABLE_PROFILING}")
 message(STATUS "  ENABLE_LTO:            ${ENABLE_LTO}")
 message(STATUS "  ENABLE_UNLIMITED_SPEED: ${ENABLE_UNLIMITED_SPEED}")
+message(STATUS "  ENABLE_DYNAREC_STATS:  ${ENABLE_DYNAREC_STATS}")
 message(STATUS "")
 message(STATUS "  Usage:")
 message(STATUS "    cmake -B build && cmake --build build")
