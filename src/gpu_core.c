@@ -15,6 +15,7 @@
 /* GPU status / read registers */
 uint32_t gpu_stat = 0x14802000;
 uint32_t gpu_read = 0;
+volatile int gpu_pending_vblank_flush = 0;
 
 /* Framebuffer configuration */
 int fb_address = 0;
@@ -50,7 +51,6 @@ int dither_enabled = 0;
 uint16_t *psx_vram_shadow = NULL;
 
 /* Debug log file */
-FILE *gpu_debug_log = NULL;
 
 /* VRAM transfer tracking for shadow writes */
 int vram_tx_x = 0, vram_tx_y = 0, vram_tx_w = 0, vram_tx_h = 0, vram_tx_pixel = 0;
@@ -139,6 +139,13 @@ uint32_t GPU_Read(void)
 
 uint32_t GPU_ReadStatus(void)
 {
+    // Deferred flush from VBlank ISR
+    if (gpu_pending_vblank_flush)
+    {
+        Flush_GIF();
+        gpu_pending_vblank_flush = 0;
+    }
+
     /* Force bits: 28 (ready DMA), 26 (ready CMD), 13 (interlace field) */
     /* Bit 27 (ready VRAM-to-CPU) is dynamic, set only during C0h transfer */
     /* Bit 23 (display disable) must NOT be forced — it reflects GP1(03h) state */
@@ -147,6 +154,8 @@ uint32_t GPU_ReadStatus(void)
 
 void GPU_VBlank(void)
 {
+    // Do NOT flush here (ISR). Set flag to be handled in main thread.
+    gpu_pending_vblank_flush = 1;
     gpu_stat ^= 0x80000000;
 }
 
@@ -260,12 +269,6 @@ void Update_GS_Display(void)
 void Init_Graphics(void)
 {
     printf("Initializing Graphics (GS)...\n");
-
-    /* Uncomment for GPU debug logging:
-     * gpu_debug_log = fopen("host:gpu_debug.log", "w");
-     * if (gpu_debug_log)
-     *     fprintf(gpu_debug_log, "GPU Debug Log\n");
-     */
 
     dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
     dma_channel_fast_waits(DMA_CHANNEL_GIF);

@@ -63,6 +63,13 @@ int GPU_GetCommandSize(uint32_t cmd)
 
 void GPU_WriteGP0(uint32_t data)
 {
+    // Deferred flush from VBlank ISR
+    if (gpu_pending_vblank_flush)
+    {
+        Flush_GIF();
+        gpu_pending_vblank_flush = 0;
+    }
+
     // If transferring data (A0/C0)
     if (gpu_transfer_words > 0)
     {
@@ -163,12 +170,12 @@ void GPU_WriteGP0(uint32_t data)
                 }
                 buf_image_ptr = 0;
             }
-            Flush_GIF();
+            // Flush_GIF(); <-- Removed: batching primitives
 
             // Flush GS texture cache after VRAM upload
             Push_GIF_Tag(1, 1, 0, 0, 0, 1, 0xE);
             Push_GIF_Data(0, 0x3F); // TEXFLUSH
-            Flush_GIF();
+            Flush_GIF(); // Keep this one for VRAM-to-CPU sync
 
             if (vram_tx_x + vram_tx_w > 1024)
             {
@@ -185,7 +192,7 @@ void GPU_WriteGP0(uint32_t data)
         if ((data & 0xF000F000) == 0x50005000)
         {
             polyline_active = 0;
-            Flush_GIF();
+            // Flush_GIF(); <-- Removed for batching
             return;
         }
 
@@ -204,7 +211,7 @@ void GPU_WriteGP0(uint32_t data)
             Emit_Line_Segment_AD(polyline_prev_x, polyline_prev_y, polyline_prev_color,
                                  x, y, new_color,
                                  polyline_shaded, polyline_semi_trans);
-            Flush_GIF();
+            // Flush_GIF(); <-- Removed for batching
 
             polyline_prev_x = x;
             polyline_prev_y = y;
@@ -469,10 +476,8 @@ void GPU_WriteGP0(uint32_t data)
             }
             else
             {
-                unsigned __int128 *cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
-                Translate_GP0_to_GS(gpu_cmd_buffer, &cursor);
-                gif_packet_ptr = cursor - gif_packet_buf[current_buffer];
-                Flush_GIF();
+                Translate_GP0_to_GS(gpu_cmd_buffer);
+                // Flush_GIF(); <-- Already removed
 
                 if ((cmd & 0xE0) == 0x40 && (cmd & 0x08))
                 {
@@ -566,13 +571,7 @@ void GPU_WriteGP0(uint32_t data)
                 Push_GIF_Data(alpha_reg, 0x42);
             }
 
-            if (gpu_debug_log)
-            {
-                fprintf(gpu_debug_log, "[GPU] E1: TexPage(%d,%d) fmt=%" PRIu32 " trans=%" PRIu32 " dither=%" PRIu32 " flipX=%d flipY=%d\n",
-                        tex_page_x, tex_page_y, tpf, trans_mode, dither_enable, tex_flip_x, tex_flip_y);
-                fflush(gpu_debug_log);
-            }
-            Flush_GIF();
+            // Flush_GIF(); <-- Removed: batching register changes
         }
     }
     break;
@@ -663,7 +662,7 @@ void GPU_WriteGP0(uint32_t data)
             draw_cmd_count++;
             if (draw_cmd_count <= 20 || (draw_cmd_count % 10000 == 0))
             {
-                DLOG("GP0 draw cmd %02Xh (size=%d) #%d\n", cmd, size, draw_cmd_count);
+                // DLOG("GP0 draw cmd %02Xh (size=%d) #%d\n", cmd, size, draw_cmd_count);
             }
             gpu_cmd_buffer[0] = data;
             gpu_cmd_ptr = 1;
@@ -672,11 +671,8 @@ void GPU_WriteGP0(uint32_t data)
         else if (size == 1 && ((cmd & 0xE0) == 0x20 || cmd == 0x02))
         {
             uint32_t buff[1] = {data};
-            unsigned __int128 *cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
-            Translate_GP0_to_GS(buff, &cursor);
-            gif_packet_ptr = cursor - gif_packet_buf[current_buffer];
-            if (gif_packet_ptr > GIF_BUFFER_SIZE - 32)
-                Flush_GIF();
+            Translate_GP0_to_GS(buff);
+            // Individual draw commands also batched
         }
         break;
     }

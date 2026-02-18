@@ -25,6 +25,9 @@
 
 #define LOG_TAG "DYNAREC"
 
+/* Maximum cycles to execute in one inner batch to limit latency */
+#define MAX_CYCLE_BATCH 2048
+
 #ifdef ENABLE_HOST_LOG
 FILE *host_log_file = NULL;
 #endif
@@ -2409,15 +2412,21 @@ void Run_CPU(void)
     while (true)
     {
         /* ---- Determine how many cycles to run until next event ---- */
-        uint64_t deadline = Scheduler_NextDeadline();
+        uint64_t deadline = Scheduler_NextDeadlineFast();
         if (deadline == UINT64_MAX)
         {
             /* No events scheduled - run a default chunk */
             deadline = global_cycles + 1024;
         }
 
-        /* ---- Execute blocks until we reach the deadline ---- */
-        while (global_cycles < deadline)
+        /* Cap deadline to avoid excessive latency between interrupts/input */
+        uint64_t batch_deadline = deadline;
+        if (batch_deadline > global_cycles + MAX_CYCLE_BATCH)
+            batch_deadline = global_cycles + MAX_CYCLE_BATCH;
+
+        /* ---- Execute blocks until we reach the (possibly capped) deadline ---- */
+        uint32_t batch_cycles = 0; /* accumulate cycles executed in this batch */
+        while (global_cycles < batch_deadline)
         {
             uint32_t pc = cpu.pc;
 
@@ -2552,26 +2561,8 @@ void Run_CPU(void)
             stat_total_cycles += cycles;
 #endif
 
-            /* Level-triggered CD-ROM IRQ re-assertion (inline, no function call).
-             * cdrom_irq_active is set by scheduler when int_flag != 0 and the
-             * signal delay has expired. This replaces the old CDROM_Update(). */
-            if (cdrom_irq_active)
-                SignalInterrupt(2);
-
-            /* Check for interrupts after each block */
-            if (CheckInterrupts())
-            {
-                cpu.cop0[PSX_COP0_CAUSE] |= (1 << 10);
-                uint32_t sr = cpu.cop0[PSX_COP0_SR];
-                if ((sr & 1) && (sr & (1 << 10)))
-                {
-                    PSX_Exception(0);
-                }
-            }
-            else
-            {
-                cpu.cop0[PSX_COP0_CAUSE] &= ~(1 << 10);
-            }
+            /* Accumulate cycles for batched CD-ROM update and interrupt check */
+            batch_cycles += cycles;
 
             iterations++;
 
@@ -2600,8 +2591,33 @@ void Run_CPU(void)
 #endif
         } /* end inner while (blocks until deadline) */
 
-        /* ---- Dispatch all events at or before current cycle ---- */
-        Scheduler_DispatchEvents(global_cycles);
+            /* ---- Batched updates: CD-ROM and Interrupts ---- */
+            if (batch_cycles)
+            {
+                /* Level-triggered CD-ROM IRQ re-assertion */
+                if (cdrom_irq_active)
+                    SignalInterrupt(2);
+            }
+
+            if (CheckInterrupts())
+            {
+                cpu.cop0[PSX_COP0_CAUSE] |= (1 << 10);
+                uint32_t sr = cpu.cop0[PSX_COP0_SR];
+                if ((sr & 1) && (sr & (1 << 10)))
+                {
+                    PSX_Exception(0);
+                    /* Handle exception before dispatching scheduled events */
+                    continue;
+                }
+            }
+            else
+            {
+                cpu.cop0[PSX_COP0_CAUSE] &= ~(1 << 10);
+            }
+
+            /* ---- Dispatch all events at or before current cycle ---- */
+            if (global_cycles >= scheduler_cached_earliest)
+                Scheduler_DispatchEvents(global_cycles);
 
         /* ---- Periodic VRAM Dump ---- */
 #ifdef ENABLE_VRAM_DUMP

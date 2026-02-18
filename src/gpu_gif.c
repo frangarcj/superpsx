@@ -68,7 +68,10 @@ void Flush_GIF(void)
 void Push_GIF_Tag(uint64_t nloop, uint64_t eop, uint64_t pre,
                   uint64_t prim, uint64_t flg, uint64_t nreg, uint64_t regs)
 {
-    if (gif_packet_ptr + 1 >= GIF_BUFFER_SIZE)
+    // Batching: Only flush at Tag boundaries to ensure a single GS packet
+    // is never split across two DMA transfers. A 256 qword margin is enough
+    // for any PSX primitive translation to follow.
+    if (gif_packet_ptr > (GIF_BUFFER_SIZE - 256))
         Flush_GIF();
 
     GifTag *tag = (GifTag *)&gif_packet_buf[current_buffer][gif_packet_ptr];
@@ -86,13 +89,10 @@ void Push_GIF_Tag(uint64_t nloop, uint64_t eop, uint64_t pre,
 
 void Push_GIF_Data(uint64_t d0, uint64_t d1)
 {
-    if (gif_packet_ptr + 1 >= GIF_BUFFER_SIZE)
-        Flush_GIF();
-
+    // NEVER flush mid-packet. Tag check ensures enough space.
     uint64_t *p = (uint64_t *)&gif_packet_buf[current_buffer][gif_packet_ptr];
     p[0] = d0;
     p[1] = d1;
-
     gif_packet_ptr++;
 }
 

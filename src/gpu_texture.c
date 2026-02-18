@@ -88,96 +88,100 @@ int Decode_TexWindow_Rect(int tex_format,
 
     uint16_t *decoded = decode_buf;
 
-    /* ── Pre-compute texture window masks inline ────────────────── */
-    const uint32_t tw_mx = tex_win_mask_x;
-    const uint32_t tw_my = tex_win_mask_y;
-    const uint32_t mask_u  = tw_mx * 8;
-    const uint32_t off_u   = (tex_win_off_x & tw_mx) * 8;
-    const uint32_t mask_v  = tw_my * 8;
-    const uint32_t off_v   = (tex_win_off_y & tw_my) * 8;
-    const int has_tw_u = (tw_mx != 0);
-    const int has_tw_v = (tw_my != 0);
+    /* 2. Pre-calculamos saltos para evitar 'if (flip)' en el bucle */
+    int u_step = flip_x ? -1 : 1;
+    int v_step = flip_y ? -1 : 1;
 
-    /* ── Pre-compute CLUT base pointer for indexed modes ───────── */
-    const uint16_t *clut_ptr = &psx_vram_shadow[clut_y * 1024 + clut_x];
+    /* 3. Cacheamos la CLUT (Color LookUp Table) localmente. */
+    uint16_t local_clut[256];
 
-    /* ── Format-specialised decode loops ───────────────────────── */
-    if (tex_format == 0) /* 4BPP CLUT */
+    if (tex_format == 0)
+    { // 4BPP (16 colores)
+        uint16_t *clut_src = &psx_vram_shadow[clut_y * 1024 + clut_x];
+        for (int i = 0; i < 16; i++)
+            local_clut[i] = clut_src[i];
+    }
+    else if (tex_format == 1)
+    { // 8BPP (256 colores)
+        uint16_t *clut_src = &psx_vram_shadow[clut_y * 1024 + clut_x];
+        memcpy(local_clut, clut_src, 256 * 2);
+    }
+
+    /* Puntero base de VRAM para evitar multiplicaciones constantes */
+    const uint16_t *vram_base = psx_vram_shadow;
+
+    /* 4. Bucles separados por formato (Code Hoisting) */
+    if (tex_format == 0) // --- 4BPP ---
     {
         for (int row = 0; row < h; row++)
         {
-            int v_iter = flip_y ? (v0_cmd - row) : (v0_cmd + row);
-            uint32_t v_win = (uint32_t)(v_iter & 0xFF);
-            if (has_tw_v)
-                v_win = (v_win & ~mask_v) | off_v;
-            const uint16_t *tex_row = &psx_vram_shadow[(tex_page_y + v_win) * 1024];
-            uint16_t *dst = &decoded[row * w];
+            int v_iter = v0_cmd + (row * v_step);
+            int v_win = Apply_Tex_Window_V(v_iter & 0xFF);
+            // Pre-calcular fila de VRAM
+            const uint16_t *row_vram = &vram_base[(tex_page_y + v_win) * 1024];
+            uint16_t *out_row = &decoded[row * w];
 
             for (int col = 0; col < w; col++)
             {
-                int u_iter = flip_x ? (u0_cmd - col) : (u0_cmd + col);
-                uint32_t u_win = (uint32_t)(u_iter & 0xFF);
-                if (has_tw_u)
-                    u_win = (u_win & ~mask_u) | off_u;
+                int u_iter = u0_cmd + (col * u_step);
+                int u_win = Apply_Tex_Window_U(u_iter & 0xFF);
 
-                uint16_t packed = tex_row[tex_page_x + (u_win >> 2)];
-                int idx = (packed >> ((u_win & 3) * 4)) & 0xF;
-                uint16_t pixel = clut_ptr[idx];
-                if (pixel != 0)
+                // Lógica 4BPP optimizada
+                int shift = (u_win & 3) << 2; // (u % 4) * 4
+                uint16_t packed = row_vram[tex_page_x + (u_win >> 2)];
+                int idx = (packed >> shift) & 0xF;
+
+                uint16_t pixel = local_clut[idx];
+                if (pixel)
                     pixel |= 0x8000;
-                dst[col] = pixel;
+                out_row[col] = pixel;
             }
         }
     }
-    else if (tex_format == 1) /* 8BPP CLUT */
+    else if (tex_format == 1) // --- 8BPP ---
     {
         for (int row = 0; row < h; row++)
         {
-            int v_iter = flip_y ? (v0_cmd - row) : (v0_cmd + row);
-            uint32_t v_win = (uint32_t)(v_iter & 0xFF);
-            if (has_tw_v)
-                v_win = (v_win & ~mask_v) | off_v;
-            const uint16_t *tex_row = &psx_vram_shadow[(tex_page_y + v_win) * 1024];
-            uint16_t *dst = &decoded[row * w];
+            int v_iter = v0_cmd + (row * v_step);
+            int v_win = Apply_Tex_Window_V(v_iter & 0xFF);
+            const uint16_t *row_vram = &vram_base[(tex_page_y + v_win) * 1024];
+            uint16_t *out_row = &decoded[row * w];
 
             for (int col = 0; col < w; col++)
             {
-                int u_iter = flip_x ? (u0_cmd - col) : (u0_cmd + col);
-                uint32_t u_win = (uint32_t)(u_iter & 0xFF);
-                if (has_tw_u)
-                    u_win = (u_win & ~mask_u) | off_u;
+                int u_iter = u0_cmd + (col * u_step);
+                int u_win = Apply_Tex_Window_U(u_iter & 0xFF);
 
-                uint16_t packed = tex_row[tex_page_x + (u_win >> 1)];
-                int idx = (packed >> ((u_win & 1) * 8)) & 0xFF;
-                uint16_t pixel = clut_ptr[idx];
-                if (pixel != 0)
+                // Lógica 8BPP optimizada
+                int shift = (u_win & 1) << 3; // (u % 2) * 8
+                uint16_t packed = row_vram[tex_page_x + (u_win >> 1)];
+                int idx = (packed >> shift) & 0xFF;
+
+                uint16_t pixel = local_clut[idx];
+                if (pixel)
                     pixel |= 0x8000;
-                dst[col] = pixel;
+                out_row[col] = pixel;
             }
         }
     }
-    else /* 15BPP (format 2 or 3) */
+    else // --- 15BPP (Direct) ---
     {
         for (int row = 0; row < h; row++)
         {
-            int v_iter = flip_y ? (v0_cmd - row) : (v0_cmd + row);
-            uint32_t v_win = (uint32_t)(v_iter & 0xFF);
-            if (has_tw_v)
-                v_win = (v_win & ~mask_v) | off_v;
-            const uint16_t *tex_row = &psx_vram_shadow[(tex_page_y + v_win) * 1024 + tex_page_x];
-            uint16_t *dst = &decoded[row * w];
+            int v_iter = v0_cmd + (row * v_step);
+            int v_win = Apply_Tex_Window_V(v_iter & 0xFF);
+            const uint16_t *row_vram = &vram_base[(tex_page_y + v_win) * 1024];
+            uint16_t *out_row = &decoded[row * w];
 
             for (int col = 0; col < w; col++)
             {
-                int u_iter = flip_x ? (u0_cmd - col) : (u0_cmd + col);
-                uint32_t u_win = (uint32_t)(u_iter & 0xFF);
-                if (has_tw_u)
-                    u_win = (u_win & ~mask_u) | off_u;
+                int u_iter = u0_cmd + (col * u_step);
+                int u_win = Apply_Tex_Window_U(u_iter & 0xFF);
 
-                uint16_t pixel = tex_row[u_win];
-                if (pixel != 0)
+                uint16_t pixel = row_vram[tex_page_x + u_win];
+                if (pixel)
                     pixel |= 0x8000;
-                dst[col] = pixel;
+                out_row[col] = pixel;
             }
         }
     }

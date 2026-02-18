@@ -80,8 +80,10 @@ void Joystick_GetPSXDigitalResponse(uint8_t response[3])
         response[2] &= ~0x04;
     if (ps2 & PAD_R1)
         response[2] &= ~0x08;
-    if (ps2 & PAD_TRIANGLE)
+    if (ps2 & PAD_TRIANGLE){
         response[2] &= ~0x10;
+        exit(0);
+    }
     if (ps2 & PAD_CIRCLE)
         response[2] &= ~0x20;
     if (ps2 & PAD_CROSS)

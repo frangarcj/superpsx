@@ -141,14 +141,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                 else if (cmd_byte >= 0x20 && cmd_byte <= 0x7F)
                 {
                     uint32_t *cmd_ptr = (uint32_t *)&psx_ram[addr];
-
-                    unsigned __int128 *cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
-                    Translate_GP0_to_GS(cmd_ptr, &cursor);
-
-                    gif_packet_ptr = cursor - gif_packet_buf[current_buffer];
-
-                    if (gif_packet_ptr > GIF_BUFFER_SIZE - 32)
-                        Flush_GIF();
+                    Translate_GP0_to_GS(cmd_ptr);
 
                     int size = GPU_GetCommandSize(cmd_word >> 24);
                     i += size;
@@ -157,12 +150,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                 else if ((cmd_word >> 24) == 0x02)
                 {
                     uint32_t *cmd_ptr = (uint32_t *)&psx_ram[addr];
-
-                    unsigned __int128 *cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
-                    Translate_GP0_to_GS(cmd_ptr, &cursor);
-                    gif_packet_ptr = cursor - gif_packet_buf[current_buffer];
-                    if (gif_packet_ptr > GIF_BUFFER_SIZE - 32)
-                        Flush_GIF();
+                    Translate_GP0_to_GS(cmd_ptr);
 
                     int size = 3;
                     i += size;
