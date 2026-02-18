@@ -98,19 +98,13 @@ static struct
     uint8_t deferred_count;
     uint8_t deferred_int;   /* INT type for deferred response */
     uint8_t has_deferred;   /* 1 if a deferred response is queued */
-    int32_t deferred_delay; /* Cycles until deferred response delivery */
-
-    /* IRQ signal delay — models propagation latency from CD-ROM controller
-     * to CPU interrupt line.  On real hardware the polling loop at
-     * 0x1F801803 can see int_flag a few µs before the CPU exception
-     * fires, which allows poll-based CD libraries (PSXSDK) to read the
-     * response before the ISR clears int_flag. */
-    int32_t irq_signal_delay;
 } cdrom;
 
 /* ---- Forward declarations for scheduler ---- */
 static void CDROM_EventCallback(void);
 static void CDROM_PendingCallback(void);
+static void CDROM_DeferredCallback(void);
+static void CDROM_IRQSignalCallback(void);
 
 /* ---- Update stat preserving ShellOpen when no disc ---- */
 static void cdrom_set_stat(uint8_t new_stat)
@@ -166,8 +160,11 @@ static void cdrom_queue_response(const uint8_t *data, int count, uint8_t irq_typ
     cdrom.deferred_count = count;
     cdrom.deferred_int = irq_type;
     cdrom.has_deferred = 1;
-    cdrom.deferred_delay = 4000; /* ~120 instructions, enough for caller to reach poll loop */
     cdrom.busy = 1;              /* Stay busy until response is delivered */
+    /* Schedule deferred delivery via scheduler instead of polling */
+    Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_DEFERRED,
+                            global_cycles + 4000,
+                            CDROM_DeferredCallback);
 }
 
 /* ---- Queue a pending (second) response ---- */
@@ -594,9 +591,10 @@ static void cdrom_deliver_pending(void)
     cdrom.int_flag = cdrom.pending_int;
     cdrom.has_pending = 0;
 
-    /* Delay I_STAT assertion so the polling loop can see int_flag
-     * before the CPU exception fires (models real HW propagation). */
-    cdrom.irq_signal_delay = 800;
+    /* Schedule I_STAT assertion after propagation delay */
+    Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_IRQ,
+                            global_cycles + 800,
+                            CDROM_IRQSignalCallback);
 }
 
 /* ---- Deliver deferred (first) response ---- */
@@ -613,9 +611,10 @@ static void cdrom_deliver_deferred(void)
     cdrom.has_deferred = 0;
     cdrom.busy = 0;
 
-    /* Delay I_STAT assertion so the polling loop can see int_flag
-     * before the CPU exception fires (models real HW propagation). */
-    cdrom.irq_signal_delay = 800;
+    /* Schedule I_STAT assertion after propagation delay */
+    Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_IRQ,
+                            global_cycles + 800,
+                            CDROM_IRQSignalCallback);
 }
 
 /* ---- Read CD-ROM register ---- */
@@ -764,36 +763,18 @@ void CDROM_ScheduleEvent(void)
     }
 }
 
-/* ---- Legacy periodic update (retained for deferred delivery + IRQ re-assertion) ---- */
-void CDROM_Update(uint32_t cycles)
+/* ---- Scheduler callback: deliver deferred response after delay ---- */
+static void CDROM_DeferredCallback(void)
 {
-    /* Deliver deferred first response (INT3) after delay */
-    if (cdrom.deferred_delay > 0)
-    {
-        cdrom.deferred_delay -= (int32_t)cycles;
-        if (cdrom.deferred_delay <= 0)
-        {
-            cdrom.deferred_delay = 0;
-            if (cdrom.has_deferred)
-                cdrom_deliver_deferred();
-        }
-    }
+    if (cdrom.has_deferred)
+        cdrom_deliver_deferred();
+}
 
-    /* Delayed I_STAT assertion — models the propagation delay from
-     * the CD-ROM controller to the CPU interrupt line.  This gives
-     * poll-based code one or more block-execution windows to read
-     * int_flag before the ISR fires and clears it. */
+/* ---- Scheduler callback: assert I_STAT bit 2 after propagation delay ---- */
+static void CDROM_IRQSignalCallback(void)
+{
     if (cdrom.int_flag != 0)
-    {
-        if (cdrom.irq_signal_delay > 0)
-        {
-            cdrom.irq_signal_delay -= (int32_t)cycles;
-        }
-        else
-        {
-            SignalInterrupt(2); /* Assert I_STAT bit 2 (CD-ROM) */
-        }
-    }
+        SignalInterrupt(2);
 }
 
 /* ---- Write CD-ROM register ---- */

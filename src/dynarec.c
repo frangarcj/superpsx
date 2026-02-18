@@ -2552,9 +2552,6 @@ void Run_CPU(void)
             stat_total_cycles += cycles;
 #endif
 
-            /* Update CD-ROM deferred delivery + IRQ signal delay */
-            CDROM_Update(cycles);
-
             /* Check for interrupts after each block */
             if (CheckInterrupts())
             {
