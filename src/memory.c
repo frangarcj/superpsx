@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <malloc.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include "superpsx.h"
 
 #define LOG_TAG "MEM"
@@ -49,36 +51,78 @@ void Init_Memory(void)
     printf("  BIOS: %p (512KB)\n", psx_bios);
 }
 
+#include <dirent.h>
+
+int Load_BIOS_From_ROM(void)
+{
+    /* PS2 ROM0 starts at 0xBFC00000 */
+    uint8_t *rom_base = (uint8_t *)0xBFC00000;
+
+    /* Copy first 512KB directly (contains Reset Vector + TBIN/SBIN) */
+    memcpy(psx_bios, rom_base, PSX_BIOS_SIZE);
+
+    /* Verify signature to be sure */
+    const char *sig = "Sony Computer Entertainment Inc.";
+    int found_sig = 0;
+    for(int i = 0; i < PSX_BIOS_SIZE - strlen(sig); i += 4) {
+        if (memcmp(psx_bios + i, sig, strlen(sig)) == 0) {
+            found_sig = 1;
+            break;
+        }
+    }
+
+    if (found_sig) {
+        printf("  Loaded PS1 BIOS from PS2 ROM0 (Sig found).\n");
+        return 0;
+    } else {
+        printf("  WARNING: No PS1 BIOS signature found in ROM0 copy.\n");
+        /* Return 0 anyway as we want to try running it */
+        return 0;
+    }
+}
+
+
 int Load_BIOS(const char *filename)
 {
     printf("Loading BIOS from %s...\n", filename);
     FILE *f = fopen(filename, "rb");
-    if (!f)
+    if (f)
     {
-        printf("  ERROR: Cannot open file\n");
-        return -1;
-    }
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    printf("  BIOS size: %ld bytes\n", size);
-    if (size > PSX_BIOS_SIZE)
-    {
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        printf("  BIOS size: %ld bytes\n", size);
+        if (size > PSX_BIOS_SIZE)
+        {
+            printf("  ERROR: BIOS file too large\n");
+            fclose(f);
+            return -2;
+        }
+        size_t rd = fread(psx_bios, 1, size, f);
         fclose(f);
-        return -2;
+        printf("  BIOS loaded: %lu bytes at %p\n", (unsigned long)rd, psx_bios);
+        
+        /* Print first 4 instructions for verification */
+        uint32_t *bios32 = (uint32_t *)psx_bios;
+        int i;
+        for (i = 0; i < 4; i++)
+        {
+            DLOG("  BIOS[%d]: 0x%08X\n", i, (unsigned)bios32[i]);
+        }
+        return 0;
     }
-    size_t rd = fread(psx_bios, 1, size, f);
-    fclose(f);
-    printf("  BIOS loaded: %lu bytes at %p\n", (unsigned long)rd, psx_bios);
+    
+    printf("  File not found or cannot open. Trying PS2 ROM0...\n");
 
-    /* Print first 4 instructions for verification */
-    uint32_t *bios32 = (uint32_t *)psx_bios;
-    int i;
-    for (i = 0; i < 4; i++)
+    /* Try loading from ROM if file failed */
+    if (Load_BIOS_From_ROM() == 0)
     {
-        DLOG("  BIOS[%d]: 0x%08X\n", i, (unsigned)bios32[i]);
+        printf("  Using PS1 BIOS from PS2 ROM.\n");
+        return 0;
     }
-    return 0;
+
+    /* Both failed */
+    return -1;
 }
 
 /* ---- Address translation ---- */

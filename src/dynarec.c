@@ -2335,12 +2335,13 @@ void Run_CPU(void)
             }
 
             /* === BIOS Shell Hook === */
-            if (pc == 0xBFC06FF0)
+            /* PS2 ROM0 (TBIN/Boot) seems to idle in RAM around 0x001A45A0 - 0x001A4620. */
+            if (pc == 0x80030000 || (pc >= 0x001A45A0 && pc <= 0x001A4620))
             {
                 static int binary_loaded = 0;
                 if (!binary_loaded)
                 {
-                    DLOG("Reached BIOS Shell Entry (0xBFC06FF0). Loading binary...\n");
+                    DLOG("Reached BIOS Idle Loop (PC=%08X). Loading binary...\n", (unsigned)pc);
                     if (psx_boot_mode == BOOT_MODE_ISO)
                     {
                         /* ISO mode: load the boot EXE directly from the mounted ISO */
