@@ -118,6 +118,9 @@ void CDROM_Init(void);
 void CDROM_InsertDisc(void);
 uint32_t CDROM_Read(uint32_t addr);
 void CDROM_Write(uint32_t addr, uint32_t data);
+/* Set by scheduler when CD-ROM int_flag is active and signal delay expired.
+ * Checked inline in dynarec loop for cheap level-triggered re-assertion. */
+extern uint8_t cdrom_irq_active;
 void CDROM_ScheduleEvent(void);
 uint32_t CDROM_ReadDataFIFO(uint8_t *dst, uint32_t count);
 

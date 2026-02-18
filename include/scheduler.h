@@ -35,8 +35,8 @@
 #define SCHED_EVENT_TIMER2          2
 #define SCHED_EVENT_VBLANK          3
 #define SCHED_EVENT_CDROM           4
-#define SCHED_EVENT_CDROM_DEFERRED  5
-#define SCHED_EVENT_CDROM_IRQ       6
+#define SCHED_EVENT_CDROM_DEFERRED  5  /* Deferred first-response delivery */
+#define SCHED_EVENT_CDROM_IRQ       6  /* IRQ signal delay (I_STAT assertion) */
 #define SCHED_EVENT_COUNT           7
 
 /* ---- Callback type ---- */

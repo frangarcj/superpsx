@@ -181,6 +181,7 @@ void DumpVRAM(const char *filename);
 /* gpu_texture.c — CLUT texture decode */
 uint32_t Apply_Tex_Window_U(uint32_t u);
 uint32_t Apply_Tex_Window_V(uint32_t v);
+extern uint32_t vram_gen_counter;
 int Decode_CLUT4_Texture(int clut_x, int clut_y, int tex_x, int tex_y,
                          int u0, int v0, int tw, int th);
 int Decode_CLUT8_Texture(int clut_x, int clut_y, int tex_x, int tex_y,

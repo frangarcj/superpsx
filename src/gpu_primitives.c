@@ -908,6 +908,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
         // Update shadow VRAM for filled area
         if (psx_vram_shadow)
         {
+            vram_gen_counter++;
             uint16_t psx_color = ((r >> 3) & 0x1F) | (((g >> 3) & 0x1F) << 5) | (((b >> 3) & 0x1F) << 10);
             for (int row = y; row < y + h && row < 512; row++)
             {
