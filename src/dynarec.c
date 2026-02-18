@@ -216,6 +216,28 @@ static void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset);
 static uint32_t blocks_compiled = 0;
 static uint32_t total_instructions = 0;
 
+/* ---- Dynarec Performance Counters (Baseline) ---- */
+static uint64_t stat_cache_hits    = 0; /* lookup_block found a block */
+static uint64_t stat_cache_misses  = 0; /* lookup_block returned NULL -> compile */
+static uint64_t stat_cache_collisions = 0; /* hash slot had different psx_pc */
+static uint64_t stat_blocks_executed  = 0; /* total block executions */
+static uint64_t stat_total_cycles     = 0; /* accumulated PSX cycles */
+
+static void dynarec_print_stats(void)
+{
+    uint64_t total_lookups = stat_cache_hits + stat_cache_misses;
+    printf("[DYNAREC STATS]\n");
+    printf("  Blocks executed : %llu\n", (unsigned long long)stat_blocks_executed);
+    printf("  Cache hits      : %llu (%.1f%%)\n",
+           (unsigned long long)stat_cache_hits,
+           total_lookups ? (double)stat_cache_hits * 100.0 / total_lookups : 0.0);
+    printf("  Cache misses    : %llu (compiles)\n", (unsigned long long)stat_cache_misses);
+    printf("  Cache collisions: %llu\n", (unsigned long long)stat_cache_collisions);
+    printf("  Blocks compiled : %u\n", (unsigned)blocks_compiled);
+    printf("  PSX cycles      : %llu\n", (unsigned long long)stat_total_cycles);
+    fflush(stdout);
+}
+
 /* Accumulated cycle cost during compile_block */
 static uint32_t block_cycle_count = 0;
 
@@ -1857,8 +1879,14 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
 static uint32_t *lookup_block(uint32_t psx_pc)
 {
     uint32_t idx = (psx_pc >> 2) & BLOCK_CACHE_MASK;
-    if (block_cache[idx].psx_pc == psx_pc)
+    if (block_cache[idx].psx_pc == psx_pc && block_cache[idx].native)
+    {
+        stat_cache_hits++;
         return block_cache[idx].native;
+    }
+    if (block_cache[idx].native != NULL && block_cache[idx].psx_pc != psx_pc)
+        stat_cache_collisions++;
+    stat_cache_misses++;
     return NULL;
 }
 
@@ -2082,6 +2110,8 @@ void Run_CPU(void)
             if (cycles == 0)
                 cycles = 8;
             global_cycles += cycles;
+            stat_blocks_executed++;
+            stat_total_cycles += cycles;
 
             /* Update CD-ROM deferred delivery + IRQ signal delay */
             CDROM_Update(cycles);
@@ -2102,6 +2132,10 @@ void Run_CPU(void)
             }
 
             iterations++;
+
+            /* ---- Periodic stats dump ---- */
+            if ((iterations & 0x7FFFF) == 0)  /* every ~512K iterations */
+                dynarec_print_stats();
 
 #ifdef ENABLE_STUCK_DETECTION
             if (pc == stuck_pc)

@@ -7,9 +7,11 @@ EE_OBJS = src/main.o src/memory.o src/cpu.o src/hardware.o \
 EE_LIBS = -lpatches -lps2_drivers -ldebug -lgraph -ldma -ldraw -lmath3d
 
 # Remove -DENABLE_VRAM_DUMP to disable VRAM dumping (improves performance)
-ENABLE_VRAM_DUMP ?= 1
+ENABLE_VRAM_DUMP ?= 0
 ENABLE_HOST_LOG ?= 1
 ENABLE_DEBUG_LOG ?= 1
+# Set ENABLE_PROFILING=1 to build with gprof instrumentation (libprofglue)
+ENABLE_PROFILING ?= 0
 
 EE_CFLAGS = -I$(PS2SDK)/ee/include -I$(PS2SDK)/common/include -I$(PS2SDK)/ports/include -Iinclude -O2 -G0 -Wall -DENABLE_STUCK_DETECTION
 EE_LDFLAGS = -L$(PS2SDK)/ee/lib -L$(PS2SDK)/ports/lib
@@ -40,7 +42,17 @@ ifeq ($(ENABLE_VRAM_DUMP), 1)
 	EE_CFLAGS += -DENABLE_VRAM_DUMP
 endif
 
+ifeq ($(ENABLE_PROFILING), 1)
+	EE_CFLAGS += -pg -DENABLE_PROFILING
+	EE_LDFLAGS += -pg
+	EE_LIBS := -lprofglue $(EE_LIBS)
+endif
+
 all: $(EE_BIN)
+
+profile: ENABLE_PROFILING=1
+profile: ENABLE_VRAM_DUMP=0
+profile: $(EE_BIN)
 
 clean:
 	rm -f $(EE_BIN) $(EE_OBJS)
