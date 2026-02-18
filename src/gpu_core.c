@@ -206,6 +206,18 @@ void Update_GS_Display(void)
     int dh = psx_h - 1;
     int magv = 0;
 
+    /* In interlaced GS mode the display height is counted in half-lines.
+     * When the PSX content is single-height (vres=0, i.e. 240 lines) but
+     * interlace is active, we must double DH so each field still gets 240
+     * lines, and set MAGV=1 (2× vertical magnification) so the 240 source
+     * lines expand to fill the full 480-line interlaced output.  Without
+     * this the image only occupies half the screen. */
+    if (disp_interlace && !disp_vres)
+    {
+        dh = psx_h * 2 - 1;
+        magv = 1;
+    }
+
     /* 5. Centering (DX, DY) */
     int dx_start_ntsc = 650;
     int dx_start_pal = 680;
