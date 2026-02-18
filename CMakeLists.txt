@@ -32,6 +32,7 @@ option(ENABLE_DYNAREC_STATS "Enable dynarec execution statistics" OFF)
 # ============================================================================
 set(SUPERPSX_SOURCES
     src/main.c
+    src/config.c
     src/memory.c
     src/cpu.c
     src/hardware.c
@@ -130,6 +131,18 @@ foreach(_data_dir bios tests isos tools)
         endif()
     endif()
 endforeach()
+
+# Copy superpsx.ini into the build directory if it exists
+if(EXISTS "${CMAKE_SOURCE_DIR}/superpsx.ini")
+    if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/superpsx.ini")
+        file(CREATE_LINK
+            "${CMAKE_SOURCE_DIR}/superpsx.ini"
+            "${CMAKE_CURRENT_BINARY_DIR}/superpsx.ini"
+            SYMBOLIC
+        )
+        message(STATUS "Linked superpsx.ini into build directory")
+    endif()
+endif()
 
 # ============================================================================
 # PCSX2 runner settings

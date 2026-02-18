@@ -11,6 +11,7 @@
 #include <ps2_audio_driver.h>
 
 #include "superpsx.h"
+#include "config.h"
 #include "joystick.h"
 #include "iso_image.h"
 #include "iso_fs.h"
@@ -24,7 +25,7 @@
 #ifndef PSX_EXE_PATH_MAX
 #define PSX_EXE_PATH_MAX 512
 #endif
-static char psx_exe_filename_buf[PSX_EXE_PATH_MAX] = "test.exe";
+char psx_exe_filename_buf[PSX_EXE_PATH_MAX] = "test.exe";
 const char *psx_exe_filename = psx_exe_filename_buf;
 int psx_boot_mode = BOOT_MODE_EXE;
 
@@ -131,6 +132,20 @@ int main(int argc, char *argv[])
 
         psx_exe_filename = psx_exe_filename_buf;
         printf("Using PSX exe: %s (cwd set to %s)\n", psx_exe_filename, argv[0]);
+    }
+    else
+    {
+        /* No command-line ROM path — try the config file */
+        if (!load_config_file())
+        {
+            printf("No ROM specified via argument or config file.\n");
+            scr_printf("No ROM specified.\nPlace a superpsx.ini next to the ELF with:\n  rom = path/to/game.cue\n");
+            scr_printf("Halting.\n");
+            deinit_drivers();
+            SleepThread();
+            return 1;
+        }
+        printf("Using PSX exe from config: %s\n", psx_exe_filename);
     }
 
     Init_SuperPSX();
