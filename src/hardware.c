@@ -71,6 +71,7 @@ typedef struct
     uint32_t value;
     uint32_t mode;
     uint32_t target;
+    uint64_t last_sync_cycle; /* global_cycles when value was last updated */
 } PsxTimer;
 static PsxTimer timers[3];
 
@@ -97,6 +98,9 @@ static uint16_t spu_regs[512]; /* 0x1F801C00-0x1F801DFF */
 
 /* Cache control */
 static uint32_t cache_control = 0;
+
+/* Forward declaration for timer interpolation in ReadHardware */
+static uint32_t timer_clock_divider(int t);
 
 /* ---- Read ---- */
 uint32_t ReadHardware(uint32_t addr)
@@ -212,7 +216,14 @@ uint32_t ReadHardware(uint32_t addr)
             switch (reg)
             {
             case 0:
-                return timers[t].value; // Return live value
+            {
+                /* Interpolate current counter value based on elapsed cycles */
+                uint32_t divider = timer_clock_divider(t);
+                uint64_t elapsed = global_cycles - timers[t].last_sync_cycle;
+                uint32_t ticks = (uint32_t)(elapsed / divider);
+                uint32_t current = (timers[t].value + ticks) & 0xFFFF;
+                return current;
+            }
             case 1:
                 return timers[t].mode;
             case 2:
@@ -281,9 +292,22 @@ static const sched_callback_t timer_callbacks[3] = {
     Timer_Callback0, Timer_Callback1, Timer_Callback2
 };
 
+/* Sync timer value to current global_cycles (call before reading/modifying value) */
+static void Timer_SyncValue(int t)
+{
+    uint32_t divider = timer_clock_divider(t);
+    uint64_t elapsed = global_cycles - timers[t].last_sync_cycle;
+    uint32_t ticks = (uint32_t)(elapsed / divider);
+    timers[t].value = (timers[t].value + ticks) & 0xFFFF;
+    timers[t].last_sync_cycle = global_cycles;
+}
+
 /* Schedule the next event for timer t based on its current value/target/mode */
 static void Timer_ScheduleOne(int t)
 {
+    /* Sync counter to current cycle before scheduling */
+    Timer_SyncValue(t);
+
     uint32_t mode = timers[t].mode;
     uint32_t val  = timers[t].value & 0xFFFF;
     uint32_t target = timers[t].target & 0xFFFF;
@@ -321,23 +345,17 @@ static void Timer_ScheduleOne(int t)
 /* ---- Timer event callback: fire IRQs, update counter, reschedule ---- */
 static void Timer_FireEvent(int t)
 {
+    /* Sync counter to current cycle first */
+    Timer_SyncValue(t);
+
     uint32_t mode = timers[t].mode;
     uint32_t target = timers[t].target & 0xFFFF;
-
-    /* Figure out how many timer ticks elapsed since we last scheduled.
-     * For simplicity, advance counter to the target or overflow point. */
-    /* We know we fired because we reached the point, so:
-     *  If target match → set value to target (or 0 if reset-on-target)
-     *  If overflow    → set value to 0
-     */
     uint32_t val = timers[t].value & 0xFFFF;
 
     /* Check target match first */
     int hit_target = 0;
-    if ((mode & (1 << 4)) && target > 0 && val < target)
+    if ((mode & (1 << 4)) && target > 0 && val >= target)
     {
-        /* Advance to target */
-        val = target;
         hit_target = 1;
     }
 
@@ -362,6 +380,7 @@ static void Timer_FireEvent(int t)
     }
 
     timers[t].value = val;
+    timers[t].last_sync_cycle = global_cycles;
 
     /* Reschedule for next event */
     Timer_ScheduleOne(t);
@@ -696,10 +715,13 @@ void WriteHardware(uint32_t addr, uint32_t data)
             {
             case 0:
                 timers[t].value = data;
+                timers[t].last_sync_cycle = global_cycles;
                 Timer_ScheduleOne(t); /* Reschedule on value change */
                 break;
             case 1:
+                timers[t].value = 0; /* Writing mode resets counter */
                 timers[t].mode = data;
+                timers[t].last_sync_cycle = global_cycles;
                 Timer_ScheduleOne(t); /* Reschedule on mode change */
                 break;
             case 2:
