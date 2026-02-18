@@ -136,6 +136,10 @@ static inline void emit(uint32_t inst)
 #define REG_S1 17
 #define REG_S2 18
 #define REG_S3 19
+#define REG_S4 20  /* Pinned: PSX $sp (29) */
+#define REG_S5 21  /* Pinned: PSX $ra (31) */
+#define REG_S6 22  /* Pinned: PSX $v0 (2)  */
+#define REG_S7 23  /* Pinned: PSX $s8 (30) */
 #define REG_T0 8
 #define REG_T1 9
 #define REG_T2 10
@@ -147,12 +151,24 @@ static inline void emit(uint32_t inst)
 #define REG_SP 29
 #define REG_ZERO 0
 
+/* PSX register → native pinned register (0 = not pinned) */
+static const int psx_pinned_reg[32] = {
+    [2]  = REG_S6,  /* PSX $v0 → native $s6 */
+    [29] = REG_S4,  /* PSX $sp → native $s4 */
+    [30] = REG_S7,  /* PSX $s8 → native $s7 */
+    [31] = REG_S5,  /* PSX $ra → native $s5 */
+};
+
 /* Load PSX register 'r' from cpu struct into hw reg 'hwreg' */
 static void emit_load_psx_reg(int hwreg, int r)
 {
     if (r == 0)
     {
         EMIT_MOVE(hwreg, REG_ZERO); /* $0 is always 0 */
+    }
+    else if (psx_pinned_reg[r])
+    {
+        EMIT_MOVE(hwreg, psx_pinned_reg[r]); /* pinned register */
     }
     else
     {
@@ -165,7 +181,43 @@ static void emit_store_psx_reg(int r, int hwreg)
 {
     if (r == 0)
         return; /* never write to $0 */
+    if (psx_pinned_reg[r])
+    {
+        EMIT_MOVE(psx_pinned_reg[r], hwreg); /* pinned register */
+        return;
+    }
     EMIT_SW(hwreg, CPU_REG(r), REG_S0);
+}
+
+/* Flush pinned PSX registers to cpu struct before JAL to C helpers.
+ * This ensures cpu.regs[] is consistent for C code and exception handlers. */
+static void emit_flush_pinned(void)
+{
+    EMIT_SW(REG_S4, CPU_REG(29), REG_S0);  /* PSX $sp */
+    EMIT_SW(REG_S5, CPU_REG(31), REG_S0);  /* PSX $ra */
+    EMIT_SW(REG_S6, CPU_REG(2),  REG_S0);  /* PSX $v0 */
+    EMIT_SW(REG_S7, CPU_REG(30), REG_S0);  /* PSX $s8 */
+}
+
+/* Reload pinned PSX registers from cpu struct after JAL returns.
+ * C functions may have modified cpu.regs[] directly. */
+static void emit_reload_pinned(void)
+{
+    EMIT_LW(REG_S4, CPU_REG(29), REG_S0);  /* PSX $sp */
+    EMIT_LW(REG_S5, CPU_REG(31), REG_S0);  /* PSX $ra */
+    EMIT_LW(REG_S6, CPU_REG(2),  REG_S0);  /* PSX $v0 */
+    EMIT_LW(REG_S7, CPU_REG(30), REG_S0);  /* PSX $s8 */
+}
+
+/* Emit a JAL to a C helper function with pinned register sync.
+ * Flushes pinned regs to cpu struct before call (for exception safety),
+ * and reloads them after return (C code may have modified cpu.regs[]). */
+static void emit_call_c(uint32_t func_addr)
+{
+    emit_flush_pinned();
+    EMIT_JAL_ABS((uint32_t)func_addr);
+    EMIT_NOP();
+    emit_reload_pinned();
 }
 
 /* Load 32-bit immediate into hw register */
@@ -1074,32 +1126,51 @@ static uint32_t *compile_block(uint32_t psx_pc)
     return block_start;
 }
 
-/* ---- Block prologue: save callee-saved regs, set up $s0-$s2 ---- */
+/* ---- Block prologue: save callee-saved regs, set up $s0-$s2, load pinned ---- */
 static void emit_block_prologue(void)
 {
-    /* addiu $sp, $sp, -48 */
-    EMIT_ADDIU(REG_SP, REG_SP, -48);
-    /* save $ra, $s0-$s3 */
+    /* addiu $sp, $sp, -80 */
+    EMIT_ADDIU(REG_SP, REG_SP, -80);
+    /* save $ra, $s0-$s7 */
     EMIT_SW(REG_RA, 44, REG_SP);
     EMIT_SW(REG_S0, 40, REG_SP);
     EMIT_SW(REG_S1, 36, REG_SP);
     EMIT_SW(REG_S2, 32, REG_SP);
     EMIT_SW(REG_S3, 28, REG_SP);
+    EMIT_SW(REG_S4, 48, REG_SP);
+    EMIT_SW(REG_S5, 52, REG_SP);
+    EMIT_SW(REG_S6, 56, REG_SP);
+    EMIT_SW(REG_S7, 60, REG_SP);
     /* $s0 = $a0 (cpu ptr), $s1 = $a1 (ram), $s2 = $a2 (bios) */
     EMIT_MOVE(REG_S0, REG_A0);
     EMIT_MOVE(REG_S1, REG_A1);
     EMIT_MOVE(REG_S2, 6); /* $a2 = register 6 */
+    /* Load pinned PSX registers from cpu struct */
+    EMIT_LW(REG_S4, CPU_REG(29), REG_S0);  /* PSX $sp */
+    EMIT_LW(REG_S5, CPU_REG(31), REG_S0);  /* PSX $ra */
+    EMIT_LW(REG_S6, CPU_REG(2),  REG_S0);  /* PSX $v0 */
+    EMIT_LW(REG_S7, CPU_REG(30), REG_S0);  /* PSX $s8 */
 }
 
-/* ---- Block epilogue: restore and return ---- */
+/* ---- Block epilogue: flush pinned, restore and return ---- */
 static void emit_block_epilogue(void)
 {
+    /* Flush pinned PSX registers back to cpu struct */
+    EMIT_SW(REG_S4, CPU_REG(29), REG_S0);  /* PSX $sp */
+    EMIT_SW(REG_S5, CPU_REG(31), REG_S0);  /* PSX $ra */
+    EMIT_SW(REG_S6, CPU_REG(2),  REG_S0);  /* PSX $v0 */
+    EMIT_SW(REG_S7, CPU_REG(30), REG_S0);  /* PSX $s8 */
+    /* Restore callee-saved */
+    EMIT_LW(REG_S7, 60, REG_SP);
+    EMIT_LW(REG_S6, 56, REG_SP);
+    EMIT_LW(REG_S5, 52, REG_SP);
+    EMIT_LW(REG_S4, 48, REG_SP);
     EMIT_LW(REG_S3, 28, REG_SP);
     EMIT_LW(REG_S2, 32, REG_SP);
     EMIT_LW(REG_S1, 36, REG_SP);
     EMIT_LW(REG_S0, 40, REG_SP);
     EMIT_LW(REG_RA, 44, REG_SP);
-    EMIT_ADDIU(REG_SP, REG_SP, 48);
+    EMIT_ADDIU(REG_SP, REG_SP, 80);
     EMIT_JR(REG_RA);
     EMIT_NOP();
 }
@@ -1110,6 +1181,12 @@ static void emit_branch_epilogue(uint32_t target_pc)
     emit_load_imm32(REG_T0, target_pc);
     EMIT_SW(REG_T0, CPU_PC, REG_S0);
 
+    /* Flush pinned PSX registers back to cpu struct */
+    EMIT_SW(REG_S4, CPU_REG(29), REG_S0);  /* PSX $sp */
+    EMIT_SW(REG_S5, CPU_REG(31), REG_S0);  /* PSX $ra */
+    EMIT_SW(REG_S6, CPU_REG(2),  REG_S0);  /* PSX $v0 */
+    EMIT_SW(REG_S7, CPU_REG(30), REG_S0);  /* PSX $s8 */
+
     /* Prepare argument registers for the next block's prologue (which expects
      * $a0=cpu, $a1=ram, $a2=bios).  We copy from $s0-$s2 BEFORE restoring. */
     EMIT_MOVE(REG_A0, REG_S0); /* a0 = cpu ptr */
@@ -1117,12 +1194,16 @@ static void emit_branch_epilogue(uint32_t target_pc)
     EMIT_MOVE(REG_A2, REG_S2); /* a2 = bios ptr */
 
     /* Restore callee-saved and stack */
+    EMIT_LW(REG_S7, 60, REG_SP);
+    EMIT_LW(REG_S6, 56, REG_SP);
+    EMIT_LW(REG_S5, 52, REG_SP);
+    EMIT_LW(REG_S4, 48, REG_SP);
     EMIT_LW(REG_S3, 28, REG_SP);
     EMIT_LW(REG_S2, 32, REG_SP);
     EMIT_LW(REG_S1, 36, REG_SP);
     EMIT_LW(REG_S0, 40, REG_SP);
     EMIT_LW(REG_RA, 44, REG_SP);
-    EMIT_ADDIU(REG_SP, REG_SP, 48);
+    EMIT_ADDIU(REG_SP, REG_SP, 80);
 
     /* Direct link: J to next block's prologue (tail call).
      * $a0-$a2 are set up above so the prologue can configure $s0-$s2.
@@ -1198,10 +1279,8 @@ static void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset)
         int32_t soff2 = (int32_t)(code_ptr - range_branch - 1);
         *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff2 & 0xFFFF);
         EMIT_MOVE(REG_A0, REG_T0);
-        EMIT_JAL_ABS((uint32_t)ReadWord);
-        EMIT_NOP();
-
-        /* @done */
+        emit_call_c((uint32_t)ReadWord);
+/* @done */
         int32_t doff = (int32_t)(code_ptr - fast_done - 1);
         *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
 
@@ -1217,10 +1296,8 @@ static void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset)
         func_addr = (uint32_t)ReadHalf;
     else
         func_addr = (uint32_t)ReadByte;
-    EMIT_JAL_ABS(func_addr);
-    EMIT_NOP();
-
-    if (!dynarec_load_defer)
+    emit_call_c((uint32_t)func_addr);
+if (!dynarec_load_defer)
         emit_store_psx_reg(rt_psx, REG_V0);
 }
 
@@ -1249,17 +1326,17 @@ static void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t of
         if (size == 1)
         {
             /* Sign extend byte: sll 24, sra 24 */
-            EMIT_LW(REG_T0, CPU_REG(rt_psx), REG_S0);
+            emit_load_psx_reg(REG_T0, rt_psx);
             emit(MK_R(0, 0, REG_T0, REG_T0, 24, 0x00)); /* SLL $t0, $t0, 24 */
             emit(MK_R(0, 0, REG_T0, REG_T0, 24, 0x03)); /* SRA $t0, $t0, 24 */
-            EMIT_SW(REG_T0, CPU_REG(rt_psx), REG_S0);
+            emit_store_psx_reg(rt_psx, REG_T0);
         }
         else if (size == 2)
         {
-            EMIT_LW(REG_T0, CPU_REG(rt_psx), REG_S0);
+            emit_load_psx_reg(REG_T0, rt_psx);
             emit(MK_R(0, 0, REG_T0, REG_T0, 16, 0x00)); /* SLL $t0, $t0, 16 */
             emit(MK_R(0, 0, REG_T0, REG_T0, 16, 0x03)); /* SRA $t0, $t0, 16 */
-            EMIT_SW(REG_T0, CPU_REG(rt_psx), REG_S0);
+            emit_store_psx_reg(rt_psx, REG_T0);
         }
     }
 }
@@ -1320,10 +1397,8 @@ static void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff2 & 0xFFFF);
         EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
         EMIT_MOVE(REG_A1, REG_T2); /* a1 = data */
-        EMIT_JAL_ABS((uint32_t)WriteWord);
-        EMIT_NOP();
-
-        /* @done */
+        emit_call_c((uint32_t)WriteWord);
+/* @done */
         int32_t doff = (int32_t)(code_ptr - fast_done - 1);
         *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
         return;
@@ -1337,8 +1412,7 @@ static void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         func_addr = (uint32_t)WriteHalf;
     else
         func_addr = (uint32_t)WriteByte;
-    EMIT_JAL_ABS(func_addr);
-    EMIT_NOP();
+    emit_call_c((uint32_t)func_addr);
 }
 
 /* ---- Emit a non-branch instruction ---- */
@@ -1524,15 +1598,13 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
         case 0x0C: /* SYSCALL */
             /* Trigger proper PSX exception (code 8) */
             emit_load_imm32(REG_A0, psx_pc);
-            EMIT_JAL_ABS((uint32_t)Helper_Syscall_Exception);
-            EMIT_NOP();
-            break;
+            emit_call_c((uint32_t)Helper_Syscall_Exception);
+break;
         case 0x0D: /* BREAK */
             /* Trigger proper PSX exception (code 9) */
             emit_load_imm32(REG_A0, psx_pc);
-            EMIT_JAL_ABS((uint32_t)Helper_Break_Exception);
-            EMIT_NOP();
-            break;
+            emit_call_c((uint32_t)Helper_Break_Exception);
+break;
         case 0x10: /* MFHI */
             EMIT_LW(REG_T0, CPU_HI, REG_S0);
             emit_store_psx_reg(rd, REG_T0);
@@ -1575,9 +1647,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
             /* $a2 = &cpu.lo, $a3 = &cpu.hi */
             EMIT_ADDIU(6, REG_S0, CPU_LO); /* a2 = s0 + CPU_LO */
             EMIT_ADDIU(7, REG_S0, CPU_HI); /* a3 = s0 + CPU_HI */
-            EMIT_JAL_ABS((uint32_t)Helper_DIV);
-            EMIT_NOP();
-            break;
+            emit_call_c((uint32_t)Helper_DIV);
+break;
         }
         case 0x1B: /* DIVU */
         {
@@ -1586,18 +1657,16 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
             emit_load_psx_reg(REG_A1, rt);
             EMIT_ADDIU(6, REG_S0, CPU_LO); /* a2 = s0 + CPU_LO */
             EMIT_ADDIU(7, REG_S0, CPU_HI); /* a3 = s0 + CPU_HI */
-            EMIT_JAL_ABS((uint32_t)Helper_DIVU);
-            EMIT_NOP();
-            break;
+            emit_call_c((uint32_t)Helper_DIVU);
+break;
         }
         case 0x20:                         /* ADD (with overflow check) */
             emit_load_psx_reg(REG_A0, rs); /* a0 = rs_val */
             emit_load_psx_reg(REG_A1, rt); /* a1 = rt_val */
             emit_load_imm32(6, rd);        /* a2 = rd index */
             emit_load_imm32(7, psx_pc);    /* a3 = PC */
-            EMIT_JAL_ABS((uint32_t)Helper_ADD);
-            EMIT_NOP();
-            break;
+            emit_call_c((uint32_t)Helper_ADD);
+break;
         case 0x21: /* ADDU */
             emit_load_psx_reg(REG_T0, rs);
             emit_load_psx_reg(REG_T1, rt);
@@ -1609,9 +1678,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
             emit_load_psx_reg(REG_A1, rt); /* a1 = rt_val */
             emit_load_imm32(6, rd);        /* a2 = rd index */
             emit_load_imm32(7, psx_pc);    /* a3 = PC */
-            EMIT_JAL_ABS((uint32_t)Helper_SUB);
-            EMIT_NOP();
-            break;
+            emit_call_c((uint32_t)Helper_SUB);
+break;
         case 0x23: /* SUBU */
             emit_load_psx_reg(REG_T0, rs);
             emit_load_psx_reg(REG_T1, rt);
@@ -1668,9 +1736,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
         emit_load_imm32(REG_A1, (uint32_t)(int32_t)imm); /* a1 = sign-extended imm */
         emit_load_imm32(6, rt);                          /* a2 = rt index */
         emit_load_imm32(7, psx_pc);                      /* a3 = PC */
-        EMIT_JAL_ABS((uint32_t)Helper_ADDI);
-        EMIT_NOP();
-        break;
+        emit_call_c((uint32_t)Helper_ADDI);
+break;
     }
     case 0x09: /* ADDIU */
         emit_load_psx_reg(REG_T0, rs);
@@ -1728,9 +1795,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
             {
                 /* Call debug_mtc0_sr(val) for SR writes */
                 EMIT_MOVE(REG_A0, REG_T0);
-                EMIT_JAL_ABS((uint32_t)debug_mtc0_sr);
-                EMIT_NOP();
-            }
+                emit_call_c((uint32_t)debug_mtc0_sr);
+}
             else
             {
                 EMIT_SW(REG_T0, CPU_COP0(rd), REG_S0);
@@ -1774,9 +1840,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
         emit(MK_I(0x05, REG_T0, REG_ZERO, 0)); /* bne t0, zero, skip */
         EMIT_NOP();
         /* CU1 not set -> fire exception */
-        EMIT_JAL_ABS((uint32_t)Helper_CU_Exception);
-        EMIT_NOP();
-        /* Patch skip target */
+        emit_call_c((uint32_t)Helper_CU_Exception);
+/* Patch skip target */
         *skip_patch_1 = (*skip_patch_1 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_patch_1 - 1) & 0xFFFF);
         /* COP1 doesn't exist on PSX, so if enabled we just NOP */
         break;
@@ -1794,9 +1859,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 2); /* cop_num = 2 */
-        EMIT_JAL_ABS((uint32_t)Helper_CU_Exception);
-        EMIT_NOP();
-        *skip_cu2 = (*skip_cu2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu2 - 1) & 0xFFFF);
+        emit_call_c((uint32_t)Helper_CU_Exception);
+*skip_cu2 = (*skip_cu2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu2 - 1) & 0xFFFF);
 
         if (total_instructions < 20000000)
         { // Log COP2 instructions
@@ -1820,34 +1884,30 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
             {                                /* MFC2 rt, rd - read GTE data register */
                 EMIT_MOVE(REG_A0, REG_S0);   /* a0 = cpu */
                 emit_load_imm32(REG_A1, rd); /* a1 = reg index */
-                EMIT_JAL_ABS((uint32_t)GTE_ReadData);
-                EMIT_NOP();
-                emit_store_psx_reg(rt, REG_V0); /* rt = result */
+                emit_call_c((uint32_t)GTE_ReadData);
+emit_store_psx_reg(rt, REG_V0); /* rt = result */
             }
             else if (rs == 0x02)
             {                                /* CFC2 rt, rd - read GTE control register */
                 EMIT_MOVE(REG_A0, REG_S0);   /* a0 = cpu */
                 emit_load_imm32(REG_A1, rd); /* a1 = reg index */
-                EMIT_JAL_ABS((uint32_t)GTE_ReadCtrl);
-                EMIT_NOP();
-                emit_store_psx_reg(rt, REG_V0); /* rt = result */
+                emit_call_c((uint32_t)GTE_ReadCtrl);
+emit_store_psx_reg(rt, REG_V0); /* rt = result */
             }
             else if (rs == 0x04)
             {                                /* MTC2 rt, rd - write GTE data register */
                 EMIT_MOVE(REG_A0, REG_S0);   /* a0 = cpu */
                 emit_load_imm32(REG_A1, rd); /* a1 = reg index */
                 emit_load_psx_reg(6, rt);    /* a2 = value */
-                EMIT_JAL_ABS((uint32_t)GTE_WriteData);
-                EMIT_NOP();
-            }
+                emit_call_c((uint32_t)GTE_WriteData);
+}
             else if (rs == 0x06)
             {                                /* CTC2 rt, rd - write GTE control register */
                 EMIT_MOVE(REG_A0, REG_S0);   /* a0 = cpu */
                 emit_load_imm32(REG_A1, rd); /* a1 = reg index */
                 emit_load_psx_reg(6, rt);    /* a2 = value */
-                EMIT_JAL_ABS((uint32_t)GTE_WriteCtrl);
-                EMIT_NOP();
-            }
+                emit_call_c((uint32_t)GTE_WriteCtrl);
+}
             else
             {
                 if (total_instructions < 100)
@@ -1867,9 +1927,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
                 EMIT_LW(REG_A0, 0, REG_T0);        /* a0 = *(psx_ram + phys) = current opcode */
             }
             EMIT_MOVE(REG_A1, REG_S0);
-            EMIT_JAL_ABS((uint32_t)GTE_Execute);
-            EMIT_NOP();
-        }
+            emit_call_c((uint32_t)GTE_Execute);
+}
         break;
     }
 
@@ -1885,9 +1944,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 3); /* cop_num = 3 */
-        EMIT_JAL_ABS((uint32_t)Helper_CU_Exception);
-        EMIT_NOP();
-        *skip_cu3 = (*skip_cu3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu3 - 1) & 0xFFFF);
+        emit_call_c((uint32_t)Helper_CU_Exception);
+*skip_cu3 = (*skip_cu3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu3 - 1) & 0xFFFF);
         /* COP3 doesn't exist on PSX, NOP if enabled */
         break;
     }
@@ -1930,9 +1988,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
             EMIT_LW(REG_A1, CPU_LOAD_DELAY_VAL, REG_S0);
         else
             emit_load_psx_reg(REG_A1, rt);
-        EMIT_JAL_ABS((uint32_t)Helper_LWL);
-        EMIT_NOP();
-        if (!dynarec_load_defer)
+        emit_call_c((uint32_t)Helper_LWL);
+if (!dynarec_load_defer)
             emit_store_psx_reg(rt, REG_V0);
         break;
     }
@@ -1945,9 +2002,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
             EMIT_LW(REG_A1, CPU_LOAD_DELAY_VAL, REG_S0);
         else
             emit_load_psx_reg(REG_A1, rt);
-        EMIT_JAL_ABS((uint32_t)Helper_LWR);
-        EMIT_NOP();
-        if (!dynarec_load_defer)
+        emit_call_c((uint32_t)Helper_LWR);
+if (!dynarec_load_defer)
             emit_store_psx_reg(rt, REG_V0);
         break;
     }
@@ -1957,9 +2013,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
         emit_load_psx_reg(REG_A0, rs);
         EMIT_ADDIU(REG_A0, REG_A0, imm);
         emit_load_psx_reg(REG_A1, rt);
-        EMIT_JAL_ABS((uint32_t)Helper_SWL);
-        EMIT_NOP();
-        break;
+        emit_call_c((uint32_t)Helper_SWL);
+break;
     }
     case 0x2E: /* SWR */
     {
@@ -1967,9 +2022,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
         emit_load_psx_reg(REG_A0, rs);
         EMIT_ADDIU(REG_A0, REG_A0, imm);
         emit_load_psx_reg(REG_A1, rt);
-        EMIT_JAL_ABS((uint32_t)Helper_SWR);
-        EMIT_NOP();
-        break;
+        emit_call_c((uint32_t)Helper_SWR);
+break;
     }
 
     /* LWC0 - CU check for COP0 (SWC0/LWC0 respect CU0 bit, unlike MFC0/MTC0) */
@@ -1984,9 +2038,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 0); /* cop_num = 0 */
-        EMIT_JAL_ABS((uint32_t)Helper_CU_Exception);
-        EMIT_NOP();
-        *skip_lwc0 = (*skip_lwc0 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc0 - 1) & 0xFFFF);
+        emit_call_c((uint32_t)Helper_CU_Exception);
+*skip_lwc0 = (*skip_lwc0 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc0 - 1) & 0xFFFF);
         /* COP0 has no actual coprocessor data registers to load into, so NOP if enabled */
         break;
     }
@@ -2003,23 +2056,20 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 2); /* cop_num = 2 */
-        EMIT_JAL_ABS((uint32_t)Helper_CU_Exception);
-        EMIT_NOP();
-        *skip_lwc2 = (*skip_lwc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc2 - 1) & 0xFFFF);
+        emit_call_c((uint32_t)Helper_CU_Exception);
+*skip_lwc2 = (*skip_lwc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc2 - 1) & 0xFFFF);
 
         // LWC2 rt, offset(base)
         // rt is destination in CP2 Data Registers
         emit_load_psx_reg(REG_A0, rs);
         EMIT_ADDIU(REG_A0, REG_A0, imm);
-        EMIT_JAL_ABS((uint32_t)ReadWord);
-        EMIT_NOP();
-        // Write result through GTE helper for proper register behavior
+        emit_call_c((uint32_t)ReadWord);
+// Write result through GTE helper for proper register behavior
         EMIT_MOVE(REG_A0, REG_S0);   /* a0 = cpu */
         emit_load_imm32(REG_A1, rt); /* a1 = reg index */
         EMIT_MOVE(6, REG_V0);        /* a2 = value from ReadWord */
-        EMIT_JAL_ABS((uint32_t)GTE_WriteData);
-        EMIT_NOP();
-    }
+        emit_call_c((uint32_t)GTE_WriteData);
+}
     break;
 
     /* LWC3 */
@@ -2033,9 +2083,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 3); /* cop_num = 3 */
-        EMIT_JAL_ABS((uint32_t)Helper_CU_Exception);
-        EMIT_NOP();
-        *skip_lwc3 = (*skip_lwc3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc3 - 1) & 0xFFFF);
+        emit_call_c((uint32_t)Helper_CU_Exception);
+*skip_lwc3 = (*skip_lwc3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc3 - 1) & 0xFFFF);
         /* COP3 doesn't exist, NOP if enabled */
         break;
     }
@@ -2052,9 +2101,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 0); /* cop_num = 0 */
-        EMIT_JAL_ABS((uint32_t)Helper_CU_Exception);
-        EMIT_NOP();
-        *skip_swc0 = (*skip_swc0 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc0 - 1) & 0xFFFF);
+        emit_call_c((uint32_t)Helper_CU_Exception);
+*skip_swc0 = (*skip_swc0 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc0 - 1) & 0xFFFF);
         /* COP0 store: NOP if enabled (no meaningful coprocessor data) */
         break;
     }
@@ -2071,24 +2119,21 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 2); /* cop_num = 2 */
-        EMIT_JAL_ABS((uint32_t)Helper_CU_Exception);
-        EMIT_NOP();
-        *skip_swc2 = (*skip_swc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc2 - 1) & 0xFFFF);
+        emit_call_c((uint32_t)Helper_CU_Exception);
+*skip_swc2 = (*skip_swc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc2 - 1) & 0xFFFF);
 
         // SWC2 rt, offset(base)
         // rt is source from CP2 Data Registers
         // First read the GTE data register through helper
         EMIT_MOVE(REG_A0, REG_S0);   /* a0 = cpu */
         emit_load_imm32(REG_A1, rt); /* a1 = reg index */
-        EMIT_JAL_ABS((uint32_t)GTE_ReadData);
-        EMIT_NOP();
-        // Then write to memory
+        emit_call_c((uint32_t)GTE_ReadData);
+// Then write to memory
         emit_load_psx_reg(REG_A0, rs);
         EMIT_ADDIU(REG_A0, REG_A0, imm);
         EMIT_MOVE(REG_A1, REG_V0); /* a1 = value from GTE_ReadData */
-        EMIT_JAL_ABS((uint32_t)WriteWord);
-        EMIT_NOP();
-    }
+        emit_call_c((uint32_t)WriteWord);
+}
     break;
 
     /* SWC3 */
@@ -2102,9 +2147,8 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 3); /* cop_num = 3 */
-        EMIT_JAL_ABS((uint32_t)Helper_CU_Exception);
-        EMIT_NOP();
-        *skip_swc3 = (*skip_swc3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc3 - 1) & 0xFFFF);
+        emit_call_c((uint32_t)Helper_CU_Exception);
+*skip_swc3 = (*skip_swc3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc3 - 1) & 0xFFFF);
         /* COP3 doesn't exist, NOP if enabled */
         break;
     }
