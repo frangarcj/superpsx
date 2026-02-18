@@ -38,16 +38,21 @@ static uint32_t *code_ptr;
 #define BLOCK_CACHE_BITS 14
 #define BLOCK_CACHE_SIZE (1 << BLOCK_CACHE_BITS)
 #define BLOCK_CACHE_MASK (BLOCK_CACHE_SIZE - 1)
+/* Overflow node pool for collision chaining (max extra nodes) */
+#define BLOCK_NODE_POOL_SIZE 4096
 
-typedef struct
+typedef struct BlockEntry
 {
     uint32_t psx_pc;
     uint32_t *native;
     uint32_t instr_count; /* Number of PSX instructions in this block */
     uint32_t cycle_count; /* Weighted R3000A cycle count for this block */
+    struct BlockEntry *next; /* Collision chain pointer */
 } BlockEntry;
 
-static BlockEntry *block_cache;
+static BlockEntry *block_cache;  /* Primary hash buckets [BLOCK_CACHE_SIZE] */
+static BlockEntry *block_node_pool; /* Overflow pool for chaining */
+static int block_node_pool_idx = 0; /* Next free node in pool */
 
 /* ---- Instruction encoding helpers ---- */
 #define OP(x) (((x) >> 26) & 0x3F)
@@ -1875,16 +1880,22 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
     }
 }
 
-/* ---- Block lookup ---- */
+/* ---- Block lookup (with collision chain traversal) ---- */
 static uint32_t *lookup_block(uint32_t psx_pc)
 {
     uint32_t idx = (psx_pc >> 2) & BLOCK_CACHE_MASK;
-    if (block_cache[idx].psx_pc == psx_pc && block_cache[idx].native)
+    BlockEntry *e = &block_cache[idx];
+    while (e)
     {
-        stat_cache_hits++;
-        return block_cache[idx].native;
+        if (e->native && e->psx_pc == psx_pc)
+        {
+            stat_cache_hits++;
+            return e->native;
+        }
+        e = e->next;
     }
-    if (block_cache[idx].native != NULL && block_cache[idx].psx_pc != psx_pc)
+    /* Not found - check if bucket is occupied (collision) */
+    if (block_cache[idx].native && block_cache[idx].psx_pc != psx_pc)
         stat_cache_collisions++;
     stat_cache_misses++;
     return NULL;
@@ -1893,8 +1904,46 @@ static uint32_t *lookup_block(uint32_t psx_pc)
 static void cache_block(uint32_t psx_pc, uint32_t *native)
 {
     uint32_t idx = (psx_pc >> 2) & BLOCK_CACHE_MASK;
-    block_cache[idx].psx_pc = psx_pc;
-    block_cache[idx].native = native;
+    BlockEntry *bucket = &block_cache[idx];
+
+    /* Case 1: bucket is empty */
+    if (!bucket->native)
+    {
+        bucket->psx_pc = psx_pc;
+        bucket->native = native;
+        return;
+    }
+
+    /* Case 2: same PC - update in place (recompile) */
+    BlockEntry *e = bucket;
+    while (e)
+    {
+        if (e->psx_pc == psx_pc)
+        {
+            e->native = native;
+            return;
+        }
+        e = e->next;
+    }
+
+    /* Case 3: collision - allocate from pool and prepend to chain */
+    if (block_node_pool_idx < BLOCK_NODE_POOL_SIZE)
+    {
+        BlockEntry *node = &block_node_pool[block_node_pool_idx++];
+        node->psx_pc     = psx_pc;
+        node->native     = native;
+        node->instr_count = 0;
+        node->cycle_count = 0;
+        node->next       = bucket->next;
+        bucket->next     = node;
+    }
+    else
+    {
+        /* Pool exhausted: fall back to overwrite (rare) */
+        DLOG("Block node pool exhausted! Overwriting bucket at idx=%u\n", (unsigned)idx);
+        bucket->psx_pc = psx_pc;
+        bucket->native = native;
+    }
 }
 
 /* ---- Public API ---- */
@@ -1919,13 +1968,23 @@ void Init_Dynarec(void)
         return;
     }
 
+    block_node_pool = (BlockEntry *)memalign(64, BLOCK_NODE_POOL_SIZE * sizeof(BlockEntry));
+    if (!block_node_pool)
+    {
+        printf("  ERROR: Failed to allocate block node pool!\n");
+        return;
+    }
+
     code_ptr = code_buffer;
     memset(code_buffer, 0, CODE_BUFFER_SIZE);
     memset(block_cache, 0, BLOCK_CACHE_SIZE * sizeof(BlockEntry));
+    memset(block_node_pool, 0, BLOCK_NODE_POOL_SIZE * sizeof(BlockEntry));
+    block_node_pool_idx = 0;
     blocks_compiled = 0;
     total_instructions = 0;
     printf("  Code buffer at %p, size %d bytes\n", code_buffer, CODE_BUFFER_SIZE);
     printf("  Block cache at %p, %d entries\n", block_cache, BLOCK_CACHE_SIZE);
+    printf("  Block node pool at %p, %d nodes\n", block_node_pool, BLOCK_NODE_POOL_SIZE);
 }
 
 /* ---- Forward declarations for scheduler callbacks ---- */
