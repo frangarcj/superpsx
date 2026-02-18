@@ -2558,6 +2558,16 @@ void Run_CPU(void)
             if (cdrom_irq_active)
                 SignalInterrupt(2);
 
+            /* Delayed SIO (controller) IRQ7.  The PSX BIOS kernel acks the
+             * old IRQ7 ~100 cycles after sending a byte, then polls for the
+             * new one.  Firing IRQ7 immediately would let the ack clear it
+             * before the kernel ever sees it. */
+            if (sio_irq_delay_cycle && global_cycles >= sio_irq_delay_cycle)
+            {
+                sio_irq_delay_cycle = 0;
+                SignalInterrupt(7);
+            }
+
             /* Check for interrupts after each block */
             if (CheckInterrupts())
             {
