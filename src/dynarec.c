@@ -121,6 +121,20 @@ static inline void emit(uint32_t inst)
 #define EMIT_BEQ(rs, rt, off) emit(MK_I(4, (rs), (rt), (off)))
 #define EMIT_BNE(rs, rt, off) emit(MK_I(5, (rs), (rt), (off)))
 
+/* ---- R5900 Specialized Emitters (Section 1.3) ---- */
+#define EMIT_MOVZ(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x0A))
+#define EMIT_MOVN(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x0B))
+#define EMIT_MADD(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x00))
+#define EMIT_MADDU(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x01))
+#define EMIT_MULT1(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x18))
+#define EMIT_MULTU1(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x19))
+#define EMIT_DIV1(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x1A))
+#define EMIT_DIVU1(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x1B))
+#define EMIT_MFLO1(rd) emit(MK_R(0x1C, 0, 0, (rd), 0, 0x12))
+#define EMIT_MFHI1(rd) emit(MK_R(0x1C, 0, 0, (rd), 0, 0x10))
+#define EMIT_MTLO1(rs) emit(MK_R(0x1C, (rs), 0, 0, 0, 0x13))
+#define EMIT_MTHI1(rs) emit(MK_R(0x1C, (rs), 0, 0, 0, 0x11))
+
 /* Hardware register IDs used in generated code:
  *   $s0 (16) = cpu struct ptr
  *   $s1 (17) = psx_ram ptr
@@ -355,7 +369,7 @@ static uint32_t *get_psx_code_ptr(uint32_t psx_pc)
 /* ---- Forward declarations ---- */
 static void emit_block_prologue(void);
 static void emit_block_epilogue(void);
-static void emit_instruction(uint32_t opcode, uint32_t psx_pc);
+static void emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count);
 static void emit_branch_epilogue(uint32_t target_pc);
 static void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset);
 static void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset);
@@ -719,6 +733,7 @@ static uint32_t *compile_block(uint32_t psx_pc)
     /* Load delay slot tracking */
     int pending_load_reg = 0;       /* PSX register with pending load (0=none) */
     int pending_load_apply_now = 0; /* 1 = apply before this instruction */
+    int block_mult_count = 0;      /* Tracking for R5900 pipeline balancing (Section 1.3) */
 
     while (!block_ended)
     {
@@ -745,7 +760,7 @@ static uint32_t *compile_block(uint32_t psx_pc)
             if (pending_load_reg != 0 && (OP(opcode) == 0x22 || OP(opcode) == 0x26) &&
                 pending_load_reg == RT(opcode))
                 dynarec_lwx_pending = 1;
-            emit_instruction(opcode, cur_pc);
+            emit_instruction(opcode, cur_pc, &block_mult_count);
             dynarec_lwx_pending = 0;
             cur_pc += 4;
             total_instructions++;
@@ -1046,7 +1061,7 @@ static uint32_t *compile_block(uint32_t psx_pc)
             if (pending_load_reg != 0 && (OP(opcode) == 0x22 || OP(opcode) == 0x26) &&
                 pending_load_reg == RT(opcode))
                 dynarec_lwx_pending = 1;
-            emit_instruction(opcode, cur_pc);
+            emit_instruction(opcode, cur_pc, &block_mult_count);
             dynarec_lwx_pending = 0;
             dynarec_load_defer = 0;
 
@@ -1540,7 +1555,7 @@ static int BIOS_HLE_C(void)
     return 0; /* Let native code handle it */
 }
 
-static void emit_instruction(uint32_t opcode, uint32_t psx_pc)
+static void emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 {
     uint32_t op = OP(opcode);
     int rs = RS(opcode);
@@ -1624,19 +1639,35 @@ break;
         case 0x18: /* MULT */
             emit_load_psx_reg(REG_T0, rs);
             emit_load_psx_reg(REG_T1, rt);
-            emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x18)); /* mult */
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));      /* mflo */
-            EMIT_SW(REG_T0, CPU_LO, REG_S0);
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10)); /* mfhi */
+            /* Pipeline balancing: use Pipeline 1 for first mult, then Pipeline 0, etc. (Section 1.3) */
+            if (((*mult_count)++ & 1) == 0) {
+                EMIT_MULT1(REG_T0, REG_T1);
+                EMIT_MFLO1(REG_T0);
+                EMIT_SW(REG_T0, CPU_LO, REG_S0);
+                EMIT_MFHI1(REG_T0);
+            } else {
+                emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x18)); /* mult p0 */
+                emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));      /* mflo p0 */
+                EMIT_SW(REG_T0, CPU_LO, REG_S0);
+                emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));      /* mfhi p0 */
+            }
             EMIT_SW(REG_T0, CPU_HI, REG_S0);
             break;
         case 0x19: /* MULTU */
             emit_load_psx_reg(REG_T0, rs);
             emit_load_psx_reg(REG_T1, rt);
-            emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x19)); /* multu */
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));      /* mflo */
-            EMIT_SW(REG_T0, CPU_LO, REG_S0);
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10)); /* mfhi */
+            /* Pipeline balancing (Section 1.3) */
+            if (((*mult_count)++ & 1) == 0) {
+                EMIT_MULTU1(REG_T0, REG_T1);
+                EMIT_MFLO1(REG_T0);
+                EMIT_SW(REG_T0, CPU_LO, REG_S0);
+                EMIT_MFHI1(REG_T0);
+            } else {
+                emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x19)); /* multu p0 */
+                emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));      /* mflo p0 */
+                EMIT_SW(REG_T0, CPU_LO, REG_S0);
+                emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));      /* mfhi p0 */
+            }
             EMIT_SW(REG_T0, CPU_HI, REG_S0);
             break;
         case 0x1A: /* DIV */
