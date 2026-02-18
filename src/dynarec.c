@@ -45,14 +45,32 @@ typedef struct BlockEntry
 {
     uint32_t psx_pc;
     uint32_t *native;
-    uint32_t instr_count; /* Number of PSX instructions in this block */
-    uint32_t cycle_count; /* Weighted R3000A cycle count for this block */
+    uint32_t instr_count;    /* Number of PSX instructions in this block */
+    uint32_t cycle_count;    /* Weighted R3000A cycle count for this block */
     struct BlockEntry *next; /* Collision chain pointer */
 } BlockEntry;
 
-static BlockEntry *block_cache;  /* Primary hash buckets [BLOCK_CACHE_SIZE] */
+static BlockEntry *block_cache;     /* Primary hash buckets [BLOCK_CACHE_SIZE] */
 static BlockEntry *block_node_pool; /* Overflow pool for chaining */
 static int block_node_pool_idx = 0; /* Next free node in pool */
+
+/* ---- Direct Block Linking (Back-Patching) ---- */
+/* Declarations only - definitions appear after the emit helpers */
+#define PATCH_SITE_MAX 8192
+typedef struct
+{
+    uint32_t *site_word; /* Address of the J instruction to overwrite */
+    uint32_t target_psx_pc;
+} PatchSite;
+
+static PatchSite patch_sites[PATCH_SITE_MAX];
+static int patch_sites_count = 0;
+static uint64_t stat_dbl_patches = 0; /* # of back-patches applied */
+
+/* Forward declarations (defined after emit helpers) */
+static void emit_direct_link(uint32_t target_psx_pc);
+static void apply_pending_patches(uint32_t target_psx_pc, uint32_t *native_addr);
+static uint32_t *lookup_block_native(uint32_t psx_pc);
 
 /* ---- Instruction encoding helpers ---- */
 #define OP(x) (((x) >> 26) & 0x3F)
@@ -121,6 +139,7 @@ static inline void emit(uint32_t inst)
 #define REG_T2 10
 #define REG_A0 4
 #define REG_A1 5
+#define REG_A2 6
 #define REG_V0 2
 #define REG_RA 31
 #define REG_SP 29
@@ -167,6 +186,74 @@ static void emit_load_imm32(int hwreg, uint32_t val)
         EMIT_LUI(hwreg, val >> 16);
         EMIT_ORI(hwreg, hwreg, val & 0xFFFF);
     }
+}
+
+/* ---- Direct Block Linking helper implementations ---- */
+/*
+ * lookup_block_native: returns native pointer for psx_pc or NULL.
+ * Defined here (before it is used by emit_direct_link) even though the
+ * full lookup_block (which updates stats) is defined later.
+ */
+static uint32_t *lookup_block_native(uint32_t psx_pc)
+{
+    uint32_t idx = (psx_pc >> 2) & BLOCK_CACHE_MASK;
+    BlockEntry *e = &block_cache[idx];
+    while (e)
+    {
+        if (e->native && e->psx_pc == psx_pc)
+            return e->native;
+        e = e->next;
+    }
+    return NULL;
+}
+
+/*
+ * emit_direct_link: at the end of a block epilogue, emit a J to the
+ * native code of target_psx_pc.  If not compiled yet, emit a J to the
+ * slow-path trampoline (code_buffer[0]) and record a patch site.
+ */
+static void emit_direct_link(uint32_t target_psx_pc)
+{
+    uint32_t *native = lookup_block_native(target_psx_pc);
+    if (native)
+    {
+        /* Target already compiled: jump directly, skipping C overhead */
+        EMIT_J_ABS((uint32_t)native);
+        EMIT_NOP();
+        return;
+    }
+
+    /* Target not compiled yet: record patch site and J to slow-path trampoline */
+    if (patch_sites_count < PATCH_SITE_MAX)
+    {
+        PatchSite *ps = &patch_sites[patch_sites_count++];
+        ps->site_word = code_ptr;
+        ps->target_psx_pc = target_psx_pc;
+    }
+    /* J to slow-path trampoline (code_buffer[0] = JR $ra) */
+    EMIT_J_ABS((uint32_t)code_buffer);
+    EMIT_NOP();
+}
+
+/* apply_pending_patches: back-patch all J stubs waiting for target_psx_pc. */
+static void apply_pending_patches(uint32_t target_psx_pc, uint32_t *native_addr)
+{
+    int i, j;
+    for (i = 0, j = 0; i < patch_sites_count; i++)
+    {
+        PatchSite *ps = &patch_sites[i];
+        if (ps->target_psx_pc == target_psx_pc)
+        {
+            uint32_t j_target = ((uint32_t)native_addr >> 2) & 0x03FFFFFF;
+            *ps->site_word = MK_J(2, j_target);
+            stat_dbl_patches++;
+        }
+        else
+        {
+            patch_sites[j++] = patch_sites[i];
+        }
+    }
+    patch_sites_count = j;
 }
 
 /* ---- Temp buffer for IO code execution ---- */
@@ -222,11 +309,11 @@ static uint32_t blocks_compiled = 0;
 static uint32_t total_instructions = 0;
 
 /* ---- Dynarec Performance Counters (Baseline) ---- */
-static uint64_t stat_cache_hits    = 0; /* lookup_block found a block */
-static uint64_t stat_cache_misses  = 0; /* lookup_block returned NULL -> compile */
+static uint64_t stat_cache_hits = 0;       /* lookup_block found a block */
+static uint64_t stat_cache_misses = 0;     /* lookup_block returned NULL -> compile */
 static uint64_t stat_cache_collisions = 0; /* hash slot had different psx_pc */
-static uint64_t stat_blocks_executed  = 0; /* total block executions */
-static uint64_t stat_total_cycles     = 0; /* accumulated PSX cycles */
+static uint64_t stat_blocks_executed = 0;  /* total block executions */
+static uint64_t stat_total_cycles = 0;     /* accumulated PSX cycles */
 
 static void dynarec_print_stats(void)
 {
@@ -240,6 +327,8 @@ static void dynarec_print_stats(void)
     printf("  Cache collisions: %llu\n", (unsigned long long)stat_cache_collisions);
     printf("  Blocks compiled : %u\n", (unsigned)blocks_compiled);
     printf("  PSX cycles      : %llu\n", (unsigned long long)stat_total_cycles);
+    printf("  DBL patches     : %llu\n", (unsigned long long)stat_dbl_patches);
+    printf("  DBL pending     : %d\n", patch_sites_count);
     fflush(stdout);
 }
 
@@ -528,8 +617,14 @@ static uint32_t *compile_block(uint32_t psx_pc)
     {
         DLOG("Code buffer nearly full (%u/%u), flushing cache\n",
              (unsigned)used, CODE_BUFFER_SIZE);
-        code_ptr = code_buffer;
+        /* Reset code ptr PAST the slow-path trampoline (first 8 words) */
+        code_ptr = code_buffer + 8;
+        memset(code_buffer + 8, 0, CODE_BUFFER_SIZE - 8 * sizeof(uint32_t));
         memset(block_cache, 0, BLOCK_CACHE_SIZE * sizeof(BlockEntry));
+        memset(block_node_pool, 0, BLOCK_NODE_POOL_SIZE * sizeof(BlockEntry));
+        block_node_pool_idx = 0;
+        /* All patch sites are now stale (native addrs invalidated) */
+        patch_sites_count = 0;
         blocks_compiled = 0;
     }
 
@@ -1003,38 +1098,122 @@ static void emit_block_epilogue(void)
 
 static void emit_branch_epilogue(uint32_t target_pc)
 {
+    /* Update cpu.pc (needed for C dispatch and exception handling) */
     emit_load_imm32(REG_T0, target_pc);
     EMIT_SW(REG_T0, CPU_PC, REG_S0);
-    emit_block_epilogue();
+
+    /* Prepare argument registers for the next block's prologue (which expects
+     * $a0=cpu, $a1=ram, $a2=bios).  We copy from $s0-$s2 BEFORE restoring. */
+    EMIT_MOVE(REG_A0, REG_S0); /* a0 = cpu ptr */
+    EMIT_MOVE(REG_A1, REG_S1); /* a1 = ram ptr */
+    EMIT_MOVE(REG_A2, REG_S2); /* a2 = bios ptr */
+
+    /* Restore callee-saved and stack */
+    EMIT_LW(REG_S3, 28, REG_SP);
+    EMIT_LW(REG_S2, 32, REG_SP);
+    EMIT_LW(REG_S1, 36, REG_SP);
+    EMIT_LW(REG_S0, 40, REG_SP);
+    EMIT_LW(REG_RA, 44, REG_SP);
+    EMIT_ADDIU(REG_SP, REG_SP, 48);
+
+    /* Direct link: J to next block's prologue (tail call).
+     * $a0-$a2 are set up above so the prologue can configure $s0-$s2.
+     * $ra is restored so the next block's epilogue returns to C dispatch. */
+    emit_direct_link(target_pc);
 }
 
 /* ---- Memory access emitters ---- */
+/*
+ * Inline RAM fast-path for LW/SW (size==4).
+ * Both paths converge with result in REG_V0.
+ *
+ * Code layout for LW:
+ *   andi   t1, t0, 3          # t0 = effective addr
+ *   bne    t1, zero, @slow
+ *   nop
+ *   lui    t1, 0x1FFF
+ *   ori    t1, t1, 0xFFFF     # t1 = 0x1FFFFFFF (mask)
+ *   and    t1, t0, t1         # t1 = phys_addr
+ *   srl    t2, t1, 12
+ *   sltiu  t2, t2, 0x200      # t2 = (phys < 2MB)
+ *   beq    t2, zero, @slow
+ *   addu   t1, t1, s1         # (delay slot) t1 = psx_ram + phys
+ *   lw     v0, 0(t1)
+ *   b      @done
+ *   nop
+ * @slow:
+ *   move   a0, t0
+ *   jal    ReadWord
+ *   nop
+ * @done:
+ */
 static void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset)
 {
     /* Store current PSX PC for exception handling */
     emit_load_imm32(REG_T2, emit_current_psx_pc);
     EMIT_SW(REG_T2, CPU_CURRENT_PC, REG_S0);
 
-    /* $a0 = PSX address */
-    emit_load_psx_reg(REG_A0, rs_psx);
-    EMIT_ADDIU(REG_A0, REG_A0, offset);
+    /* Compute effective address into REG_T0 */
+    emit_load_psx_reg(REG_T0, rs_psx);
+    EMIT_ADDIU(REG_T0, REG_T0, offset);
 
-    /* Call ReadWord/ReadHalf/ReadByte */
-    uint32_t func_addr;
     if (size == 4)
-        func_addr = (uint32_t)ReadWord;
-    else if (size == 2)
+    {
+        /* Alignment check */
+        emit(MK_I(0x0C, REG_T0, REG_T1, 3)); /* andi  t1, t0, 3 */
+        uint32_t *align_branch = code_ptr;
+        emit(MK_I(0x05, REG_T1, REG_ZERO, 0)); /* bne   t1, zero, @slow */
+        EMIT_NOP();
+
+        /* Physical address mask */
+        EMIT_LUI(REG_T1, 0x1FFF);
+        EMIT_ORI(REG_T1, REG_T1, 0xFFFF);               /* t1 = 0x1FFFFFFF */
+        emit(MK_R(0, REG_T0, REG_T1, REG_T1, 0, 0x24)); /* and t1, t0, t1   t1=phys */
+
+        /* RAM range check: phys < 2MB  (use srl+sltiu, no fancy delay slot tricks) */
+        emit(MK_R(0, 0, REG_T1, REG_T2, 12, 0x02)); /* srl  t2, t1, 12 */
+        emit(MK_I(0x0B, REG_T2, REG_T2, 0x0200));   /* sltiu t2, t2, 0x200 (1=RAM) */
+        uint32_t *range_branch = code_ptr;
+        emit(MK_I(0x04, REG_T2, REG_ZERO, 0)); /* beq  t2, zero, @slow */
+        EMIT_NOP();                            /* delay slot: NOP (safe) */
+
+        /* Fast path: t1 = phys (already masked), add psx_ram base here */
+        EMIT_ADDU(REG_T1, REG_T1, REG_S1); /* t1 = psx_ram + phys */
+        EMIT_LW(REG_V0, 0, REG_T1);        /* v0 = *(psx_ram+phys) */
+        uint32_t *fast_done = code_ptr;
+        emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
+        EMIT_NOP();
+
+        /* Slow path */
+        int32_t soff1 = (int32_t)(code_ptr - align_branch - 1);
+        *align_branch = (*align_branch & 0xFFFF0000) | ((uint32_t)soff1 & 0xFFFF);
+        int32_t soff2 = (int32_t)(code_ptr - range_branch - 1);
+        *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff2 & 0xFFFF);
+        EMIT_MOVE(REG_A0, REG_T0);
+        EMIT_JAL_ABS((uint32_t)ReadWord);
+        EMIT_NOP();
+
+        /* @done */
+        int32_t doff = (int32_t)(code_ptr - fast_done - 1);
+        *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
+
+        if (!dynarec_load_defer)
+            emit_store_psx_reg(rt_psx, REG_V0);
+        return;
+    }
+
+    /* Non-LW: slow path only */
+    EMIT_MOVE(REG_A0, REG_T0);
+    uint32_t func_addr;
+    if (size == 2)
         func_addr = (uint32_t)ReadHalf;
     else
         func_addr = (uint32_t)ReadByte;
-
     EMIT_JAL_ABS(func_addr);
     EMIT_NOP();
 
-    /* Store result ($v0) to PSX reg - unless deferred for load delay */
     if (!dynarec_load_defer)
         emit_store_psx_reg(rt_psx, REG_V0);
-    /* If deferred, result stays in REG_V0 for the caller to save */
 }
 
 static void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t offset)
@@ -1083,19 +1262,73 @@ static void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     emit_load_imm32(REG_T2, emit_current_psx_pc);
     EMIT_SW(REG_T2, CPU_CURRENT_PC, REG_S0);
 
-    /* $a0 = PSX address, $a1 = data */
-    emit_load_psx_reg(REG_A0, rs_psx);
-    EMIT_ADDIU(REG_A0, REG_A0, offset);
-    emit_load_psx_reg(REG_A1, rt_psx);
+    /* Compute effective address into REG_T0, data into REG_T2 */
+    emit_load_psx_reg(REG_T0, rs_psx);
+    EMIT_ADDIU(REG_T0, REG_T0, offset);
+    emit_load_psx_reg(REG_T2, rt_psx); /* data value */
 
-    uint32_t func_addr;
     if (size == 4)
-        func_addr = (uint32_t)WriteWord;
-    else if (size == 2)
+    {
+        /* Cache Isolation check: if SR.IsC (bit 16) is set, writes to KUSEG/KSEG0
+         * must be ignored (it's a cache invalidation, not a real RAM write).
+         * Read SR, shift bit 16 to bit 0, test it; if set go to slow-path. */
+        EMIT_LW(REG_A0, CPU_COP0(12), REG_S0);      /* a0 = SR */
+        emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02)); /* srl  a0, a0, 16 */
+        emit(MK_I(0x0C, REG_A0, REG_A0, 1));        /* andi a0, a0, 1 */
+        uint32_t *isc_branch = code_ptr;
+        emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne  a0, zero, @slow (IsC set) */
+        EMIT_NOP();
+
+        /* Alignment check */
+        emit(MK_I(0x0C, REG_T0, REG_T1, 3)); /* andi  t1, t0, 3 */
+        uint32_t *align_branch = code_ptr;
+        emit(MK_I(0x05, REG_T1, REG_ZERO, 0)); /* bne   t1, zero, @slow */
+        EMIT_NOP();
+
+        /* Physical address mask */
+        EMIT_LUI(REG_T1, 0x1FFF);
+        EMIT_ORI(REG_T1, REG_T1, 0xFFFF);               /* t1 = 0x1FFFFFFF */
+        emit(MK_R(0, REG_T0, REG_T1, REG_T1, 0, 0x24)); /* and t1, t0, t1 */
+
+        /* RAM range check */
+        emit(MK_R(0, 0, REG_T1, REG_A0, 12, 0x02)); /* srl  a0, t1, 12 (use a0 as tmp) */
+        emit(MK_I(0x0B, REG_A0, REG_A0, 0x0200));   /* sltiu a0, a0, 0x200 */
+        uint32_t *range_branch = code_ptr;
+        emit(MK_I(0x04, REG_A0, REG_ZERO, 0)); /* beq  a0, zero, @slow */
+        EMIT_ADDU(REG_T1, REG_T1, REG_S1);     /* (delay slot) t1 = psx_ram+phys */
+
+        /* Fast path: store to RAM */
+        EMIT_SW(REG_T2, 0, REG_T1); /* sw   t2, 0(t1) */
+        uint32_t *fast_done = code_ptr;
+        emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b    @done */
+        EMIT_NOP();
+
+        /* Slow path - back-patch all branch offsets pointing here */
+        int32_t soff0 = (int32_t)(code_ptr - isc_branch - 1);
+        *isc_branch = (*isc_branch & 0xFFFF0000) | ((uint32_t)soff0 & 0xFFFF);
+        int32_t soff1 = (int32_t)(code_ptr - align_branch - 1);
+        *align_branch = (*align_branch & 0xFFFF0000) | ((uint32_t)soff1 & 0xFFFF);
+        int32_t soff2 = (int32_t)(code_ptr - range_branch - 1);
+        *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff2 & 0xFFFF);
+        EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
+        EMIT_MOVE(REG_A1, REG_T2); /* a1 = data */
+        EMIT_JAL_ABS((uint32_t)WriteWord);
+        EMIT_NOP();
+
+        /* @done */
+        int32_t doff = (int32_t)(code_ptr - fast_done - 1);
+        *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
+        return;
+    }
+
+    /* Non-SW: slow path only */
+    EMIT_MOVE(REG_A0, REG_T0);
+    EMIT_MOVE(REG_A1, REG_T2);
+    uint32_t func_addr;
+    if (size == 2)
         func_addr = (uint32_t)WriteHalf;
     else
         func_addr = (uint32_t)WriteByte;
-
     EMIT_JAL_ABS(func_addr);
     EMIT_NOP();
 }
@@ -1930,12 +2163,12 @@ static void cache_block(uint32_t psx_pc, uint32_t *native)
     if (block_node_pool_idx < BLOCK_NODE_POOL_SIZE)
     {
         BlockEntry *node = &block_node_pool[block_node_pool_idx++];
-        node->psx_pc     = psx_pc;
-        node->native     = native;
+        node->psx_pc = psx_pc;
+        node->native = native;
         node->instr_count = 0;
         node->cycle_count = 0;
-        node->next       = bucket->next;
-        bucket->next     = node;
+        node->next = bucket->next;
+        bucket->next = node;
     }
     else
     {
@@ -1982,9 +2215,26 @@ void Init_Dynarec(void)
     block_node_pool_idx = 0;
     blocks_compiled = 0;
     total_instructions = 0;
+
+    /* ---- Slow-path trampoline at code_buffer[0] ----
+     * When a direct-link J has not been patched yet (target not compiled),
+     * the J word is 0 which on MIPS encodes SLL $0,$0,0 (NOP).
+     * We place a real trampoline here: JR $ra / NOP.
+     * This makes unpatched J stubs behave like a normal block return:
+     * the C dispatch loop sees cpu.pc (already written before the J) and
+     * compiles/runs the next block.
+     */
+    code_buffer[0] = MK_R(0, REG_RA, 0, 0, 0, 0x08); /* JR $ra */
+    code_buffer[1] = 0;                              /* NOP (delay slot) */
+    /* Reserve 8 words for trampoline; real compiled blocks start at [8] */
+    code_ptr = code_buffer + 8;
+
     printf("  Code buffer at %p, size %d bytes\n", code_buffer, CODE_BUFFER_SIZE);
     printf("  Block cache at %p, %d entries\n", block_cache, BLOCK_CACHE_SIZE);
     printf("  Block node pool at %p, %d nodes\n", block_node_pool, BLOCK_NODE_POOL_SIZE);
+    printf("  Slow-path trampoline at code_buffer[0] = %p\n", (void *)code_buffer);
+    FlushCache(0);
+    FlushCache(2);
 }
 
 /* ---- Forward declarations for scheduler callbacks ---- */
@@ -2151,6 +2401,10 @@ void Run_CPU(void)
                     continue;
                 }
                 cache_block(pc, block);
+                /* Back-patch any direct links waiting for this PC */
+                apply_pending_patches(pc, block);
+                FlushCache(0);
+                FlushCache(2);
             }
 
             /* Execute the block */
@@ -2193,7 +2447,7 @@ void Run_CPU(void)
             iterations++;
 
             /* ---- Periodic stats dump ---- */
-            if ((iterations & 0x7FFFF) == 0)  /* every ~512K iterations */
+            if ((iterations & 0x7FFFF) == 0) /* every ~512K iterations */
                 dynarec_print_stats();
 
 #ifdef ENABLE_STUCK_DETECTION
