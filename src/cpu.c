@@ -275,8 +275,7 @@ static void EE_ExceptionHandler(int cause)
            (unsigned)cpu.regs[29], (unsigned)cpu.regs[31]);
 
     printf("Halting.\n");
-    while (1)
-        ;
+    SleepThread();
 }
 
 /* ---- Init ---- */

@@ -185,16 +185,14 @@ void Init_SuperPSX(void)
         {
             printf("ERROR: Failed to open disc image: %s\n", psx_exe_filename);
             scr_printf("Failed to open disc image. Halting.\n");
-            while (1)
-                ;
+            SleepThread();
         }
 
         if (ISOFS_Init() < 0)
         {
             printf("ERROR: Failed to parse ISO 9660 filesystem\n");
             scr_printf("Failed to parse ISO. Halting.\n");
-            while (1)
-                ;
+            SleepThread();
         }
 
         /* Report what we found */
@@ -221,8 +219,7 @@ void Init_SuperPSX(void)
     {
         printf("ERROR: Failed to load BIOS!\n");
         scr_printf("Failed to load BIOS. Halting.\n");
-        while (1)
-            ;
+        SleepThread();
     }
 
     Init_CPU();
