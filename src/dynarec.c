@@ -2497,6 +2497,7 @@ void Run_CPU(void)
 
     uint32_t iterations = 0;
     uint32_t next_vram_dump = 1000000;
+    int binary_loaded = 0;
 
 #ifdef ENABLE_STUCK_DETECTION
     static uint32_t stuck_pc = 0;
@@ -2521,31 +2522,19 @@ void Run_CPU(void)
         {
             uint32_t pc = cpu.pc;
 
-            /* === BIOS HLE Intercepts === */
+            /* === BIOS HLE Intercepts (rare — BIOS vectors at 0xA0/B0/C0) === */
+            if (__builtin_expect((pc & 0x1FFFFFFF) <= 0xC0, 0))
             {
                 uint32_t phys_pc = pc & 0x1FFFFFFF;
-                if (phys_pc == 0xA0)
-                {
-                    if (BIOS_HLE_A())
-                        continue;
-                }
-                else if (phys_pc == 0xB0)
-                {
-                    if (BIOS_HLE_B())
-                        continue;
-                }
-                else if (phys_pc == 0xC0)
-                {
-                    if (BIOS_HLE_C())
-                        continue;
-                }
+                if (phys_pc == 0xA0 && BIOS_HLE_A()) continue;
+                if (phys_pc == 0xB0 && BIOS_HLE_B()) continue;
+                if (phys_pc == 0xC0 && BIOS_HLE_C()) continue;
             }
 
-            /* === BIOS Shell Hook === */
-            /* PS2 ROM0 (TBIN/Boot) seems to idle in RAM around 0x001A45A0 - 0x001A4620. */
-            if (pc == 0x80030000 || (pc >= 0x001A45A0 && pc <= 0x001A4620))
+            /* === BIOS Shell Hook (skip once binary is loaded) === */
+            if (__builtin_expect(!binary_loaded, 0) &&
+                (pc == 0x80030000 || (pc >= 0x001A45A0 && pc <= 0x001A4620)))
             {
-                static int binary_loaded = 0;
                 if (!binary_loaded)
                 {
                     DLOG("Reached BIOS Idle Loop (PC=%08X). Loading binary...\n", (unsigned)pc);
@@ -2604,7 +2593,7 @@ void Run_CPU(void)
             }
 
             /* === PC Alignment Check === */
-            if (pc & 3)
+            if (__builtin_expect(pc & 3, 0))
             {
                 cpu.cop0[PSX_COP0_BADVADDR] = pc;
                 cpu.pc = pc;
@@ -2612,23 +2601,33 @@ void Run_CPU(void)
                 continue;
             }
 
-            /* Look up compiled block */
-            uint32_t *block = lookup_block(pc);
-            if (!block)
+            /* Inline block lookup — fast path: direct hash hit */
+            uint32_t cache_idx = (pc >> 2) & BLOCK_CACHE_MASK;
+            BlockEntry *be = &block_cache[cache_idx];
+            uint32_t *block;
+            if (__builtin_expect(be->native != NULL && be->psx_pc == pc, 1))
             {
-                block = compile_block(pc);
+                block = be->native;
+            }
+            else
+            {
+                /* Slow path: chain walk or compile */
+                block = lookup_block(pc);
                 if (!block)
                 {
-                    DLOG("IBE at PC=0x%08X\n", (unsigned)pc);
-                    cpu.pc = pc;
-                    PSX_Exception(6);
-                    continue;
+                    block = compile_block(pc);
+                    if (!block)
+                    {
+                        DLOG("IBE at PC=0x%08X\n", (unsigned)pc);
+                        cpu.pc = pc;
+                        PSX_Exception(6);
+                        continue;
+                    }
+                    cache_block(pc, block);
+                    apply_pending_patches(pc, block);
+                    FlushCache(0);
+                    FlushCache(2);
                 }
-                cache_block(pc, block);
-                /* Back-patch any direct links waiting for this PC */
-                apply_pending_patches(pc, block);
-                FlushCache(0);
-                FlushCache(2);
             }
 
             /* Execute the block */
@@ -2644,10 +2643,9 @@ void Run_CPU(void)
             }
 
             /* Advance global cycle counter using weighted cycle cost */
-            uint32_t cache_idx = (pc >> 2) & BLOCK_CACHE_MASK;
-            uint32_t cycles = block_cache[cache_idx].cycle_count;
+            uint32_t cycles = be->cycle_count;
             if (cycles == 0)
-                cycles = block_cache[cache_idx].instr_count;
+                cycles = be->instr_count;
             if (cycles == 0)
                 cycles = 8;
             global_cycles += cycles;

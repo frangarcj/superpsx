@@ -1,0 +1,22 @@
+# Configuration to help AI assistants and Copilot understand this project
+project:
+  name: superpsx
+  root: .
+  build:
+    - cmake -S . -B build
+    - cmake --build build
+  quick_run:
+    - make -C build run GAMEARGS=tests/timers/timers.exe
+  artifacts:
+    - build/superpsx.elf
+  env:
+    PSX_CPU_FREQ: 33868800
+  important_paths:
+    - src/
+    - include/
+    - tests/
+    - CMakeLists.txt
+  notes: |
+    - Use the `next_vblank_cycle` global as the VBlank anchor for timer geometry.
+    - Tests live in `tests/` and many are executed via the `make -C build run` helper.
+    - CPU frequency constants are defined in `include/scheduler.h`.
