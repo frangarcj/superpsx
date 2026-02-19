@@ -371,7 +371,7 @@ static uint32_t *get_psx_code_ptr(uint32_t psx_pc)
 /* ---- Forward declarations ---- */
 static void emit_block_prologue(void);
 static void emit_block_epilogue(void);
-static void emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count);
+static int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count);
 static void emit_branch_epilogue(uint32_t target_pc);
 static void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset);
 static void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset);
@@ -762,7 +762,8 @@ static uint32_t *compile_block(uint32_t psx_pc)
             if (pending_load_reg != 0 && (OP(opcode) == 0x22 || OP(opcode) == 0x26) &&
                 pending_load_reg == RT(opcode))
                 dynarec_lwx_pending = 1;
-            emit_instruction(opcode, cur_pc, &block_mult_count);
+            if (emit_instruction(opcode, cur_pc, &block_mult_count) < 0)
+            { block_ended = 1; break; }
             dynarec_lwx_pending = 0;
             cur_pc += 4;
             total_instructions++;
@@ -1063,7 +1064,8 @@ static uint32_t *compile_block(uint32_t psx_pc)
             if (pending_load_reg != 0 && (OP(opcode) == 0x22 || OP(opcode) == 0x26) &&
                 pending_load_reg == RT(opcode))
                 dynarec_lwx_pending = 1;
-            emit_instruction(opcode, cur_pc, &block_mult_count);
+            if (emit_instruction(opcode, cur_pc, &block_mult_count) < 0)
+            { block_ended = 1; break; }
             dynarec_lwx_pending = 0;
             dynarec_load_defer = 0;
 
@@ -1557,7 +1559,7 @@ static int BIOS_HLE_C(void)
     return 0; /* Let native code handle it */
 }
 
-static void emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
+static int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 {
     uint32_t op = OP(opcode);
     int rs = RS(opcode);
@@ -1572,7 +1574,7 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     emit_current_psx_pc = psx_pc;
 
     if (opcode == 0)
-        return; /* NOP */
+        return 0; /* NOP */
 
     switch (op)
     {
@@ -1613,15 +1615,17 @@ static void emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_store_psx_reg(rd, REG_T0);
             break;
         case 0x0C: /* SYSCALL */
-            /* Trigger proper PSX exception (code 8) */
+            /* Trigger proper PSX exception (code 8) — end block here */
             emit_load_imm32(REG_A0, psx_pc);
             emit_call_c((uint32_t)Helper_Syscall_Exception);
-break;
+            emit_block_epilogue();
+            return -1; /* Signal caller to end block */
         case 0x0D: /* BREAK */
-            /* Trigger proper PSX exception (code 9) */
+            /* Trigger proper PSX exception (code 9) — end block here */
             emit_load_imm32(REG_A0, psx_pc);
             emit_call_c((uint32_t)Helper_Break_Exception);
-break;
+            emit_block_epilogue();
+            return -1; /* Signal caller to end block */
         case 0x10: /* MFHI */
             EMIT_LW(REG_T0, CPU_HI, REG_S0);
             emit_store_psx_reg(rd, REG_T0);
@@ -2228,6 +2232,7 @@ break;
         }
         break;
     }
+    return 0;
 }
 
 /* ---- Block lookup (with collision chain traversal) ---- */
