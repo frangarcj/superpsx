@@ -49,6 +49,7 @@ typedef struct BlockEntry
     uint32_t *native;
     uint32_t instr_count;    /* Number of PSX instructions in this block */
     uint32_t cycle_count;    /* Weighted R3000A cycle count for this block */
+    uint8_t  is_idle;        /* 1 = idle loop (self-jump, no side effects) */
     struct BlockEntry *next; /* Collision chain pointer */
 } BlockEntry;
 
@@ -1135,11 +1136,48 @@ static uint32_t *compile_block(uint32_t psx_pc)
 
     blocks_compiled++;
 
-    /* Store instruction count and weighted cycle count in cache entry */
+    /* Detect idle/polling loops: self-branching blocks with no store/COP writes.
+     * is_idle values:
+     *   0 = not idle (has side effects or doesn't self-branch)
+     *   1 = unconditional idle (J to self, always safe to fast-forward)
+     *   2 = conditional polling (BEQ/BNE to self, safe for BIOS wait loops) */
     {
+        int is_idle = 0;
+        int branch_kind = 0; /* 0=none, 1=unconditional, 2=conditional */
+        if (branch_type == 1 && branch_target == psx_pc)
+            branch_kind = 1; /* Unconditional J to self */
+        else if (branch_type == 4 && branch_target == psx_pc)
+            branch_kind = 2; /* Conditional branch back to self */
+
+        if (branch_kind)
+        {
+            /* Scan PSX instructions for side effects */
+            is_idle = branch_kind; /* 1 or 2 */
+            uint32_t *scan = get_psx_code_ptr(psx_pc);
+            uint32_t scan_end = cur_pc;
+            uint32_t spc = psx_pc;
+            while (scan && spc < scan_end)
+            {
+                uint32_t inst = *scan++;
+                int sop = OP(inst);
+                /* Store instructions: SB(28) SH(29) SWL(2A) SW(2B) SWR(2E) SWC2(3A) */
+                if (sop == 0x28 || sop == 0x29 || sop == 0x2A ||
+                    sop == 0x2B || sop == 0x2E || sop == 0x3A)
+                { is_idle = 0; break; }
+                /* COP0/COP2 register writes (MTC0=04, CTC0=06) */
+                if ((sop == 0x10 || sop == 0x12) && (RS(inst) == 4 || RS(inst) == 6))
+                { is_idle = 0; break; }
+                /* SYSCALL / BREAK */
+                if (sop == 0 && (FUNC(inst) == 0x0C || FUNC(inst) == 0x0D))
+                { is_idle = 0; break; }
+                spc += 4;
+            }
+        }
+
         uint32_t idx = (psx_pc >> 2) & BLOCK_CACHE_MASK;
         block_cache[idx].instr_count = block_instr_count;
         block_cache[idx].cycle_count = block_cycle_count > 0 ? block_cycle_count : block_instr_count;
+        block_cache[idx].is_idle = is_idle;
     }
 
     return block_start;
@@ -2498,6 +2536,10 @@ void Run_CPU(void)
     uint32_t iterations = 0;
     uint32_t next_vram_dump = 1000000;
     int binary_loaded = 0;
+    /* Idle/polling loop fast-forward threshold counter */
+    uint32_t idle_skip_pc = 0;
+    uint32_t idle_skip_count = 0;
+#define IDLE_SKIP_THRESHOLD 2048
 
 #ifdef ENABLE_STUCK_DETECTION
     static uint32_t stuck_pc = 0;
@@ -2649,6 +2691,37 @@ void Run_CPU(void)
             if (cycles == 0)
                 cycles = 8;
             global_cycles += cycles;
+
+            /* Idle/polling loop fast-forward:
+             * is_idle==1 (unconditional J self): always fast-forward immediately.
+             * is_idle==2 (conditional polling): only in BIOS space (>=0xBFC00000)
+             *   with a threshold, to avoid breaking timing-sensitive RAM loops.
+             * Counter resets when the block changes or stops looping. */
+            {
+                uint8_t idle_flag = be->is_idle;
+                if (__builtin_expect(idle_flag && cpu.pc == pc, 0))
+                {
+                    if (pc != idle_skip_pc) {
+                        idle_skip_pc = pc;
+                        idle_skip_count = 0;
+                    }
+                    idle_skip_count++;
+                    uint32_t threshold;
+                    if (idle_flag == 1)
+                        threshold = 1; /* Unconditional: always safe */
+                    else
+                        threshold = (pc >= 0xBFC00000) ? 2048 : 0x7FFFFFFF; /* Conditional: BIOS only */
+                    if (idle_skip_count >= threshold) {
+                        if (deadline > global_cycles)
+                            global_cycles = deadline;
+                        break;
+                    }
+                }
+                else
+                {
+                    idle_skip_count = 0;
+                }
+            }
 #ifdef ENABLE_DYNAREC_STATS
             stat_blocks_executed++;
             stat_total_cycles += cycles;
@@ -2686,10 +2759,6 @@ void Run_CPU(void)
             }
 
             iterations++;
-
-            /* ---- Periodic stats dump ---- */
-            if ((iterations & 0x7FFFF) == 0) /* every ~512K iterations */
-                dynarec_print_stats();
 
 #ifdef ENABLE_STUCK_DETECTION
             if (pc == stuck_pc)
