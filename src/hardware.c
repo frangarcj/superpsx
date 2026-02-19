@@ -30,8 +30,12 @@ static uint32_t ram_size = 0x00000B88; /* 0x1F801060 */
 
 static int VBlankHandler(int cause)
 {
-    GPU_VBlank();
-    SignalInterrupt(0); /* PSX IRQ0 = VBLANK */
+    /* PSX VBlank IRQ0 is now fired by the cycle-accurate HBlank scheduler
+     * callback (Sched_HBlank_Callback in dynarec.c) every 263 scanlines.
+     * We still flush the GIF here at PS2 VBlank rate so the display keeps
+     * updating at 60 Hz even when the emulated PSX CPU runs slower. */
+    gpu_pending_vblank_flush = 1;
+    (void)cause;
     return -1;          /* Call next handler */
 }
 

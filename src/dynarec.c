@@ -18,9 +18,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <malloc.h>
+#include <time.h>
 #include <kernel.h>
 #include "superpsx.h"
 #include "scheduler.h"
+#include "gpu_state.h"
 #include "loader.h"
 
 #define LOG_TAG "DYNAREC"
@@ -2362,12 +2364,96 @@ void Init_Dynarec(void)
 
 /* ---- Forward declarations for scheduler callbacks ---- */
 static void Sched_VBlank_Callback(void);
+static void Sched_HBlank_Callback(void);
 void Timer_ScheduleAll(void);   /* Defined in hardware.c */
 void CDROM_ScheduleEvent(void); /* Defined in cdrom.c */
 
+/* HBlank scanline counter within the current frame (0..262 for NTSC) */
+static uint32_t hblank_scanline = 0;
+
+/* Emulation speed measurement */
+static uint64_t perf_frame_count = 0;       /* emulated PSX frames completed */
+static uint64_t perf_last_report_cycle = 0; /* global_cycles at last report */
+static uint32_t perf_last_report_tick = 0;  /* PS2 msec counter at last report */
+
+/* Get a millisecond-resolution wall-clock tick from PS2 hardware. */
+static uint32_t get_wall_ms(void)
+{
+    return (uint32_t)((uint64_t)clock() * 1000 / CLOCKS_PER_SEC);
+}
+
+/* Number of scanlines to batch per HBlank event.
+ * Higher = fewer scheduler interruptions = faster, but slightly coarser timing.
+ * Timer sync uses cycle deltas so it handles batching naturally. */
+#define HBLANK_BATCH_SIZE 16
+
+static void Sched_HBlank_Callback(void)
+{
+    /* How many scanlines to process in this batch */
+    uint32_t remaining = SCANLINES_PER_FRAME - hblank_scanline;
+    uint32_t batch = (remaining < HBLANK_BATCH_SIZE) ? remaining : HBLANK_BATCH_SIZE;
+
+    hblank_scanline += batch;
+
+    if (hblank_scanline >= SCANLINES_PER_FRAME)
+    {
+        /* End of frame — fire VBlank */
+        hblank_scanline = 0;
+        GPU_VBlank();
+        SignalInterrupt(0);   /* PSX IRQ0 = VBLANK */
+
+        /* Emulation speed report every 60 emulated frames (~1 sec of PSX time) */
+        perf_frame_count++;
+
+#ifdef ENABLE_PROFILING
+        /* Exit after 200 frames so gprof data gets flushed */
+        if (perf_frame_count >= 200)
+        {
+            printf("[PROFILE] Exiting after %llu frames for profiling.\n",
+                   (unsigned long long)perf_frame_count);
+            exit(0);
+        }
+#endif
+
+        if ((perf_frame_count % 60) == 0)
+        {
+            uint32_t now_ms = get_wall_ms();
+            uint32_t elapsed_ms = now_ms - perf_last_report_tick;
+            uint64_t elapsed_cycles = global_cycles - perf_last_report_cycle;
+
+            if (elapsed_ms > 0)
+            {
+                uint64_t cycles_per_sec = (elapsed_cycles * 1000ULL) / elapsed_ms;
+                uint32_t speed_pct = (uint32_t)((cycles_per_sec * 100ULL) / PSX_CPU_FREQ);
+                uint32_t emu_fps = (uint32_t)((perf_frame_count > 60 ? 60U : (uint32_t)perf_frame_count) * 1000U / elapsed_ms);
+
+                printf("[EMU] Speed: %lu%% | %.1f MHz | ~%lu eFPS | %llu cycles in %lu ms\n",
+                       speed_pct,
+                       (double)cycles_per_sec / 1000000.0,
+                       emu_fps,
+                       (unsigned long long)elapsed_cycles,
+                       elapsed_ms);
+            }
+
+            perf_last_report_tick = now_ms;
+            perf_last_report_cycle = global_cycles;
+        }
+    }
+
+    /* Re-schedule next HBlank batch */
+    {
+        uint32_t next_remaining = SCANLINES_PER_FRAME - hblank_scanline;
+        uint32_t next_batch = (next_remaining < HBLANK_BATCH_SIZE) ? next_remaining : HBLANK_BATCH_SIZE;
+        Scheduler_ScheduleEvent(SCHED_EVENT_HBLANK,
+                                global_cycles + next_batch * CYCLES_PER_HBLANK,
+                                Sched_HBlank_Callback);
+    }
+}
+
 static void Sched_VBlank_Callback(void)
 {
-    /* Re-schedule next VBlank */
+    /* Legacy: keep frame-level event for anything that needs it.
+     * The real VBlank IRQ is now fired from HBlank callback above. */
     Scheduler_ScheduleEvent(SCHED_EVENT_VBLANK,
                             global_cycles + CYCLES_PER_FRAME_NTSC,
                             Sched_VBlank_Callback);
@@ -2389,6 +2475,15 @@ void Run_CPU(void)
     Scheduler_ScheduleEvent(SCHED_EVENT_VBLANK,
                             global_cycles + CYCLES_PER_FRAME_NTSC,
                             Sched_VBlank_Callback);
+
+    /* Schedule initial HBlank batch event */
+    hblank_scanline = 0;
+    perf_frame_count = 0;
+    perf_last_report_cycle = 0;
+    perf_last_report_tick = get_wall_ms();
+    Scheduler_ScheduleEvent(SCHED_EVENT_HBLANK,
+                            global_cycles + HBLANK_BATCH_SIZE * CYCLES_PER_HBLANK,
+                            Sched_HBlank_Callback);
 
     /* Schedule initial timer events */
     Timer_ScheduleAll();
