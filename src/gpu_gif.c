@@ -27,21 +27,21 @@ uint64_t Get_Base_TEST(void)
 // to better match the reference test screenshots, which use a non-standard blend factor.
 // This produces correct 5-bit values for semi-transparent-on-black areas (the majority),
 // at the cost of slightly higher per-channel error in overlap regions.
+/* Precomputed alpha register table — avoids per-primitive switch */
+static const uint64_t alpha_reg_table[4] = {
+    /* mode 0: ~0.69*Cs + 0.31*Cd */
+    (uint64_t)0 | ((uint64_t)1 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x58 << 32),
+    /* mode 1: Cd + Cs */
+    (uint64_t)0 | ((uint64_t)2 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x80 << 32),
+    /* mode 2: Cd - Cs */
+    (uint64_t)1 | ((uint64_t)0 << 2) | ((uint64_t)2 << 4) | ((uint64_t)2 << 6) | ((uint64_t)0x80 << 32),
+    /* mode 3: Cd + 0.25*Cs */
+    (uint64_t)0 | ((uint64_t)2 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x20 << 32),
+};
+
 uint64_t Get_Alpha_Reg(int mode)
 {
-    switch (mode)
-    {
-    case 0: // ~0.69*Cs + 0.31*Cd: (Cs-Cd)*FIX+Cd with FIX=0x58 (88/128≈0.6875)
-        return (uint64_t)0 | ((uint64_t)1 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x58 << 32);
-    case 1: // Cd + Cs: (Cs-0)*FIX+Cd with FIX=0x80 (128/128=1.0)
-        return (uint64_t)0 | ((uint64_t)2 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x80 << 32);
-    case 2: // Cd - Cs: (Cd-Cs)*FIX+0 with FIX=0x80 (128/128=1.0)
-        return (uint64_t)1 | ((uint64_t)0 << 2) | ((uint64_t)2 << 4) | ((uint64_t)2 << 6) | ((uint64_t)0x80 << 32);
-    case 3: // Cd + 0.25*Cs: (Cs-0)*FIX+Cd with FIX=0x20 (32/128=0.25)
-        return (uint64_t)0 | ((uint64_t)2 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x20 << 32);
-    default:
-        return (uint64_t)0 | ((uint64_t)1 << 2) | ((uint64_t)2 << 4) | ((uint64_t)1 << 6) | ((uint64_t)0x40 << 32);
-    }
+    return alpha_reg_table[mode & 3];
 }
 
 /* ── GIF buffer management ───────────────────────────────────────── */
