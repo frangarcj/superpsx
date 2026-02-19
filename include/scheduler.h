@@ -65,6 +65,17 @@ void Scheduler_RemoveEvent(int event_id);
  * Returns UINT64_MAX if no events are active. */
 uint64_t Scheduler_NextDeadline(void);
 
+/* Exposed cache for fastest-read access (updated on schedule/remove/dispatch).
+ * Read-only for callers who prefer direct access. */
+extern uint64_t scheduler_cached_earliest;
+
+/* Fast inline accessor for hot paths. Prefer this in inner loops to avoid
+ * function call overhead. Returns UINT64_MAX when no events are active. */
+static inline uint64_t Scheduler_NextDeadlineFast(void)
+{
+    return scheduler_cached_earliest;
+}
+
 /* Dispatch all events whose deadline <= current_cycle.
  * Callbacks are responsible for rescheduling themselves. */
 void Scheduler_DispatchEvents(uint64_t current_cycle);

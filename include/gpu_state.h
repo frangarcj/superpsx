@@ -75,6 +75,7 @@ typedef struct
 /* GPU status / read registers */
 extern uint32_t gpu_stat;
 extern uint32_t gpu_read;
+extern volatile int gpu_pending_vblank_flush;
 
 /* Framebuffer configuration */
 extern int fb_address;
@@ -109,8 +110,8 @@ extern int dither_enabled;
 /* Shadow PSX VRAM for CLUT texture decode */
 extern uint16_t *psx_vram_shadow;
 
-/* Debug log file */
-extern FILE *gpu_debug_log;
+/* Debug log file - removed */
+/* extern FILE *gpu_debug_log; */
 
 /* VRAM transfer tracking for shadow writes */
 extern int vram_tx_x, vram_tx_y, vram_tx_w, vram_tx_h, vram_tx_pixel;
@@ -193,7 +194,7 @@ int Decode_TexWindow_Rect(int tex_format,
                           int flip_x, int flip_y);
 
 /* gpu_primitives.c — GP0 command translation to GS */
-void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor);
+void Translate_GP0_to_GS(uint32_t *psx_cmd);
 void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
                           int16_t x1, int16_t y1, uint32_t color1,
                           int is_shaded, int is_semi_trans);

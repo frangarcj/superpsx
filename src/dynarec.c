@@ -2409,7 +2409,7 @@ void Run_CPU(void)
     while (true)
     {
         /* ---- Determine how many cycles to run until next event ---- */
-        uint64_t deadline = Scheduler_NextDeadline();
+        uint64_t deadline = Scheduler_NextDeadlineFast();
         if (deadline == UINT64_MAX)
         {
             /* No events scheduled - run a default chunk */
@@ -2611,7 +2611,8 @@ void Run_CPU(void)
         } /* end inner while (blocks until deadline) */
 
         /* ---- Dispatch all events at or before current cycle ---- */
-        Scheduler_DispatchEvents(global_cycles);
+        if (global_cycles >= scheduler_cached_earliest)
+            Scheduler_DispatchEvents(global_cycles);
 
         /* ---- Periodic VRAM Dump ---- */
 #ifdef ENABLE_VRAM_DUMP

@@ -28,6 +28,8 @@ typedef struct
     uint32_t current_pc;     /* PC of the currently executing instruction (for exceptions) */
     uint32_t load_delay_reg; /* Load delay slot: target register index (0=none) */
     uint32_t load_delay_val; /* Load delay slot: pending value */
+    uint32_t i_stat;         /* Interrupt Status Register */
+    uint32_t i_mask;         /* Interrupt Mask Register */
 } R3000CPU;
 
 /* Struct offsets for asm code generation */
@@ -71,8 +73,11 @@ void WriteByte(uint32_t addr, uint8_t data);
 uint32_t ReadHardware(uint32_t addr);
 void WriteHardware(uint32_t addr, uint32_t data);
 void SignalInterrupt(uint32_t irq);
-int CheckInterrupts(void);
 void Init_Interrupts(void);
+static inline int CheckInterrupts(void)
+{
+    return (cpu.i_stat & cpu.i_mask & 0x7FF);
+}
 void UpdateTimers(uint32_t cycles);
 
 /*=== Dynarec ===*/

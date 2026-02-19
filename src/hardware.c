@@ -21,8 +21,7 @@ static uint32_t ram_size = 0x00000B88; /* 0x1F801060 */
 
 /* Interrupt Controller */
 /* Interrupt Controller */
-static volatile uint32_t i_stat = 0;
-static uint32_t i_mask = 0;
+/* i_stat and i_mask are now members of cpu (see include/superpsx.h) */
 
 static int VBlankHandler(int cause)
 {
@@ -48,13 +47,10 @@ void SignalInterrupt(uint32_t irq)
        Do NOT use printf here! Called from ISR.
        We verified it works.
     */
-    i_stat |= (1 << irq);
+    cpu.i_stat |= (1 << irq);
 }
 
-int CheckInterrupts(void)
-{
-    return (i_stat & i_mask & 0x7FF); /* Only bits 0-10 are IRQ sources */
-}
+/* CheckInterrupts is now inline in superpsx.h */
 
 /* DMA Controller */
 static uint32_t dma_dpcr = 0x07654321; /* DMA priority control */
@@ -166,9 +162,9 @@ uint32_t ReadHardware(uint32_t addr)
 
     /* Interrupt Controller */
     if (phys == 0x1F801070)
-        return i_stat;
+        return cpu.i_stat;
     if (phys == 0x1F801074)
-        return i_mask;
+        return cpu.i_mask;
 
     /* DMA registers */
     if (phys >= 0x1F801080 && phys < 0x1F801100)
@@ -662,15 +658,15 @@ void WriteHardware(uint32_t addr, uint32_t data)
     /* Interrupt Controller */
     if (phys == 0x1F801070)
     {
-        i_stat &= data; /* Write-to-acknowledge (AND with written value) */
+        cpu.i_stat &= data; /* Write-to-acknowledge (AND with written value) */
         return;
     }
     if (phys == 0x1F801074)
     {
-        i_mask = data & 0xFFFF07FF; /* Bits 11-15 always 0; rest preserved */
+        cpu.i_mask = data & 0xFFFF07FF; /* Bits 11-15 always 0; rest preserved */
         DLOG("I_MASK = %08X (VSync=%d CD=%d Timer0=%d Timer1=%d Timer2=%d)\n",
-             (unsigned)i_mask, (int)(i_mask & 1), (int)((i_mask >> 2) & 1),
-             (int)((i_mask >> 4) & 1), (int)((i_mask >> 5) & 1), (int)((i_mask >> 6) & 1));
+             (unsigned)cpu.i_mask, (int)(cpu.i_mask & 1), (int)((cpu.i_mask >> 2) & 1),
+             (int)((cpu.i_mask >> 4) & 1), (int)((cpu.i_mask >> 5) & 1), (int)((cpu.i_mask >> 6) & 1));
         return;
     }
 

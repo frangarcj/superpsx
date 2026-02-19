@@ -293,6 +293,8 @@ void Init_CPU(void)
     cpu.pc = 0;
     cpu.hi = 0;
     cpu.lo = 0;
+    cpu.i_stat = 0;
+    cpu.i_mask = 0;
 
     /* Install EE exception handlers for debug */
     /* DISABLED: SetVCommonHandler may be corrupting stdout/kernel state */

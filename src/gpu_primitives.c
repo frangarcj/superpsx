@@ -68,7 +68,7 @@ void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
 
 /* ── Main GP0 → GS translator ────────────────────────────────────── */
 
-void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
+void Translate_GP0_to_GS(uint32_t *psx_cmd)
 {
     uint32_t cmd_word = psx_cmd[0];
     uint32_t cmd = (cmd_word >> 24) & 0xFF;
@@ -151,7 +151,6 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
 
             if (use_sprite)
             {
-                gif_packet_ptr = *gif_cursor - gif_packet_buf[current_buffer];
 
                 uint64_t sprite_prim = 6;
                 sprite_prim |= (1 << 4);
@@ -187,12 +186,10 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
                 Push_GIF_Data(rgbaq, 0x01);
                 Push_GIF_Data(GS_set_XYZ(gx1, gy1, 0), 0x05);
 
-                *gif_cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
             }
             else
             {
                 int tris[2][3] = {{0, 1, 2}, {1, 3, 2}};
-                gif_packet_ptr = *gif_cursor - gif_packet_buf[current_buffer];
 
                 int is_semi_trans = (cmd & 0x02) != 0;
                 // PSX dithering applies to shaded and textured-blending (not raw) polygons
@@ -327,12 +324,10 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
                         Push_GIF_Data(Get_Base_TEST(), 0x47);
                     }
                 }
-                *gif_cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
             }
         }
         else
         {
-            gif_packet_ptr = *gif_cursor - gif_packet_buf[current_buffer];
 
             int is_semi_trans_tri = (cmd & 0x02) != 0;
             int is_raw_tex_tri = is_textured && (cmd & 0x01);
@@ -450,25 +445,9 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
             {
                 Push_GIF_Data(Get_Base_TEST(), 0x47);
             }
-            *gif_cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
 
-            if (gpu_debug_log)
-            {
-                fprintf(gpu_debug_log, "[GPU] Triangle A+D: PRIM=%llu\n", (unsigned long long)prim_reg);
-                fflush(gpu_debug_log);
-            }
         }
 
-        if (gpu_debug_log)
-        {
-            fprintf(gpu_debug_log, "[GPU] Draw Poly: Cmd=%02" PRIX32 " Shaded=%d Quad=%d Verts=%d Color=%06" PRIX32 " Offset=(%d,%d)\n",
-                    cmd, is_shaded, is_quad, num_psx_verts, color, draw_offset_x, draw_offset_y);
-            for (int i = 0; i < num_psx_verts; i++)
-            {
-                fprintf(gpu_debug_log, "\tV%d: (%d, %d) Col=%06" PRIX32 " UV=%04" PRIX32 "\n", i, verts[i].x, verts[i].y, verts[i].color, verts[i].uv);
-            }
-            fflush(gpu_debug_log);
-        }
     }
     else if ((cmd & 0xE0) == 0x60)
     { // Rectangle (Sprite) - use GS SPRITE primitive for reliable rendering
@@ -525,14 +504,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
 
         if (is_textured)
         {
-            gif_packet_ptr = *gif_cursor - gif_packet_buf[current_buffer];
 
-            if (gpu_debug_log)
-            {
-                fprintf(gpu_debug_log, "[GPU] TexRect: Cmd=%02" PRIX32 " (%d,%d) %dx%d UV_CLUT=%08" PRIX32 " TexPage(%d,%d) fmt=%d flipXY=(%d,%d)\n",
-                        cmd, x, y, w, h, uv_clut, tex_page_x, tex_page_y, tex_page_format, tex_flip_x, tex_flip_y);
-                fflush(gpu_debug_log);
-            }
 
             uint32_t u0_cmd = uv_clut & 0xFF;
             uint32_t v0_cmd = (uv_clut >> 8) & 0xFF;
@@ -638,13 +610,6 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
                     u_right_i = (int32_t)(u0_raw + w) + (int32_t)tex_page_x;
                 }
 
-                if (gpu_debug_log)
-                {
-                    fprintf(gpu_debug_log, "[GPU] TexRect FLIP_TRI: gx(%d..%d) gy(%d..%d) UV(%d..%d, %d..%d) flip=(%d,%d)\n",
-                            sgx0 >> 4, sgx1 >> 4, sgy0 >> 4, sgy1 >> 4,
-                            u_left_i, u_right_i, v_top_i, v_bottom_i, tex_flip_x, tex_flip_y);
-                    fflush(gpu_debug_log);
-                }
 
                 int nregs_tri = 15 + 2; // base(DTHE+PRIM+4*3vertices+DTHE_restore) + alpha test enable/restore
                 if (is_semi_trans)
@@ -727,7 +692,6 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
                 }
                 Push_GIF_Data((uint64_t)dither_enabled, 0x45);
 
-                *gif_cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
             }
             else
             {
@@ -750,13 +714,6 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
                     u1_gs = u0_raw + w + tex_page_x;
                 }
 
-                if (gpu_debug_log)
-                {
-                    fprintf(gpu_debug_log, "[GPU] TexRect SPRITE: gx(%d..%d) gy(%d..%d) UV(%u..%u, %u..%u) clut_dec=%d\n",
-                            sgx0 >> 4, sgx1 >> 4, sgy0 >> 4, sgy1 >> 4,
-                            u0_gs, u1_gs, v0_gs, v1_gs, clut_decoded);
-                    fflush(gpu_debug_log);
-                }
 
                 // nregs: DTHE + PRIM + 2*(UV+RGBAQ+XYZ) + alpha_test_en + alpha_test_restore + DTHE_restore
                 int nregs = 1 + 1 + 6 + 2 + 1; // = 11
@@ -819,13 +776,11 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
 
                 Push_GIF_Data((uint64_t)dither_enabled, 0x45);
 
-                *gif_cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
             }
         }
         else
         {
             // Flat sprite using A+D mode
-            gif_packet_ptr = *gif_cursor - gif_packet_buf[current_buffer];
 
             int32_t gx0 = ((int32_t)x + draw_offset_x + 2048) << 4;
             int32_t gy0 = ((int32_t)y + draw_offset_y + 2048) << 4;
@@ -857,7 +812,6 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
 
             Push_GIF_Data((uint64_t)dither_enabled, 0x45);
 
-            *gif_cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
         }
     }
     else if (cmd == 0x02)
@@ -875,11 +829,6 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
         if (h == 0)
             h = 0x200;
 
-        if (gpu_debug_log)
-        {
-            fprintf(gpu_debug_log, "[GPU] Fill Rect: (%d,%d %dx%d) Color=%06" PRIX32 "\n", x, y, w, h, color);
-            fflush(gpu_debug_log);
-        }
 
         Push_GIF_Tag(5, 1, 0, 0, 0, 1, 0xE);
         uint64_t full_scissor = 0 | ((uint64_t)(PSX_VRAM_WIDTH - 1) << 16) | ((uint64_t)0 << 32) | ((uint64_t)(PSX_VRAM_HEIGHT - 1) << 48);
@@ -919,7 +868,6 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
             }
         }
 
-        *gif_cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
     }
     else if ((cmd & 0xE0) == 0x40)
     { // Line
@@ -940,17 +888,9 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd, unsigned __int128 **gif_cursor)
         int16_t x1 = (int16_t)(xy1 & 0xFFFF);
         int16_t y1 = (int16_t)(xy1 >> 16);
 
-        gif_packet_ptr = *gif_cursor - gif_packet_buf[current_buffer];
 
         Emit_Line_Segment_AD(x0, y0, color0, x1, y1, color1, is_shaded, is_semi_trans);
 
-        *gif_cursor = &gif_packet_buf[current_buffer][gif_packet_ptr];
 
-        if (gpu_debug_log)
-        {
-            fprintf(gpu_debug_log, "[GPU] Draw Line: (%d,%d)-(%d,%d) Color=%06" PRIX32 "->%06" PRIX32 "\n",
-                    x0, y0, x1, y1, color0, color1);
-            fflush(gpu_debug_log);
-        }
     }
 }

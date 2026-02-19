@@ -49,8 +49,10 @@ int dither_enabled = 0;
 /* Shadow PSX VRAM for CLUT texture decode — dynamically allocated */
 uint16_t *psx_vram_shadow = NULL;
 
+volatile int gpu_pending_vblank_flush = 0;
+
 /* Debug log file */
-FILE *gpu_debug_log = NULL;
+/* FILE *gpu_debug_log = NULL; -- removed */
 
 /* VRAM transfer tracking for shadow writes */
 int vram_tx_x = 0, vram_tx_y = 0, vram_tx_w = 0, vram_tx_h = 0, vram_tx_pixel = 0;
@@ -139,6 +141,13 @@ uint32_t GPU_Read(void)
 
 uint32_t GPU_ReadStatus(void)
 {
+    // Deferred flush from VBlank ISR
+    if (gpu_pending_vblank_flush)
+    {
+        Flush_GIF();
+        gpu_pending_vblank_flush = 0;
+    }
+
     /* Force bits: 28 (ready DMA), 26 (ready CMD), 13 (interlace field) */
     /* Bit 27 (ready VRAM-to-CPU) is dynamic, set only during C0h transfer */
     /* Bit 23 (display disable) must NOT be forced — it reflects GP1(03h) state */
@@ -147,6 +156,8 @@ uint32_t GPU_ReadStatus(void)
 
 void GPU_VBlank(void)
 {
+    // Do NOT flush here (ISR). Set flag to be handled in main thread.
+    gpu_pending_vblank_flush = 1;
     gpu_stat ^= 0x80000000;
 }
 
