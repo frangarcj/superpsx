@@ -6,6 +6,22 @@
  * PSX games to submit display lists).
  */
 #include "gpu_state.h"
+#include "scheduler.h"
+
+/* ── GPU rendering busy tracking ─────────────────────────────────────── */
+/* gpu_busy_until: global_cycles value until which the GPU is "busy".
+ * GPU_ReadStatus() checks this to clear the "ready for commands" bits,
+ * making DrawSync(0) poll loops consume real emulated time.             */
+uint64_t gpu_busy_until = 0;
+
+/* DMA bus cost: ~5 CPU cycles per word transferred, ~10 per OT node */
+#define DMA_CYCLES_PER_WORD   5
+#define DMA_CYCLES_PER_PACKET 10
+
+/* Approximate GPU rendering cost per primitive pixel-clock.
+ * Real PSX GPU fills ~2 cycles/pixel (flat), ~3 (gouraud), ~4 (textured).
+ * We use a uniform ~2 CPU cycles per pixel as a rough average.             */
+#define GPU_CYCLES_PER_PIXEL 2
 
 /* ── Helper: read a 32-bit word from PSX RAM ─────────────────────── */
 
@@ -22,6 +38,9 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
     uint32_t addr = madr & 0x1FFFFC;
     if ((chcr & 0x01000000) == 0)
         return;
+
+    /* Reset pixel accumulator for this DMA batch */
+    gpu_estimated_pixels = 0;
     uint32_t sync_mode = (chcr >> 9) & 3;
     uint32_t direction = chcr & 1;
 
@@ -58,6 +77,18 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                 GPU_WriteGP0(word);
                 addr += 4;
             }
+
+            /* ── DMA bus + GPU processing cycle cost ── */
+            {
+                uint64_t dma_cost = (uint64_t)total_words * DMA_CYCLES_PER_WORD;
+                uint64_t gpu_cost = gpu_estimated_pixels * GPU_CYCLES_PER_PIXEL;
+                gpu_estimated_pixels = 0;
+                global_cycles += dma_cost;
+                gpu_busy_until = global_cycles + gpu_cost;
+                /* Dispatch pending scheduler events (HBlank, timers) */
+                if (global_cycles >= scheduler_cached_earliest)
+                    Scheduler_DispatchEvents(global_cycles);
+            }
         }
         else
         {
@@ -89,6 +120,14 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                 *(uint32_t *)(psx_ram + (addr & 0x1FFFFC)) = word;
                 addr += 4;
             }
+
+            /* ── DMA bus cycle cost for GPU→CPU read ── */
+            {
+                uint64_t dma_cost = (uint64_t)total_words * DMA_CYCLES_PER_WORD;
+                global_cycles += dma_cost;
+                if (global_cycles >= scheduler_cached_earliest)
+                    Scheduler_DispatchEvents(global_cycles);
+            }
         }
         return;
     }
@@ -97,6 +136,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
     {
         int packets = 0;
         int max_packets = 20000;
+        uint32_t total_dma_words = 0;  /* track total data words for cycle cost */
 
         while (packets < max_packets)
         {
@@ -104,6 +144,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
             uint32_t header = GPU_GetWord(addr);
             uint32_t count = header >> 24;
             uint32_t next = header & 0xFFFFFF;
+            total_dma_words += count + 1;  /* +1 for the header word */
 
             if (count > 256)
             {
@@ -219,5 +260,26 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
         }
 
         Flush_GIF();
+
+        /* ── DMA bus + GPU processing cycle cost for linked-list ── */
+        {
+            uint64_t dma_cost = (uint64_t)total_dma_words * DMA_CYCLES_PER_WORD
+                              + (uint64_t)packets * DMA_CYCLES_PER_PACKET;
+            uint64_t gpu_cost = gpu_estimated_pixels * GPU_CYCLES_PER_PIXEL;
+            gpu_estimated_pixels = 0;
+            global_cycles += dma_cost;
+            gpu_busy_until = global_cycles + gpu_cost;
+
+            DLOG("DMA2 linked-list: %d packets, %lu words, %llu pixels, dma=%llu gpu=%llu\n",
+                 packets, (unsigned long)total_dma_words,
+                 (unsigned long long)(gpu_cost / GPU_CYCLES_PER_PIXEL),
+                 (unsigned long long)dma_cost, (unsigned long long)gpu_cost);
+
+            /* Dispatch pending scheduler events so HBlank/timers fire during
+             * the DMA window — this is what makes Timer1 (HBlank) advance
+             * while the GPU is working, enabling the benchmark to measure FPS. */
+            while (global_cycles >= scheduler_cached_earliest)
+                Scheduler_DispatchEvents(global_cycles);
+        }
     }
 }

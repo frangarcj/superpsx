@@ -7,6 +7,7 @@
  * GPU_Flush, and Update_GS_Display.
  */
 #include "gpu_state.h"
+#include "scheduler.h"
 
 /* ═══════════════════════════════════════════════════════════════════
  *  Global GPU state — definitions (declared extern in gpu_state.h)
@@ -141,11 +142,26 @@ uint32_t GPU_Read(void)
 
 uint32_t GPU_ReadStatus(void)
 {
-    // Deferred flush from VBlank ISR
-    if (gpu_pending_vblank_flush)
+    /* NOTE: Deferred VBlank flush (gpu_pending_vblank_flush) is NO LONGER
+     * handled here.  It was a major hotspot because DrawSync polls this
+     * function in a tight loop, causing Flush_GIF per iteration.
+     * Instead, the flush happens at the start of the next GPU_DMA2() call
+     * or when GPU_VBlank/GPU_Flush is called directly. */
+
+    /* If GPU is still "busy" rendering, fast-forward the CPU to GPU completion.
+     * This avoids thousands of poll iterations in DrawSync(0) loops — instead,
+     * we advance global_cycles in one shot and dispatch any pending scheduler
+     * events (HBlank, timers) for the elapsed time.  This is equivalent to
+     * the CPU idling while the GPU works, but much faster to emulate. */
+    extern uint64_t gpu_busy_until;
+
+    if (global_cycles < gpu_busy_until)
     {
-        Flush_GIF();
-        gpu_pending_vblank_flush = 0;
+        global_cycles = gpu_busy_until;
+        gpu_busy_until = 0;
+        /* Dispatch all scheduler events that occurred during the GPU work */
+        while (global_cycles >= scheduler_cached_earliest)
+            Scheduler_DispatchEvents(global_cycles);
     }
 
     /* Force bits: 28 (ready DMA), 26 (ready CMD), 13 (interlace field) */
