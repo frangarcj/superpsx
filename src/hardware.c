@@ -106,6 +106,7 @@ static uint32_t cache_control = 0;
 
 /* Forward declaration for timer interpolation in ReadHardware */
 static uint32_t timer_clock_divider(int t);
+static int timer_is_stopped(int t);
 
 /* ---- Read ---- */
 uint32_t ReadHardware(uint32_t addr)
@@ -222,18 +223,30 @@ uint32_t ReadHardware(uint32_t addr)
             {
             case 0:
             {
+                /* If timer is stopped, just return current value */
+                if (timer_is_stopped(t))
+                    return timers[t].value & 0xFFFF;
                 /* Interpolate current counter value based on elapsed cycles */
                 uint32_t divider = timer_clock_divider(t);
                 uint64_t elapsed = global_cycles - timers[t].last_sync_cycle;
                 uint32_t ticks = (uint32_t)(elapsed / divider);
-                uint32_t current = (timers[t].value + ticks) & 0xFFFF;
+                uint32_t current;
+                if ((timers[t].mode & (1 << 3)) && (timers[t].target & 0xFFFF) > 0)
+                {
+                    /* Reset-on-target: counter wraps at target+1 */
+                    current = (timers[t].value + ticks) % ((timers[t].target & 0xFFFF) + 1);
+                }
+                else
+                {
+                    current = (timers[t].value + ticks) & 0xFFFF;
+                }
                 return current;
             }
             case 1:
             {
-                /* PSX hardware: reading mode clears bits 10-11 (reached-target/overflow flags) */
+                /* PSX hardware: reading mode clears bits 11-12 (reached-target/overflow flags) */
                 uint32_t mode = timers[t].mode;
-                timers[t].mode &= ~((1 << 10) | (1 << 11));
+                timers[t].mode &= ~((1 << 11) | (1 << 12));
                 return mode;
             }
             case 2:
@@ -302,13 +315,73 @@ static const sched_callback_t timer_callbacks[3] = {
     Timer_Callback0, Timer_Callback1, Timer_Callback2};
 
 /* Sync timer value to current global_cycles (call before reading/modifying value) */
+/* Check if a timer is stopped (sync modes that halt the counter) */
+static int timer_is_stopped(int t)
+{
+    uint32_t mode = timers[t].mode;
+    if (!(mode & 1))
+        return 0; /* sync disabled = free run */
+    uint32_t sync_mode = (mode >> 1) & 3;
+
+    /* Timer0: mode 2 = "pause outside of Hblank" → effectively stopped
+     * (counter only runs during Hblank's ~500 cycles, negligible for most uses) */
+    if (t == 0 && sync_mode == 2)
+        return 1;
+
+    /* Timer1: mode 2 = "pause outside of Vblank" → effectively stopped
+     *         mode 3 = "pause until Vblank once" → starts stopped (no VBlank tracking yet) */
+    if (t == 1 && (sync_mode == 2 || sync_mode == 3))
+        return 1;
+
+    /* Timer2: sync modes 0 and 3 = stop counter */
+    if (t == 2 && (sync_mode == 0 || sync_mode == 3))
+        return 1;
+
+    return 0;
+}
+
 static void Timer_SyncValue(int t)
 {
+    /* If timer is stopped, don't advance */
+    if (timer_is_stopped(t))
+    {
+        timers[t].last_sync_cycle = global_cycles;
+        return;
+    }
+
     uint32_t divider = timer_clock_divider(t);
     uint64_t elapsed = global_cycles - timers[t].last_sync_cycle;
     uint32_t ticks = (uint32_t)(elapsed / divider);
-    timers[t].value = (timers[t].value + ticks) & 0xFFFF;
     timers[t].last_sync_cycle = global_cycles;
+
+    if (ticks == 0)
+        return;
+
+    uint32_t val = timers[t].value & 0xFFFF;
+    uint32_t mode = timers[t].mode;
+    uint32_t target = timers[t].target & 0xFFFF;
+
+    /* Reset-on-target mode (bit 3): counter wraps at target */
+    if ((mode & (1 << 3)) && target > 0)
+    {
+        uint32_t period = target + 1;
+        uint32_t new_val = val + ticks;
+        if (new_val >= target)
+            timers[t].mode |= (1 << 11); /* reached target flag */
+        /* When target == 0xFFFF, reaching target also means reaching 0xFFFF */
+        if (target >= 0xFFFF && new_val >= 0xFFFF)
+            timers[t].mode |= (1 << 12); /* overflow flag */
+        timers[t].value = new_val % period;
+    }
+    else
+    {
+        uint32_t new_val = val + ticks;
+        if (new_val >= 0xFFFF)
+            timers[t].mode |= (1 << 12); /* overflow flag */
+        if (target > 0 && val <= target && new_val >= target)
+            timers[t].mode |= (1 << 11); /* reached target flag */
+        timers[t].value = new_val & 0xFFFF;
+    }
 }
 
 /* Schedule the next event for timer t based on its current value/target/mode */
@@ -322,21 +395,36 @@ static void Timer_ScheduleOne(int t)
     uint32_t target = timers[t].target & 0xFFFF;
     uint32_t divider = timer_clock_divider(t);
 
+    /* If timer is stopped, don't schedule any event */
+    if (timer_is_stopped(t))
+        return;
+
     /* Find how many timer ticks until next event */
     uint32_t ticks_to_event = 0xFFFF; /* default: overflow */
 
-    /* Check: will we hit target first? (if target IRQ enabled and target > 0) */
-    if ((mode & (1 << 4)) && target > 0 && val < target)
+    /* Reset-on-target (bit 3): schedule at target regardless of IRQ enable */
+    if ((mode & (1 << 3)) && target > 0)
     {
-        ticks_to_event = target - val;
+        if (val < target)
+            ticks_to_event = target - val;
+        else
+            ticks_to_event = (target + 1) - val; /* already at/past target, wrap */
     }
-
-    /* Check: overflow (if overflow IRQ enabled) */
-    if (mode & (1 << 5))
+    else
     {
-        uint32_t ticks_to_overflow = 0x10000 - val;
-        if (ticks_to_overflow < ticks_to_event)
-            ticks_to_event = ticks_to_overflow;
+        /* Check: will we hit target first? (if target IRQ enabled and target > 0) */
+        if ((mode & (1 << 4)) && target > 0 && val < target)
+        {
+            ticks_to_event = target - val;
+        }
+
+        /* Check: overflow (if overflow IRQ enabled) */
+        if (mode & (1 << 5))
+        {
+            uint32_t ticks_to_overflow = 0x10000 - val;
+            if (ticks_to_overflow < ticks_to_event)
+                ticks_to_event = ticks_to_overflow;
+        }
     }
 
     /* If neither IRQ is enabled, schedule at overflow anyway to keep counter alive */
@@ -361,17 +449,29 @@ static void Timer_FireEvent(int t)
     uint32_t target = timers[t].target & 0xFFFF;
     uint32_t val = timers[t].value & 0xFFFF;
 
-    /* Check target match first */
+    /* Check target match.
+     * When bit 3 (reset-on-target) is set, this event was always scheduled
+     * for a target hit. SyncValue's modulo may have already wrapped val below
+     * target, so we cannot rely on val >= target here. */
     int hit_target = 0;
-    if ((mode & (1 << 4)) && target > 0 && val >= target)
+    if ((mode & (1 << 3)) && target > 0)
+    {
+        /* Reset-on-target mode: event was scheduled at target */
+        hit_target = 1;
+    }
+    else if ((mode & (1 << 4)) && target > 0 && val >= target)
     {
         hit_target = 1;
     }
 
     if (hit_target)
     {
-        timers[t].mode |= (1 << 10);
-        SignalInterrupt(4 + t);
+        timers[t].mode |= (1 << 11); /* bit 11 = reached target */
+        /* When target == 0xFFFF, reaching target also means reaching 0xFFFF */
+        if (target >= 0xFFFF)
+            timers[t].mode |= (1 << 12);
+        if (mode & (1 << 4))
+            SignalInterrupt(4 + t);
 
         /* Reset on target? */
         if (mode & (1 << 3))
@@ -381,11 +481,9 @@ static void Timer_FireEvent(int t)
     {
         /* Overflow */
         val = 0;
+        timers[t].mode |= (1 << 12); /* bit 12 = overflow */
         if (mode & (1 << 5))
-        {
-            timers[t].mode |= (1 << 11);
             SignalInterrupt(4 + t);
-        }
     }
 
     timers[t].value = val;
