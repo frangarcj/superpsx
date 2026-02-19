@@ -6,8 +6,13 @@
 #include "superpsx.h"
 #include "scheduler.h"
 #include "joystick.h"
+#include "gpu_state.h"
 
 #define LOG_TAG "HW"
+
+/* Forward declarations for timer cache */
+static uint32_t timer_divider_cache[3];
+static void timer_update_divider_cache(int t);
 
 /*
  * PSX Hardware Register Emulation
@@ -37,6 +42,12 @@ void Init_Interrupts(void)
     AddIntcHandler(vblank_irq, VBlankHandler, 0);
     EnableIntc(vblank_irq);
     printf("Native PS2 VBlank Interrupt enabled.\n");
+}
+
+/* Called by GPU when display resolution changes (GP1(08h)) */
+void Timer0_RefreshDividerCache(void)
+{
+    timer_update_divider_cache(0);
 }
 
 void SignalInterrupt(uint32_t irq)
@@ -227,7 +238,7 @@ uint32_t ReadHardware(uint32_t addr)
                 if (timer_is_stopped(t))
                     return timers[t].value & 0xFFFF;
                 /* Interpolate current counter value based on elapsed cycles */
-                uint32_t divider = timer_clock_divider(t);
+                uint32_t divider = timer_divider_cache[t];
                 uint64_t elapsed = global_cycles - timers[t].last_sync_cycle;
                 uint32_t ticks = (uint32_t)(elapsed / divider);
                 uint32_t current;
@@ -299,9 +310,31 @@ uint32_t ReadHardware(uint32_t addr)
 static uint32_t timer_clock_divider(int t)
 {
     uint32_t src = (timers[t].mode >> 8) & 3;
-    if (t == 1 && src == 1)
+
+    if (t == 0 && (src == 1 || src == 3))
+    {
+        /* Timer 0: Dot clock — divider depends on horizontal resolution.
+         * disp_hres (bits 17-18 of gpu_stat) + disp_hres368 (bit 16)
+         * encode the current display width set by GP1(08h). */
+        if (disp_hres368)
+            return DOTCLOCK_DIV_368;
+        switch (disp_hres)
+        {
+        case 0:
+            return DOTCLOCK_DIV_256;
+        case 1:
+            return DOTCLOCK_DIV_320;
+        case 2:
+            return DOTCLOCK_DIV_512;
+        case 3:
+            return DOTCLOCK_DIV_640;
+        }
+        return DOTCLOCK_DIV_320; /* fallback */
+    }
+
+    if (t == 1 && (src == 1 || src == 3))
         return CYCLES_PER_HBLANK; /* HBlank mode */
-    if (t == 2 && src == 2)
+    if (t == 2 && (src == 2 || src == 3))
         return 8; /* Sysclk/8 */
     return 1;     /* Sysclk (default) */
 }
@@ -315,29 +348,51 @@ static const sched_callback_t timer_callbacks[3] = {
     Timer_Callback0, Timer_Callback1, Timer_Callback2};
 
 /* Sync timer value to current global_cycles (call before reading/modifying value) */
-/* Check if a timer is stopped (sync modes that halt the counter) */
-static int timer_is_stopped(int t)
+/* Cached stopped state per timer — updated only when mode is written */
+static uint8_t timer_stopped_cache[3] = {0, 0, 0};
+/* Cached clock divider per timer — updated on mode write or resolution change */
+static uint32_t timer_divider_cache[3] = {1, 1, 1};
+
+/* Recompute clock divider for timer t */
+static void timer_update_divider_cache(int t)
+{
+    uint32_t src = (timers[t].mode >> 8) & 3;
+
+    if (t == 0 && (src == 1 || src == 3))
+    {
+        if (disp_hres368)
+            timer_divider_cache[0] = DOTCLOCK_DIV_368;
+        else switch (disp_hres)
+        {
+        case 0: timer_divider_cache[0] = DOTCLOCK_DIV_256; break;
+        case 1: timer_divider_cache[0] = DOTCLOCK_DIV_320; break;
+        case 2: timer_divider_cache[0] = DOTCLOCK_DIV_512; break;
+        case 3: timer_divider_cache[0] = DOTCLOCK_DIV_640; break;
+        default: timer_divider_cache[0] = DOTCLOCK_DIV_320; break;
+        }
+        return;
+    }
+    if (t == 1 && (src == 1 || src == 3)) { timer_divider_cache[1] = CYCLES_PER_HBLANK; return; }
+    if (t == 2 && (src == 2 || src == 3)) { timer_divider_cache[2] = 8; return; }
+    timer_divider_cache[t] = 1;
+}
+
+/* Recompute stopped state for timer t from its mode register */
+static void timer_update_stopped_cache(int t)
 {
     uint32_t mode = timers[t].mode;
-    if (!(mode & 1))
-        return 0; /* sync disabled = free run */
+    if (!(mode & 1)) { timer_stopped_cache[t] = 0; return; }
     uint32_t sync_mode = (mode >> 1) & 3;
+    if (t == 0 && sync_mode == 2) { timer_stopped_cache[t] = 1; return; }
+    if (t == 1 && (sync_mode == 2 || sync_mode == 3)) { timer_stopped_cache[t] = 1; return; }
+    if (t == 2 && (sync_mode == 0 || sync_mode == 3)) { timer_stopped_cache[t] = 1; return; }
+    timer_stopped_cache[t] = 0;
+}
 
-    /* Timer0: mode 2 = "pause outside of Hblank" → effectively stopped
-     * (counter only runs during Hblank's ~500 cycles, negligible for most uses) */
-    if (t == 0 && sync_mode == 2)
-        return 1;
-
-    /* Timer1: mode 2 = "pause outside of Vblank" → effectively stopped
-     *         mode 3 = "pause until Vblank once" → starts stopped (no VBlank tracking yet) */
-    if (t == 1 && (sync_mode == 2 || sync_mode == 3))
-        return 1;
-
-    /* Timer2: sync modes 0 and 3 = stop counter */
-    if (t == 2 && (sync_mode == 0 || sync_mode == 3))
-        return 1;
-
-    return 0;
+/* Check if a timer is stopped — uses cached result */
+static inline int timer_is_stopped(int t)
+{
+    return timer_stopped_cache[t];
 }
 
 static void Timer_SyncValue(int t)
@@ -349,10 +404,13 @@ static void Timer_SyncValue(int t)
         return;
     }
 
-    uint32_t divider = timer_clock_divider(t);
+    uint32_t divider = timer_divider_cache[t];
     uint64_t elapsed = global_cycles - timers[t].last_sync_cycle;
     uint32_t ticks = (uint32_t)(elapsed / divider);
-    timers[t].last_sync_cycle = global_cycles;
+    /* Only consume the cycles that produced whole ticks — keep the
+     * fractional remainder for next sync so we never lose sub-tick
+     * precision (critical for HBlank / dotclock dividers). */
+    timers[t].last_sync_cycle += (uint64_t)ticks * divider;
 
     if (ticks == 0)
         return;
@@ -368,15 +426,15 @@ static void Timer_SyncValue(int t)
         uint32_t new_val = val + ticks;
         if (new_val >= target)
             timers[t].mode |= (1 << 11); /* reached target flag */
-        /* When target == 0xFFFF, reaching target also means reaching 0xFFFF */
-        if (target >= 0xFFFF && new_val >= 0xFFFF)
+        /* Overflow: counter reached 0x10000 (wrapped past 0xFFFF) */
+        if (new_val >= 0x10000)
             timers[t].mode |= (1 << 12); /* overflow flag */
         timers[t].value = new_val % period;
     }
     else
     {
         uint32_t new_val = val + ticks;
-        if (new_val >= 0xFFFF)
+        if (new_val >= 0x10000)
             timers[t].mode |= (1 << 12); /* overflow flag */
         if (target > 0 && val <= target && new_val >= target)
             timers[t].mode |= (1 << 11); /* reached target flag */
@@ -393,7 +451,7 @@ static void Timer_ScheduleOne(int t)
     uint32_t mode = timers[t].mode;
     uint32_t val = timers[t].value & 0xFFFF;
     uint32_t target = timers[t].target & 0xFFFF;
-    uint32_t divider = timer_clock_divider(t);
+    uint32_t divider = timer_divider_cache[t];
 
     /* If timer is stopped, don't schedule any event */
     if (timer_is_stopped(t))
@@ -870,6 +928,8 @@ void WriteHardware(uint32_t addr, uint32_t data)
                 timers[t].value = 0;
                 timers[t].mode = data;
                 timers[t].last_sync_cycle = global_cycles;
+                timer_update_stopped_cache(t);
+                timer_update_divider_cache(t);
                 Timer_ScheduleOne(t); /* Reschedule on mode change */
                 break;
             case 2:

@@ -827,6 +827,10 @@ void GPU_WriteGP1(uint32_t data)
 
             SetGsCrt(interlace, pal ? 3 : 2, 0);
             Update_GS_Display();
+
+            /* Timer0 dotclock divider depends on resolution — refresh cache */
+            extern void Timer0_RefreshDividerCache(void);
+            Timer0_RefreshDividerCache();
         }
     }
     break;
