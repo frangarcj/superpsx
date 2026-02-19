@@ -117,6 +117,8 @@ void Helper_ADDI(uint32_t rs_val, uint32_t imm_sext, uint32_t rt, uint32_t pc);
 /*=== Exception support for dynarec ===*/
 extern jmp_buf psx_block_jmp;
 extern volatile int psx_block_exception;
+extern volatile int psx_block_aborted;
+extern uint32_t psx_abort_pc;
 
 /*=== CD-ROM ===*/
 void CDROM_Init(void);

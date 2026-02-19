@@ -10,6 +10,8 @@ R3000CPU cpu;
 /* Exception support for dynarec mid-block exceptions */
 jmp_buf psx_block_jmp;
 volatile int psx_block_exception = 0;
+volatile int psx_block_aborted = 0;   /* set by PSX_Exception when inside block */
+uint32_t psx_abort_pc = 0;            /* saved exception-handler PC            */
 
 /* ---- PSX Exception Handling ---- */
 static int cdrom_irq_count = 0;
@@ -82,10 +84,12 @@ void PSX_Exception(uint32_t cause_code)
         cpu.pc = 0x80000080;
     }
 
-    /* If we're inside a dynarec block, longjmp out to abort the block */
+    /* If we're inside a dynarec block, signal early abort instead of longjmp */
     if (psx_block_exception)
     {
-        longjmp(psx_block_jmp, 1);
+        psx_block_aborted = 1;
+        psx_abort_pc = cpu.pc;
+        return;
     }
 }
 
@@ -132,7 +136,11 @@ void Helper_CU_Exception(uint32_t pc, uint32_t cop_num)
         cpu.pc = 0x80000080;
 
     if (psx_block_exception)
-        longjmp(psx_block_jmp, 1);
+    {
+        psx_block_aborted = 1;
+        psx_abort_pc = cpu.pc;
+        return;
+    }
 }
 
 /* ADD with overflow detection: if overflow, trigger exception 0x0C */

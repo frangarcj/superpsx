@@ -2628,11 +2628,15 @@ void Run_CPU(void)
 
             /* Execute the block */
             psx_block_exception = 1;
-            if (setjmp(psx_block_jmp) == 0)
-            {
-                ((block_func_t)block)(&cpu, psx_ram, psx_bios);
-            }
+            ((block_func_t)block)(&cpu, psx_ram, psx_bios);
             psx_block_exception = 0;
+
+            /* If an exception occurred mid-block, restore the correct PC */
+            if (__builtin_expect(psx_block_aborted, 0))
+            {
+                cpu.pc = psx_abort_pc;
+                psx_block_aborted = 0;
+            }
 
             /* Advance global cycle counter using weighted cycle cost */
             uint32_t cache_idx = (pc >> 2) & BLOCK_CACHE_MASK;
