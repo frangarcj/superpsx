@@ -8,6 +8,22 @@
  */
 #include "gpu_state.h"
 
+/* ── GPU pixel cost accumulator for cycle-accurate rendering delay ── */
+uint64_t gpu_estimated_pixels = 0;
+
+/* Triangle area from integer vertices (absolute, in pixels).
+ * Uses the cross-product / shoelace formula.                          */
+static inline uint32_t tri_area_abs(int16_t x0, int16_t y0,
+                                    int16_t x1, int16_t y1,
+                                    int16_t x2, int16_t y2)
+{
+    int32_t a = (int32_t)x0 * ((int32_t)y1 - y2)
+              + (int32_t)x1 * ((int32_t)y2 - y0)
+              + (int32_t)x2 * ((int32_t)y0 - y1);
+    if (a < 0) a = -a;
+    return (uint32_t)(a >> 1);   /* divide by 2 */
+}
+
 /* ── Helper: emit a single line segment (A+D mode) ───────────────── */
 
 void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
@@ -140,6 +156,18 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                     semi_trans_mode = (tpage >> 5) & 3;
                 }
             }
+        }
+
+        /* ── Estimate pixel fill for GPU cycle accounting ── */
+        {
+            uint32_t area = tri_area_abs(verts[0].x, verts[0].y,
+                                         verts[1].x, verts[1].y,
+                                         verts[2].x, verts[2].y);
+            if (is_quad)
+                area += tri_area_abs(verts[1].x, verts[1].y,
+                                     verts[3].x, verts[3].y,
+                                     verts[2].x, verts[2].y);
+            gpu_estimated_pixels += area;
         }
 
         if (is_quad)
@@ -502,6 +530,9 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
         if (cmd & 0x02)
             prim_reg |= (1 << 6);
 
+        /* ── Pixel fill estimate for rectangles ── */
+        gpu_estimated_pixels += (uint32_t)w * (uint32_t)h;
+
         if (is_textured)
         {
 
@@ -828,6 +859,9 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
         int h = (wh >> 16) & 0x1FF;
         if (h == 0)
             h = 0x200;
+
+        /* ── Pixel fill estimate for fill-rect ── */
+        gpu_estimated_pixels += (uint32_t)w * (uint32_t)h;
 
 
         Push_GIF_Tag(5, 1, 0, 0, 0, 1, 0xE);

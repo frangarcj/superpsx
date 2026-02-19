@@ -77,6 +77,9 @@ extern uint32_t gpu_stat;
 extern uint32_t gpu_read;
 extern volatile int gpu_pending_vblank_flush;
 
+/* GPU rendering cost estimation (accumulated pixel count for cycle accounting) */
+extern uint64_t gpu_estimated_pixels;
+
 /* Framebuffer configuration */
 extern int fb_address;
 extern int fb_width;
