@@ -43,7 +43,12 @@ set(SUPERPSX_SOURCES
     src/gpu_primitives.c
     src/gpu_commands.c
     src/gpu_dma.c
-    src/dynarec.c
+    src/dynarec_emit.c
+    src/dynarec_cache.c
+    src/dynarec_memory.c
+    src/dynarec_compile.c
+    src/dynarec_insn.c
+    src/dynarec_run.c
     src/gte.c
     src/cdrom.c
     src/loader.c

@@ -1,0 +1,254 @@
+/*
+ * dynarec.h - Internal shared header for the SuperPSX dynarec subsystem
+ *
+ * Provides instruction encoding macros, register IDs, shared types,
+ * extern declarations for cross-module state, and function prototypes
+ * used across the dynarec_*.c modules.
+ */
+#ifndef DYNAREC_H
+#define DYNAREC_H
+
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <malloc.h>
+#include <kernel.h>  /* FlushCache */
+#include "superpsx.h"
+#include "scheduler.h"
+
+#define LOG_TAG "DYNAREC"
+
+/* ================================================================
+ *  Constants
+ * ================================================================ */
+#define CODE_BUFFER_SIZE (4 * 1024 * 1024)
+
+#define BLOCK_CACHE_BITS 14
+#define BLOCK_CACHE_SIZE (1 << BLOCK_CACHE_BITS)
+#define BLOCK_CACHE_MASK (BLOCK_CACHE_SIZE - 1)
+#define BLOCK_NODE_POOL_SIZE 4096
+
+#define PATCH_SITE_MAX 8192
+
+/* ================================================================
+ *  Shared types
+ * ================================================================ */
+typedef struct BlockEntry
+{
+    uint32_t psx_pc;
+    uint32_t *native;
+    uint32_t instr_count;    /* Number of PSX instructions in this block */
+    uint32_t native_count;   /* Number of native R5900 instructions generated */
+    uint32_t cycle_count;    /* Weighted R3000A cycle count for this block */
+    uint8_t is_idle;         /* 1 = idle loop (self-jump, no side effects) */
+    struct BlockEntry *next; /* Collision chain pointer */
+} BlockEntry;
+
+typedef struct
+{
+    uint32_t *site_word;    /* Address of the J instruction to overwrite */
+    uint32_t target_psx_pc;
+} PatchSite;
+
+typedef void (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios);
+
+/* ================================================================
+ *  Opcode field extraction macros
+ * ================================================================ */
+#define OP(x)     (((x) >> 26) & 0x3F)
+#define RS(x)     (((x) >> 21) & 0x1F)
+#define RT(x)     (((x) >> 16) & 0x1F)
+#define RD(x)     (((x) >> 11) & 0x1F)
+#define SA(x)     (((x) >> 6) & 0x1F)
+#define FUNC(x)   ((x) & 0x3F)
+#define IMM16(x)  ((x) & 0xFFFF)
+#define SIMM16(x) ((int16_t)((x) & 0xFFFF))
+#define TARGET(x) ((x) & 0x03FFFFFF)
+
+/* ================================================================
+ *  Hardware register IDs used in generated code
+ * ================================================================ */
+#define REG_S0   16
+#define REG_S1   17
+#define REG_S2   18
+#define REG_S3   19
+#define REG_S4   20  /* Pinned: PSX $sp (29) */
+#define REG_S5   21  /* Pinned: PSX $ra (31) */
+#define REG_S6   22  /* Pinned: PSX $v0 (2)  */
+#define REG_S7   23  /* Pinned: PSX $s8 (30) */
+#define REG_T0   8
+#define REG_T1   9
+#define REG_T2   10
+#define REG_A0   4
+#define REG_A1   5
+#define REG_A2   6
+#define REG_V0   2
+#define REG_RA   31
+#define REG_SP   29
+#define REG_ZERO 0
+
+/* ================================================================
+ *  MIPS instruction builders
+ * ================================================================ */
+#define MK_R(op, rs, rt, rd, sa, fn) \
+    ((((uint32_t)(op)) << 26) | (((uint32_t)(rs)) << 21) | (((uint32_t)(rt)) << 16) | \
+     (((uint32_t)(rd)) << 11) | (((uint32_t)(sa)) << 6) | ((uint32_t)(fn)))
+#define MK_I(op, rs, rt, imm) \
+    ((((uint32_t)(op)) << 26) | (((uint32_t)(rs)) << 21) | (((uint32_t)(rt)) << 16) | \
+     ((uint32_t)((imm) & 0xFFFF)))
+#define MK_J(op, tgt) \
+    ((((uint32_t)(op)) << 26) | ((uint32_t)((tgt) & 0x03FFFFFF)))
+
+/* ================================================================
+ *  Shared state — code buffer
+ * ================================================================ */
+extern uint32_t *code_buffer;
+extern uint32_t *code_ptr;
+extern uint32_t *abort_trampoline_addr;
+
+/* ================================================================
+ *  Shared state — block cache
+ * ================================================================ */
+extern BlockEntry *block_cache;
+extern BlockEntry *block_node_pool;
+extern int block_node_pool_idx;
+
+/* ================================================================
+ *  Shared state — direct block linking
+ * ================================================================ */
+extern PatchSite patch_sites[PATCH_SITE_MAX];
+extern int patch_sites_count;
+#ifdef ENABLE_DYNAREC_STATS
+extern uint64_t stat_dbl_patches;
+#endif
+
+/* ================================================================
+ *  Shared state — compile-time
+ * ================================================================ */
+extern uint32_t blocks_compiled;
+extern uint32_t total_instructions;
+extern uint32_t block_cycle_count;
+extern uint32_t emit_current_psx_pc;
+extern int dynarec_load_defer;
+extern int dynarec_lwx_pending;
+
+/* ================================================================
+ *  Shared state — stats / perf
+ * ================================================================ */
+#ifdef ENABLE_DYNAREC_STATS
+extern uint64_t stat_cache_hits;
+extern uint64_t stat_cache_misses;
+extern uint64_t stat_cache_collisions;
+extern uint64_t stat_blocks_executed;
+extern uint64_t stat_total_cycles;
+extern uint64_t stat_total_native_instrs;
+extern uint64_t stat_total_psx_instrs;
+#endif
+
+#ifdef ENABLE_HOST_LOG
+extern FILE *host_log_file;
+#endif
+
+/* ================================================================
+ *  Inline emitter — emit() must be inlined for code-gen performance
+ * ================================================================ */
+static inline void emit(uint32_t inst)
+{
+    *code_ptr++ = inst;
+}
+
+/* ================================================================
+ *  Common instruction emitters
+ * ================================================================ */
+#define EMIT_NOP()              emit(0)
+#define EMIT_LW(rt, off, base)  emit(MK_I(0x23, (base), (rt), (off)))
+#define EMIT_SW(rt, off, base)  emit(MK_I(0x2B, (base), (rt), (off)))
+#define EMIT_LH(rt, off, base)  emit(MK_I(0x21, (base), (rt), (off)))
+#define EMIT_LHU(rt, off, base) emit(MK_I(0x25, (base), (rt), (off)))
+#define EMIT_LB(rt, off, base)  emit(MK_I(0x20, (base), (rt), (off)))
+#define EMIT_LBU(rt, off, base) emit(MK_I(0x24, (base), (rt), (off)))
+#define EMIT_SH(rt, off, base)  emit(MK_I(0x29, (base), (rt), (off)))
+#define EMIT_SB(rt, off, base)  emit(MK_I(0x28, (base), (rt), (off)))
+#define EMIT_ADDIU(rt, rs, imm) emit(MK_I(0x09, (rs), (rt), (imm)))
+#define EMIT_ADDU(rd, rs, rt)   emit(MK_R(0, (rs), (rt), (rd), 0, 0x21))
+#define EMIT_OR(rd, rs, rt)     emit(MK_R(0, (rs), (rt), (rd), 0, 0x25))
+#define EMIT_LUI(rt, imm)       emit(MK_I(0x0F, 0, (rt), (imm)))
+#define EMIT_ORI(rt, rs, imm)   emit(MK_I(0x0D, (rs), (rt), (imm)))
+#define EMIT_MOVE(rd, rs)       EMIT_ADDU(rd, rs, 0)
+#define EMIT_JR(rs)             emit(MK_R(0, (rs), 0, 0, 0, 0x08))
+#define EMIT_JAL_ABS(addr)      emit(MK_J(3, (uint32_t)(addr) >> 2))
+#define EMIT_J_ABS(addr)        emit(MK_J(2, (uint32_t)(addr) >> 2))
+#define EMIT_BEQ(rs, rt, off)   emit(MK_I(4, (rs), (rt), (off)))
+#define EMIT_BNE(rs, rt, off)   emit(MK_I(5, (rs), (rt), (off)))
+
+/* R5900 specialized emitters */
+#define EMIT_MOVZ(rd, rs, rt)  emit(MK_R(0, (rs), (rt), (rd), 0, 0x0A))
+#define EMIT_MOVN(rd, rs, rt)  emit(MK_R(0, (rs), (rt), (rd), 0, 0x0B))
+#define EMIT_MADD(rs, rt)      emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x00))
+#define EMIT_MADDU(rs, rt)     emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x01))
+#define EMIT_MULT1(rs, rt)     emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x18))
+#define EMIT_MULTU1(rs, rt)    emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x19))
+#define EMIT_DIV1(rs, rt)      emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x1A))
+#define EMIT_DIVU1(rs, rt)     emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x1B))
+#define EMIT_MFLO1(rd)         emit(MK_R(0x1C, 0, 0, (rd), 0, 0x12))
+#define EMIT_MFHI1(rd)         emit(MK_R(0x1C, 0, 0, (rd), 0, 0x10))
+#define EMIT_MTLO1(rs)         emit(MK_R(0x1C, (rs), 0, 0, 0, 0x13))
+#define EMIT_MTHI1(rs)         emit(MK_R(0x1C, (rs), 0, 0, 0, 0x11))
+
+/* ================================================================
+ *  Function prototypes — dynarec_emit.c
+ * ================================================================ */
+extern const int psx_pinned_reg[32];
+
+void emit_load_psx_reg(int hwreg, int r);
+void emit_store_psx_reg(int r, int hwreg);
+void emit_flush_pinned(void);
+void emit_reload_pinned(void);
+void emit_call_c(uint32_t func_addr);
+void emit_abort_check(void);
+void emit_load_imm32(int hwreg, uint32_t val);
+
+/* ================================================================
+ *  Function prototypes — dynarec_cache.c
+ * ================================================================ */
+uint32_t *lookup_block_native(uint32_t psx_pc);
+void emit_direct_link(uint32_t target_psx_pc);
+void apply_pending_patches(uint32_t target_psx_pc, uint32_t *native_addr);
+uint32_t *get_psx_code_ptr(uint32_t psx_pc);
+uint32_t *lookup_block(uint32_t psx_pc);
+void cache_block(uint32_t psx_pc, uint32_t *native);
+
+/* ================================================================
+ *  Function prototypes — dynarec_memory.c
+ * ================================================================ */
+void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset);
+void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t offset);
+void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset);
+
+/* ================================================================
+ *  Function prototypes — dynarec_compile.c
+ * ================================================================ */
+void emit_block_prologue(void);
+void emit_block_epilogue(void);
+void emit_branch_epilogue(uint32_t target_pc);
+uint32_t r3000a_cycle_cost(uint32_t opcode);
+int instruction_reads_gpr(uint32_t opcode, int reg);
+int instruction_writes_gpr(uint32_t opcode, int reg);
+uint32_t *compile_block(uint32_t psx_pc);
+
+/* ================================================================
+ *  Function prototypes — dynarec_insn.c
+ * ================================================================ */
+int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count);
+void debug_mtc0_sr(uint32_t val);
+int BIOS_HLE_A(void);
+int BIOS_HLE_B(void);
+int BIOS_HLE_C(void);
+
+/* ================================================================
+ *  Function prototypes — dynarec_run.c
+ * ================================================================ */
+void dynarec_print_stats(void);
+
+#endif /* DYNAREC_H */
