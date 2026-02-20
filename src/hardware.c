@@ -98,9 +98,11 @@ static uint16_t sio_baud = 0;
 static int sio_tx_pending = 0; /* 1 = RX data available */
 
 /* Controller protocol state machine */
-static int sio_state = 0;       /* Current byte index in protocol */
-static uint8_t sio_response[5]; /* Pre-built response buffer */
-static int sio_selected = 0;    /* 1 = JOY SELECT is asserted */
+static int sio_state = 0;        /* Current byte index in protocol */
+static uint8_t sio_response[20]; /* Pre-built response buffer (max 19 for multitap) */
+static int sio_response_len = 0; /* Number of valid bytes in sio_response */
+static int sio_selected = 0;     /* 1 = JOY SELECT is asserted */
+static int sio_port = 0;         /* 0 = PSX port 1, 1 = PSX port 2 (from JOY_CTRL bit 13) */
 
 /* SIO Serial Port (0x1F801050-0x1F80105E) */
 static uint16_t serial_mode = 0;
@@ -148,8 +150,8 @@ uint32_t ReadHardware(uint32_t addr)
         uint32_t stat = 0x00000005; /* TX Ready 1 + 2 always set */
         if (sio_tx_pending)
             stat |= 0x02; /* RX Not Empty */
-        /* Report /ACK low (active) during active transfer (bytes 0-3) */
-        if (sio_selected && sio_state > 0 && sio_state < 5)
+        /* Report /ACK low (active) during active transfer (not after last byte) */
+        if (sio_selected && sio_state > 0 && sio_state < sio_response_len)
             stat |= 0x80; /* /ACK input level */
         return stat;
     }
@@ -662,25 +664,56 @@ void WriteHardware(uint32_t addr, uint32_t data)
             return;
         }
 
-        switch (sio_state)
+        if (sio_state == 0)
         {
-        case 0:
             /* Byte 0: Host sends 0x01 to select controller */
             if (tx == 0x01)
             {
-                /* Snapshot the buttons now for this entire transfer */
-                Joystick_GetPSXDigitalResponse(sio_response + 1);
-                sio_response[0] = 0xFF; /* hi-z during address byte */
-                /* response[1]=0x41  response[2]=0x5A  put button bytes after */
-                /* Rearrange: [0]=0xFF [1]=0x41 [2]=0x5A [3]=btnLo [4]=btnHi */
+                /* Check if this PSX port has a multitap connected */
+                if (Joystick_HasMultitap(sio_port))
                 {
-                    uint8_t id = sio_response[1]; /* 0x41 */
-                    uint8_t lo = sio_response[2]; /* buttons low */
-                    uint8_t hi = sio_response[3]; /* buttons high */
-                    sio_response[1] = id;         /* 0x41 */
+                    /* Build multitap response:
+                     * [0]=0xFF  [1]=0x80(multitap ID)  [2]=0x5A
+                     * Then 4 sub-controllers × 4 bytes each:
+                     *   ID_lo, ID_hi(0x5A), btn_lo, btn_hi
+                     *   (or 0xFF,0xFF,0xFF,0xFF if disconnected) */
+                    int slot;
+                    sio_response[0] = 0xFF;
+                    sio_response[1] = 0x80;
+                    sio_response[2] = 0x5A;
+                    for (slot = 0; slot < 4; slot++)
+                    {
+                        int base = 3 + slot * 4;
+                        if (Joystick_IsConnected(sio_port, slot))
+                        {
+                            uint8_t pad[3];
+                            Joystick_GetPSXDigitalResponse(sio_port, slot, pad);
+                            sio_response[base]     = pad[0]; /* 0x41 */
+                            sio_response[base + 1] = 0x5A;
+                            sio_response[base + 2] = pad[1]; /* btn_lo */
+                            sio_response[base + 3] = pad[2]; /* btn_hi */
+                        }
+                        else
+                        {
+                            sio_response[base]     = 0xFF;
+                            sio_response[base + 1] = 0xFF;
+                            sio_response[base + 2] = 0xFF;
+                            sio_response[base + 3] = 0xFF;
+                        }
+                    }
+                    sio_response_len = 19; /* 3 header + 4×4 controller data */
+                }
+                else
+                {
+                    /* Single controller — snapshot buttons */
+                    uint8_t pad[3];
+                    Joystick_GetPSXDigitalResponse(sio_port, 0, pad);
+                    sio_response[0] = 0xFF;       /* hi-z during address byte */
+                    sio_response[1] = pad[0];     /* 0x41 = digital pad ID */
                     sio_response[2] = 0x5A;       /* data-start marker */
-                    sio_response[3] = lo;
-                    sio_response[4] = hi;
+                    sio_response[3] = pad[1];     /* btn_lo */
+                    sio_response[4] = pad[2];     /* btn_hi */
+                    sio_response_len = 5;
                 }
                 sio_data = sio_response[0]; /* 0xFF */
                 sio_state = 1;
@@ -694,42 +727,27 @@ void WriteHardware(uint32_t addr, uint32_t data)
                 sio_data = 0xFF;
                 sio_tx_pending = 1;
             }
-            break;
-        case 1:
-            /* Byte 1: Host sends 0x42 (Read command) */
-            sio_data = sio_response[1]; /* 0x41 = digital pad ID */
-            sio_state = 2;
+        }
+        else if (sio_state < sio_response_len)
+        {
+            /* Serve next byte from pre-built response */
+            sio_data = sio_response[sio_state];
             sio_tx_pending = 1;
-            sio_irq_delay_cycle = global_cycles + SIO_IRQ_DELAY;
-            break;
-        case 2:
-            /* Byte 2: Host sends 0x00, controller responds 0x5A */
-            sio_data = sio_response[2]; /* 0x5A */
-            sio_state = 3;
-            sio_tx_pending = 1;
-            sio_irq_delay_cycle = global_cycles + SIO_IRQ_DELAY;
-            break;
-        case 3:
-            /* Byte 3: Host sends 0x00, controller responds button low byte */
-            sio_data = sio_response[3];
-            sio_state = 4;
-            sio_tx_pending = 1;
-            sio_irq_delay_cycle = global_cycles + SIO_IRQ_DELAY;
-            break;
-        case 4:
-            /* Byte 4: Host sends 0x00, controller responds button high byte.
-             * This is the LAST byte — the real controller does NOT pulse /ACK
-             * after it, so no IRQ7 should be generated. */
-            sio_data = sio_response[4];
-            sio_state = 5; /* transfer complete */
-            sio_tx_pending = 1;
-            /* No IRQ7 for last byte — /ACK is "more-data-request" */
-            break;
-        default:
+
+            if (sio_state < sio_response_len - 1)
+            {
+                /* Not the last byte — generate ACK/IRQ */
+                sio_irq_delay_cycle = global_cycles + SIO_IRQ_DELAY;
+            }
+            /* Last byte: no IRQ (no ACK after final byte) */
+
+            sio_state++;
+        }
+        else
+        {
             /* Beyond protocol length - return hi-z */
             sio_data = 0xFF;
             sio_tx_pending = 1;
-            break;
         }
         return;
     }
@@ -749,7 +767,9 @@ void WriteHardware(uint32_t addr, uint32_t data)
             sio_baud = 0;
             sio_tx_pending = 0;
             sio_state = 0;
+            sio_response_len = 0;
             sio_selected = 0;
+            sio_port = 0;
             sio_data = 0xFF;
             sio_irq_delay_cycle = 0; /* Cancel any pending SIO IRQ */
             return;
@@ -759,6 +779,8 @@ void WriteHardware(uint32_t addr, uint32_t data)
             /* ACK - acknowledge interrupt */
             sio_stat &= ~(1 << 9); /* Clear IRQ flag */
         }
+        /* Bit 13: Desired slot number (0=port1, 1=port2) */
+        sio_port = (data >> 13) & 1;
         /* Bit 1: JOYn output select - directly controls /SEL line */
         if (data & 0x02)
         {
