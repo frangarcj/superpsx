@@ -239,6 +239,34 @@ static void emit_call_c(uint32_t func_addr)
     emit_reload_pinned();
 }
 
+/*
+ * Emit a mid-block abort check after a C helper that may trigger a PSX
+ * exception (ADD/SUB/ADDI overflow, LW/LH/SH/SW alignment, CpU, etc.).
+ *
+ * Generated code:
+ *   lui  t0, hi(&psx_block_aborted)
+ *   ori  t0, t0, lo(&psx_block_aborted)
+ *   lw   t0, 0(t0)
+ *   beq  t0, zero, @skip    ; no abort → continue block
+ *   nop
+ *   <inline epilogue>       ; abort → flush pinned, restore, return
+ * @skip:
+ */
+static void emit_load_imm32(int hwreg, uint32_t val); /* fwd decl */
+static void emit_block_epilogue(void);                /* fwd decl */
+static void emit_abort_check(void)
+{
+    uint32_t addr = (uint32_t)(uintptr_t)&psx_block_aborted;
+    emit_load_imm32(REG_T0, addr);
+    EMIT_LW(REG_T0, 0, REG_T0);
+    uint32_t *branch = code_ptr;
+    EMIT_BEQ(REG_T0, REG_ZERO, 0); /* patched below */
+    EMIT_NOP();
+    emit_block_epilogue();
+    int32_t off = (int32_t)(code_ptr - branch - 1);
+    *branch = (*branch & 0xFFFF0000) | ((uint32_t)off & 0xFFFF);
+}
+
 /* Load 32-bit immediate into hw register */
 static void emit_load_imm32(int hwreg, uint32_t val)
 {
@@ -1362,6 +1390,7 @@ static void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset)
         *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff2 & 0xFFFF);
         EMIT_MOVE(REG_A0, REG_T0);
         emit_call_c((uint32_t)ReadWord);
+        emit_abort_check(); /* AdEL on misaligned addr */
         /* @done */
         int32_t doff = (int32_t)(code_ptr - fast_done - 1);
         *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
@@ -1379,6 +1408,8 @@ static void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset)
     else
         func_addr = (uint32_t)ReadByte;
     emit_call_c((uint32_t)func_addr);
+    if (size >= 2)
+        emit_abort_check(); /* AdEL on misaligned halfword */
     if (!dynarec_load_defer)
         emit_store_psx_reg(rt_psx, REG_V0);
 }
@@ -1480,6 +1511,7 @@ static void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
         EMIT_MOVE(REG_A1, REG_T2); /* a1 = data */
         emit_call_c((uint32_t)WriteWord);
+        emit_abort_check(); /* AdES on misaligned addr */
         /* @done */
         int32_t doff = (int32_t)(code_ptr - fast_done - 1);
         *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
@@ -1495,6 +1527,8 @@ static void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     else
         func_addr = (uint32_t)WriteByte;
     emit_call_c((uint32_t)func_addr);
+    if (size >= 2)
+        emit_abort_check(); /* AdES on misaligned halfword */
 }
 
 /* ---- Emit a non-branch instruction ---- */
@@ -1772,6 +1806,7 @@ static int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_load_imm32(6, rd);        /* a2 = rd index */
             emit_load_imm32(7, psx_pc);    /* a3 = PC */
             emit_call_c((uint32_t)Helper_ADD);
+            emit_abort_check();
             break;
         case 0x21: /* ADDU */
             emit_load_psx_reg(REG_T0, rs);
@@ -1785,6 +1820,7 @@ static int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_load_imm32(6, rd);        /* a2 = rd index */
             emit_load_imm32(7, psx_pc);    /* a3 = PC */
             emit_call_c((uint32_t)Helper_SUB);
+            emit_abort_check();
             break;
         case 0x23: /* SUBU */
             emit_load_psx_reg(REG_T0, rs);
@@ -1843,6 +1879,7 @@ static int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         emit_load_imm32(6, rt);                          /* a2 = rt index */
         emit_load_imm32(7, psx_pc);                      /* a3 = PC */
         emit_call_c((uint32_t)Helper_ADDI);
+        emit_abort_check();
         break;
     }
     case 0x09: /* ADDIU */
