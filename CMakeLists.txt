@@ -36,6 +36,9 @@ set(SUPERPSX_SOURCES
     src/memory.c
     src/cpu.c
     src/hardware.c
+    src/dma.c
+    src/sio.c
+    src/timers.c
     src/gpu_core.c
     src/gpu_gif.c
     src/gpu_vram.c
