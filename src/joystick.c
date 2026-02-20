@@ -40,55 +40,42 @@ struct JoyInfo joyInfo[MAX_CONTROLLERS];
 
 static uint8_t enabled_pads;
 
-// Map PS2 button state to PSX digital controller protocol (ID + 2 bytes for buttons)
-// PSX expects: 0x41 (ID), then 2 bytes: [low, high] (0=pressed)
-// Button mapping: https://problemkaputt.de/psx-spx.htm#controllersioports
-// PS2 padButtonStatus: https://ps2dev.github.io/ps2sdk/ps2sdk/libpad_8h.html
-// This function fills a 3-byte buffer with the PSX controller response
-void Joystick_GetPSXDigitalResponse(uint8_t response[3])
+/* ---- Internal helpers ---- */
+
+static struct JoyInfo *getJoyInfoByPortSlot(int port, int slot)
 {
-    uint32_t ps2 = Joystick_Poll();
-    response[0] = 0x41; // Digital pad ID
-    response[1] = 0xFF;
-    response[2] = 0xFF;
+    uint32_t i;
 
-    // PSX low byte: 0x01=Select, 0x02=L3, 0x04=R3, 0x08=Start, 0x10=Up, 0x20=Right, 0x40=Down, 0x80=Left
-    // PSX high byte: 0x01=L2, 0x02=R2, 0x04=L1, 0x08=R1, 0x10=Triangle, 0x20=Circle, 0x40=Cross, 0x80=Square
+    for (i = 0; i < MAX_CONTROLLERS; i++)
+    {
+        if (joyInfo[i].opened && joyInfo[i].port == port && joyInfo[i].slot == slot)
+            return &joyInfo[i];
+    }
 
-    if (ps2 & PAD_SELECT)
-        response[1] &= ~0x01;
-    if (ps2 & PAD_L3)
-        response[1] &= ~0x02;
-    if (ps2 & PAD_R3)
-        response[1] &= ~0x04;
-    if (ps2 & PAD_START)
-        response[1] &= ~0x08;
-    if (ps2 & PAD_UP)
-        response[1] &= ~0x10;
-    if (ps2 & PAD_RIGHT)
-        response[1] &= ~0x20;
-    if (ps2 & PAD_DOWN)
-        response[1] &= ~0x40;
-    if (ps2 & PAD_LEFT)
-        response[1] &= ~0x80;
-
-    if (ps2 & PAD_L2)
-        response[2] &= ~0x01;
-    if (ps2 & PAD_R2)
-        response[2] &= ~0x02;
-    if (ps2 & PAD_L1)
-        response[2] &= ~0x04;
-    if (ps2 & PAD_R1)
-        response[2] &= ~0x08;
-    if (ps2 & PAD_TRIANGLE)
-        response[2] &= ~0x10;
-    if (ps2 & PAD_CIRCLE)
-        response[2] &= ~0x20;
-    if (ps2 & PAD_CROSS)
-        response[2] &= ~0x40;
-    if (ps2 & PAD_SQUARE)
-        response[2] &= ~0x80;
+    return NULL;
 }
+
+static uint32_t pollJoyInfo(struct JoyInfo *info)
+{
+    uint32_t data = 0;
+    int32_t state, ret;
+    struct padButtonStatus paddata;
+
+    if (info == NULL)
+        return 0;
+
+    state = padGetState(info->port, info->slot);
+    if (state != PAD_STATE_DISCONN && state != PAD_STATE_EXECCMD && state != PAD_STATE_ERROR)
+    {
+        ret = padRead(info->port, info->slot, &paddata);
+        if (ret != 0)
+            data = (0xFFFF ^ paddata.btns) & 0xFFFF;
+    }
+
+    return data;
+}
+
+/* ---- Public API ---- */
 
 void Joystick_Init(void)
 {
@@ -150,45 +137,77 @@ void Joystick_Shutdown(void)
     deinit_joystick_driver(true);
 }
 
-static struct JoyInfo *getFirstOpenJoyInfo(void)
+int Joystick_HasMultitap(int port)
 {
-    uint32_t i;
-
-    for (i = 0; i < MAX_CONTROLLERS; i++)
-    {
-        if (joyInfo[i].opened)
-            return &joyInfo[i];
-    }
-
-    return NULL;
+    /* Use the PS2 SDK multitap detection — only returns true
+     * when a multitap adapter is actually connected/emulated */
+    return mtapGetConnection(port) == 1;
 }
 
-static uint32_t basicPoll(void)
+int Joystick_IsConnected(int port, int slot)
 {
-    uint32_t data = 0;
-    int32_t state, ret;
-    struct padButtonStatus paddata;
-    struct JoyInfo *info;
-
-    info = getFirstOpenJoyInfo();
-    if (info == NULL)
-        return 0;
-
-    state = padGetState(info->port, info->slot);
-    if (state != PAD_STATE_DISCONN && state != PAD_STATE_EXECCMD && state != PAD_STATE_ERROR)
-    {
-        ret = padRead(info->port, info->slot, &paddata);
-        if (ret != 0)
-            data = (0xFFFF ^ paddata.btns) & 0xFFFF;
-    }
-
-    return data;
+    return getJoyInfoByPortSlot(port, slot) != NULL;
 }
 
-uint32_t Joystick_Poll(void)
+uint32_t Joystick_PollPort(int port)
 {
     if (enabled_pads == 0)
         return 0;
 
-    return basicPoll();
+    return pollJoyInfo(getJoyInfoByPortSlot(port, 0));
+}
+
+uint32_t Joystick_Poll(void)
+{
+    return Joystick_PollPort(0);
+}
+
+// Map PS2 button state to PSX digital controller protocol (ID + 2 bytes for buttons)
+// PSX expects: 0x41 (ID), then 2 bytes: [low, high] (0=pressed)
+// Button mapping: https://problemkaputt.de/psx-spx.htm#controllersioports
+// PS2 padButtonStatus: https://ps2dev.github.io/ps2sdk/ps2sdk/libpad_8h.html
+// This function fills a 3-byte buffer with the PSX controller response
+void Joystick_GetPSXDigitalResponse(int port, int slot, uint8_t response[3])
+{
+    uint32_t ps2 = pollJoyInfo(getJoyInfoByPortSlot(port, slot));
+    response[0] = 0x41; // Digital pad ID
+    response[1] = 0xFF;
+    response[2] = 0xFF;
+
+    // PSX low byte: 0x01=Select, 0x02=L3, 0x04=R3, 0x08=Start, 0x10=Up, 0x20=Right, 0x40=Down, 0x80=Left
+    // PSX high byte: 0x01=L2, 0x02=R2, 0x04=L1, 0x08=R1, 0x10=Triangle, 0x20=Circle, 0x40=Cross, 0x80=Square
+
+    if (ps2 & PAD_SELECT)
+        response[1] &= ~0x01;
+    if (ps2 & PAD_L3)
+        response[1] &= ~0x02;
+    if (ps2 & PAD_R3)
+        response[1] &= ~0x04;
+    if (ps2 & PAD_START)
+        response[1] &= ~0x08;
+    if (ps2 & PAD_UP)
+        response[1] &= ~0x10;
+    if (ps2 & PAD_RIGHT)
+        response[1] &= ~0x20;
+    if (ps2 & PAD_DOWN)
+        response[1] &= ~0x40;
+    if (ps2 & PAD_LEFT)
+        response[1] &= ~0x80;
+
+    if (ps2 & PAD_L2)
+        response[2] &= ~0x01;
+    if (ps2 & PAD_R2)
+        response[2] &= ~0x02;
+    if (ps2 & PAD_L1)
+        response[2] &= ~0x04;
+    if (ps2 & PAD_R1)
+        response[2] &= ~0x08;
+    if (ps2 & PAD_TRIANGLE)
+        response[2] &= ~0x10;
+    if (ps2 & PAD_CIRCLE)
+        response[2] &= ~0x20;
+    if (ps2 & PAD_CROSS)
+        response[2] &= ~0x40;
+    if (ps2 & PAD_SQUARE)
+        response[2] &= ~0x80;
 }
