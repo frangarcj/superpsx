@@ -13,6 +13,7 @@
 #include "superpsx.h"
 #include "config.h"
 #include "joystick.h"
+#include "spu.h"
 #include "iso_image.h"
 #include "iso_fs.h"
 
@@ -73,14 +74,14 @@ static void prepare_IOP()
 static void init_drivers()
 {
     init_only_boot_ps2_filesystem_driver();
-    init_audio_driver();
+    SPU_Init();
     Joystick_Init();
 }
 
 static void deinit_drivers()
 {
     Joystick_Shutdown();
-    deinit_audio_driver();
+    SPU_Shutdown();
     deinit_only_boot_ps2_filesystem_driver();
 }
 

@@ -24,6 +24,7 @@
 #include "scheduler.h"
 #include "gpu_state.h"
 #include "loader.h"
+#include "spu.h"
 
 #define LOG_TAG "DYNAREC"
 
@@ -2444,6 +2445,7 @@ static void Sched_HBlank_Callback(void)
         hblank_scanline = 0;
         GPU_VBlank();
         SignalInterrupt(0);   /* PSX IRQ0 = VBLANK */
+        SPU_GenerateSamples(); /* Mix and output one frame of audio */
 
         /* Emulation speed report every 60 emulated frames (~1 sec of PSX time) */
         perf_frame_count++;
