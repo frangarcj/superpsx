@@ -10,7 +10,6 @@ R3000CPU cpu;
 /* Exception support for dynarec mid-block exceptions */
 jmp_buf psx_block_jmp;
 volatile int psx_block_exception = 0;
-volatile int psx_block_aborted = 0;   /* set by PSX_Exception when inside block */
 uint32_t psx_abort_pc = 0;            /* saved exception-handler PC            */
 
 /* ---- PSX Exception Handling ---- */
@@ -87,7 +86,7 @@ void PSX_Exception(uint32_t cause_code)
     /* If we're inside a dynarec block, signal early abort instead of longjmp */
     if (psx_block_exception)
     {
-        psx_block_aborted = 1;
+        cpu.block_aborted = 1;
         psx_abort_pc = cpu.pc;
         return;
     }
@@ -137,7 +136,7 @@ void Helper_CU_Exception(uint32_t pc, uint32_t cop_num)
 
     if (psx_block_exception)
     {
-        psx_block_aborted = 1;
+        cpu.block_aborted = 1;
         psx_abort_pc = cpu.pc;
         return;
     }

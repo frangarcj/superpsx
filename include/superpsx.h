@@ -36,6 +36,7 @@ typedef struct
     uint32_t load_delay_val; /* Load delay slot: pending value */
     uint32_t i_stat;         /* Interrupt Status Register */
     uint32_t i_mask;         /* Interrupt Mask Register */
+    uint32_t block_aborted;  /* Set by PSX_Exception mid-block; checked by JIT */
 } R3000CPU;
 
 /* Struct offsets for asm code generation */
@@ -49,6 +50,9 @@ typedef struct
 #define CPU_CURRENT_PC (32 * 4 + 12 + 32 * 4 + 32 * 4 + 32 * 4)
 #define CPU_LOAD_DELAY_REG (CPU_CURRENT_PC + 4)
 #define CPU_LOAD_DELAY_VAL (CPU_CURRENT_PC + 8)
+#define CPU_I_STAT (CPU_LOAD_DELAY_VAL + 4)
+#define CPU_I_MASK (CPU_I_STAT + 4)
+#define CPU_BLOCK_ABORTED (CPU_I_MASK + 4)
 
 /* COP0 register indices */
 #define PSX_COP0_SR 12
@@ -125,7 +129,6 @@ void Helper_ADDI(uint32_t rs_val, uint32_t imm_sext, uint32_t rt, uint32_t pc);
 /*=== Exception support for dynarec ===*/
 extern jmp_buf psx_block_jmp;
 extern volatile int psx_block_exception;
-extern volatile int psx_block_aborted;
 extern uint32_t psx_abort_pc;
 
 /*=== CD-ROM ===*/

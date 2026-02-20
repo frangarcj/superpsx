@@ -246,15 +246,15 @@ static uint32_t *abort_trampoline_addr;
  * Emit a mid-block abort check after a C helper that may trigger a PSX
  * exception (ADD/SUB/ADDI overflow, LW/LH/SH/SW alignment, CpU, etc.).
  *
- * $s3 is preloaded in the block prologue with &psx_block_aborted.
+ * cpu.block_aborted is at offset CPU_BLOCK_ABORTED from $s0 (cpu ptr).
  * The abort trampoline (emit_block_epilogue style) lives at a fixed offset
  * in code_buffer and is shared across all blocks.
  *
  * Generated code (5 instructions, 3 on normal path):
- *   lw   t0, 0(s3)          ; load abort flag
- *   beq  t0, zero, @skip    ; no abort → continue
+ *   lw   t0, CPU_BLOCK_ABORTED(s0) ; load abort flag from cpu struct
+ *   beq  t0, zero, @skip           ; no abort -> continue
  *   nop
- *   j    abort_trampoline   ; abort → shared epilogue
+ *   j    abort_trampoline           ; abort -> shared epilogue
  *   nop
  * @skip:
  */
@@ -262,7 +262,7 @@ static void emit_load_imm32(int hwreg, uint32_t val); /* fwd decl */
 static void emit_block_epilogue(void);                /* fwd decl */
 static void emit_abort_check(void)
 {
-    EMIT_LW(REG_T0, 0, REG_S3);    /* t0 = psx_block_aborted */
+    EMIT_LW(REG_T0, CPU_BLOCK_ABORTED, REG_S0); /* t0 = cpu.block_aborted */
     EMIT_BEQ(REG_T0, REG_ZERO, 3); /* skip next 2 instrs if zero */
     EMIT_NOP();
     EMIT_J_ABS((uint32_t)abort_trampoline_addr);
@@ -1257,12 +1257,6 @@ static void emit_block_prologue(void)
     EMIT_MOVE(REG_S0, REG_A0);
     EMIT_MOVE(REG_S1, REG_A1);
     EMIT_MOVE(REG_S2, 6); /* $a2 = register 6 */
-    /* $s3 = &psx_block_aborted (for fast abort checks in generated code) */
-    {
-        uint32_t aborted_addr = (uint32_t)(uintptr_t)&psx_block_aborted;
-        EMIT_LUI(REG_S3, aborted_addr >> 16);
-        EMIT_ORI(REG_S3, REG_S3, aborted_addr & 0xFFFF);
-    }
     /* Load pinned PSX registers from cpu struct */
     EMIT_LW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
     EMIT_LW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
@@ -1356,10 +1350,6 @@ static void emit_branch_epilogue(uint32_t target_pc)
  */
 static void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset)
 {
-    /* Store current PSX PC for exception handling */
-    emit_load_imm32(REG_T2, emit_current_psx_pc);
-    EMIT_SW(REG_T2, CPU_CURRENT_PC, REG_S0);
-
     /* Compute effective address into REG_T0 */
     emit_load_psx_reg(REG_T0, rs_psx);
     EMIT_ADDIU(REG_T0, REG_T0, offset);
@@ -1391,11 +1381,13 @@ static void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset)
         emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
         EMIT_NOP();
 
-        /* Slow path */
+        /* Slow path: store current_pc (needed by AdEL exception handler) */
         int32_t soff1 = (int32_t)(code_ptr - align_branch - 1);
         *align_branch = (*align_branch & 0xFFFF0000) | ((uint32_t)soff1 & 0xFFFF);
         int32_t soff2 = (int32_t)(code_ptr - range_branch - 1);
         *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff2 & 0xFFFF);
+        emit_load_imm32(REG_T2, emit_current_psx_pc);
+        EMIT_SW(REG_T2, CPU_CURRENT_PC, REG_S0);
         EMIT_MOVE(REG_A0, REG_T0);
         emit_call_c((uint32_t)ReadWord);
         emit_abort_check(); /* AdEL on misaligned addr */
@@ -1409,6 +1401,12 @@ static void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset)
     }
 
     /* Non-LW: slow path only */
+    if (size >= 2)
+    {
+        /* Store current_pc for exception handler (ReadHalf can throw AdEL) */
+        emit_load_imm32(REG_T2, emit_current_psx_pc);
+        EMIT_SW(REG_T2, CPU_CURRENT_PC, REG_S0);
+    }
     EMIT_MOVE(REG_A0, REG_T0);
     uint32_t func_addr;
     if (size == 2)
@@ -1464,10 +1462,6 @@ static void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t of
 
 static void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
 {
-    /* Store current PSX PC for exception handling */
-    emit_load_imm32(REG_T2, emit_current_psx_pc);
-    EMIT_SW(REG_T2, CPU_CURRENT_PC, REG_S0);
-
     /* Compute effective address into REG_T0, data into REG_T2 */
     emit_load_psx_reg(REG_T0, rs_psx);
     EMIT_ADDIU(REG_T0, REG_T0, offset);
@@ -1509,13 +1503,15 @@ static void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b    @done */
         EMIT_NOP();
 
-        /* Slow path - back-patch all branch offsets pointing here */
+        /* Slow path: store current_pc (needed by AdES exception handler) */
         int32_t soff0 = (int32_t)(code_ptr - isc_branch - 1);
         *isc_branch = (*isc_branch & 0xFFFF0000) | ((uint32_t)soff0 & 0xFFFF);
         int32_t soff1 = (int32_t)(code_ptr - align_branch - 1);
         *align_branch = (*align_branch & 0xFFFF0000) | ((uint32_t)soff1 & 0xFFFF);
         int32_t soff2 = (int32_t)(code_ptr - range_branch - 1);
         *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff2 & 0xFFFF);
+        emit_load_imm32(REG_A1, emit_current_psx_pc); /* reuse a1 temp */
+        EMIT_SW(REG_A1, CPU_CURRENT_PC, REG_S0);
         EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
         EMIT_MOVE(REG_A1, REG_T2); /* a1 = data */
         emit_call_c((uint32_t)WriteWord);
@@ -1527,6 +1523,12 @@ static void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     }
 
     /* Non-SW: slow path only */
+    if (size >= 2)
+    {
+        /* Store current_pc for exception handler (WriteHalf can throw AdES) */
+        emit_load_imm32(REG_A1, emit_current_psx_pc);
+        EMIT_SW(REG_A1, CPU_CURRENT_PC, REG_S0);
+    }
     EMIT_MOVE(REG_A0, REG_T0);
     EMIT_MOVE(REG_A1, REG_T2);
     uint32_t func_addr;
@@ -2787,10 +2789,10 @@ void Run_CPU(void)
             psx_block_exception = 0;
 
             /* If an exception occurred mid-block, restore the correct PC */
-            if (__builtin_expect(psx_block_aborted, 0))
+            if (__builtin_expect(cpu.block_aborted, 0))
             {
                 cpu.pc = psx_abort_pc;
-                psx_block_aborted = 0;
+                cpu.block_aborted = 0;
             }
 
             /* Advance global cycle counter using weighted cycle cost */
