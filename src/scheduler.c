@@ -19,6 +19,7 @@ SchedEvent sched_events[SCHED_EVENT_COUNT];
 uint64_t global_cycles = 0;
 int scheduler_unlimited_speed = 0;
 uint64_t scheduler_cached_earliest = UINT64_MAX;
+int scheduler_earliest_id = -1;
 
 /* ---- Init ---- */
 void Scheduler_Init(void)
@@ -26,5 +27,6 @@ void Scheduler_Init(void)
     memset(sched_events, 0, sizeof(sched_events));
     global_cycles = 0;
     scheduler_cached_earliest = UINT64_MAX;
+    scheduler_earliest_id = -1;
     printf("Scheduler initialized (%d event slots)\n", SCHED_EVENT_COUNT);
 }

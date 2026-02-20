@@ -29,24 +29,9 @@ static uint32_t ram_size = 0x00000B88; /* 0x1F801060 */
 /* Interrupt Controller */
 /* i_stat and i_mask are now members of cpu (see include/superpsx.h) */
 
-static int VBlankHandler(int cause)
-{
-    /* PSX VBlank IRQ0 is now fired by the cycle-accurate HBlank scheduler
-     * callback (Sched_HBlank_Callback in dynarec.c) every 263 scanlines.
-     * We still flush the GIF here at PS2 VBlank rate so the display keeps
-     * updating at 60 Hz even when the emulated PSX CPU runs slower. */
-    gpu_pending_vblank_flush = 1;
-    (void)cause;
-    return -1; /* Call next handler */
-}
-
 void Init_Interrupts(void)
 {
-    int vblank_irq = INTC_VBLANK_S;
-    /* Use Start or End VBlank? S is start. */
-    AddIntcHandler(vblank_irq, VBlankHandler, 0);
-    EnableIntc(vblank_irq);
-    printf("Native PS2 VBlank Interrupt enabled.\n");
+    printf("PS2 VBlank Interrupt DISABLED (using cycle-accurate scheduler for PSX VBlank).\n");
 }
 
 /* Called by GPU when display resolution changes (GP1(08h)) */

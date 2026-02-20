@@ -239,7 +239,7 @@ static uint32_t get_wall_ms(void)
 }
 
 /* Number of scanlines to batch per HBlank event. */
-#define HBLANK_BATCH_SIZE 16
+#define HBLANK_BATCH_SIZE 32
 
 static void Sched_HBlank_Callback(void)
 {
@@ -252,6 +252,7 @@ static void Sched_HBlank_Callback(void)
     {
         hblank_scanline = 0;
         GPU_VBlank();
+        gpu_pending_vblank_flush = 1; /* Trigger GS flush on emulated VBlank */
         SignalInterrupt(0); /* PSX IRQ0 = VBLANK */
         SPU_GenerateSamples();
 

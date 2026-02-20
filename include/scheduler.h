@@ -70,6 +70,7 @@ extern SchedEvent sched_events[SCHED_EVENT_COUNT];
 extern uint64_t global_cycles;
 extern int scheduler_unlimited_speed;
 extern uint64_t scheduler_cached_earliest;
+extern int scheduler_earliest_id;
 
 /* ---- Init (in scheduler.c) ---- */
 void Scheduler_Init(void);
@@ -79,33 +80,49 @@ void Scheduler_Init(void);
 static inline void sched_recompute_cached(void)
 {
     uint64_t earliest = UINT64_MAX;
+    int earliest_id = -1;
     int i;
     for (i = 0; i < SCHED_EVENT_COUNT; i++)
     {
         if (sched_events[i].active && sched_events[i].deadline < earliest)
+        {
             earliest = sched_events[i].deadline;
+            earliest_id = i;
+        }
     }
     scheduler_cached_earliest = earliest;
+    scheduler_earliest_id = earliest_id;
 }
 
 static inline void Scheduler_ScheduleEvent(int event_id, uint64_t absolute_cycle,
                                            sched_callback_t cb)
 {
+    int was_earliest = (event_id == scheduler_earliest_id);
+    
     sched_events[event_id].active = 1;
     sched_events[event_id].deadline = absolute_cycle;
     sched_events[event_id].callback = cb;
 
-    /* Only recompute if this could change the earliest deadline */
     if (absolute_cycle <= scheduler_cached_earliest)
+    {
         scheduler_cached_earliest = absolute_cycle;
-    else
+        scheduler_earliest_id = event_id;
+    }
+    else if (was_earliest)
+    {
+        /* We just pushed the earliest event further into the future; 
+         * we must re-scan to find the new true earliest. */
         sched_recompute_cached();
+    }
 }
 
 static inline void Scheduler_RemoveEvent(int event_id)
 {
+    int was_earliest = (event_id == scheduler_earliest_id);
     sched_events[event_id].active = 0;
-    sched_recompute_cached();
+    
+    if (was_earliest)
+        sched_recompute_cached();
 }
 
 static inline uint64_t Scheduler_NextDeadline(void)
@@ -121,16 +138,21 @@ static inline uint64_t Scheduler_NextDeadlineFast(void)
 static inline void Scheduler_DispatchEvents(uint64_t current_cycle)
 {
     int i;
+    int needed_recompute = 0;
     for (i = 0; i < SCHED_EVENT_COUNT; i++)
     {
         if (sched_events[i].active && sched_events[i].deadline <= current_cycle)
         {
+            if (i == scheduler_earliest_id)
+                needed_recompute = 1;
+
             sched_events[i].active = 0;
             if (sched_events[i].callback)
                 sched_events[i].callback();
         }
     }
-    sched_recompute_cached();
+    if (needed_recompute)
+        sched_recompute_cached();
 }
 
 #endif /* SCHEDULER_H */
