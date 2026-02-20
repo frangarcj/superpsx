@@ -49,8 +49,9 @@ typedef struct BlockEntry
     uint32_t psx_pc;
     uint32_t *native;
     uint32_t instr_count;    /* Number of PSX instructions in this block */
+    uint32_t native_count;   /* Number of native R5900 instructions generated */
     uint32_t cycle_count;    /* Weighted R3000A cycle count for this block */
-    uint8_t  is_idle;        /* 1 = idle loop (self-jump, no side effects) */
+    uint8_t is_idle;         /* 1 = idle loop (self-jump, no side effects) */
     struct BlockEntry *next; /* Collision chain pointer */
 } BlockEntry;
 
@@ -154,10 +155,10 @@ static inline void emit(uint32_t inst)
 #define REG_S1 17
 #define REG_S2 18
 #define REG_S3 19
-#define REG_S4 20  /* Pinned: PSX $sp (29) */
-#define REG_S5 21  /* Pinned: PSX $ra (31) */
-#define REG_S6 22  /* Pinned: PSX $v0 (2)  */
-#define REG_S7 23  /* Pinned: PSX $s8 (30) */
+#define REG_S4 20 /* Pinned: PSX $sp (29) */
+#define REG_S5 21 /* Pinned: PSX $ra (31) */
+#define REG_S6 22 /* Pinned: PSX $v0 (2)  */
+#define REG_S7 23 /* Pinned: PSX $s8 (30) */
 #define REG_T0 8
 #define REG_T1 9
 #define REG_T2 10
@@ -171,10 +172,10 @@ static inline void emit(uint32_t inst)
 
 /* PSX register → native pinned register (0 = not pinned) */
 static const int psx_pinned_reg[32] = {
-    [2]  = REG_S6,  /* PSX $v0 → native $s6 */
-    [29] = REG_S4,  /* PSX $sp → native $s4 */
-    [30] = REG_S7,  /* PSX $s8 → native $s7 */
-    [31] = REG_S5,  /* PSX $ra → native $s5 */
+    [2] = REG_S6,  /* PSX $v0 → native $s6 */
+    [29] = REG_S4, /* PSX $sp → native $s4 */
+    [30] = REG_S7, /* PSX $s8 → native $s7 */
+    [31] = REG_S5, /* PSX $ra → native $s5 */
 };
 
 /* Load PSX register 'r' from cpu struct into hw reg 'hwreg' */
@@ -211,20 +212,20 @@ static void emit_store_psx_reg(int r, int hwreg)
  * This ensures cpu.regs[] is consistent for C code and exception handlers. */
 static void emit_flush_pinned(void)
 {
-    EMIT_SW(REG_S4, CPU_REG(29), REG_S0);  /* PSX $sp */
-    EMIT_SW(REG_S5, CPU_REG(31), REG_S0);  /* PSX $ra */
-    EMIT_SW(REG_S6, CPU_REG(2),  REG_S0);  /* PSX $v0 */
-    EMIT_SW(REG_S7, CPU_REG(30), REG_S0);  /* PSX $s8 */
+    EMIT_SW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
+    EMIT_SW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
+    EMIT_SW(REG_S6, CPU_REG(2), REG_S0);  /* PSX $v0 */
+    EMIT_SW(REG_S7, CPU_REG(30), REG_S0); /* PSX $s8 */
 }
 
 /* Reload pinned PSX registers from cpu struct after JAL returns.
  * C functions may have modified cpu.regs[] directly. */
 static void emit_reload_pinned(void)
 {
-    EMIT_LW(REG_S4, CPU_REG(29), REG_S0);  /* PSX $sp */
-    EMIT_LW(REG_S5, CPU_REG(31), REG_S0);  /* PSX $ra */
-    EMIT_LW(REG_S6, CPU_REG(2),  REG_S0);  /* PSX $v0 */
-    EMIT_LW(REG_S7, CPU_REG(30), REG_S0);  /* PSX $s8 */
+    EMIT_LW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
+    EMIT_LW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
+    EMIT_LW(REG_S6, CPU_REG(2), REG_S0);  /* PSX $v0 */
+    EMIT_LW(REG_S7, CPU_REG(30), REG_S0); /* PSX $s8 */
 }
 
 /* Emit a JAL to a C helper function with pinned register sync.
@@ -384,28 +385,35 @@ static uint32_t total_instructions = 0;
 
 /* ---- Dynarec Performance Counters (Baseline) ---- */
 #ifdef ENABLE_DYNAREC_STATS
-static uint64_t stat_cache_hits = 0;       /* lookup_block found a block */
-static uint64_t stat_cache_misses = 0;     /* lookup_block returned NULL -> compile */
-static uint64_t stat_cache_collisions = 0; /* hash slot had different psx_pc */
-static uint64_t stat_blocks_executed = 0;  /* total block executions */
-static uint64_t stat_total_cycles = 0;     /* accumulated PSX cycles */
+static uint64_t stat_cache_hits = 0;          /* lookup_block found a block */
+static uint64_t stat_cache_misses = 0;        /* lookup_block returned NULL -> compile */
+static uint64_t stat_cache_collisions = 0;    /* hash slot had different psx_pc */
+static uint64_t stat_blocks_executed = 0;     /* total block executions */
+static uint64_t stat_total_cycles = 0;        /* accumulated PSX cycles */
+static uint64_t stat_total_native_instrs = 0; /* total native R5900 instructions */
+static uint64_t stat_total_psx_instrs = 0;    /* total PSX R3000A instructions */
 #endif
 
-static void dynarec_print_stats(void)
+void dynarec_print_stats(void)
 {
 #ifdef ENABLE_DYNAREC_STATS
     uint64_t total_lookups = stat_cache_hits + stat_cache_misses;
-    DLOG("[DYNAREC STATS]\n");
-    DLOG_RAW("  Blocks executed : %llu\n", (unsigned long long)stat_blocks_executed);
-    DLOG_RAW("  Cache hits      : %llu (%.1f%%)\n",
+    printf("[DYNAREC STATS]\n");
+    printf("  Blocks executed : %llu\n", (unsigned long long)stat_blocks_executed);
+    printf("  Total native R5900 instrs: %llu\n", (unsigned long long)stat_total_native_instrs);
+    printf("  Total PSX R3000A instrs  : %llu\n", (unsigned long long)stat_total_psx_instrs);
+    if (stat_total_psx_instrs > 0)
+        printf("  Expansion Ratio : %.2f (R5900/PSX)\n",
+               (double)stat_total_native_instrs / (double)stat_total_psx_instrs);
+    printf("  Blocks compiled : %u\n", (unsigned)blocks_compiled);
+    printf("  Cache hits      : %llu (%.1f%%)\n",
            (unsigned long long)stat_cache_hits,
            total_lookups ? (double)stat_cache_hits * 100.0 / total_lookups : 0.0);
-    DLOG_RAW("  Cache misses    : %llu (compiles)\n", (unsigned long long)stat_cache_misses);
-    DLOG_RAW("  Cache collisions: %llu\n", (unsigned long long)stat_cache_collisions);
-    DLOG_RAW("  Blocks compiled : %u\n", (unsigned)blocks_compiled);
-    DLOG_RAW("  PSX cycles      : %llu\n", (unsigned long long)stat_total_cycles);
-    DLOG_RAW("  DBL patches     : %llu\n", (unsigned long long)stat_dbl_patches);
-    DLOG_RAW("  DBL pending     : %d\n", patch_sites_count);
+    printf("  Cache misses    : %llu (compiles)\n", (unsigned long long)stat_cache_misses);
+    printf("  Cache collisions: %llu\n", (unsigned long long)stat_cache_collisions);
+    printf("  PSX cycles      : %llu\n", (unsigned long long)stat_total_cycles);
+    printf("  DBL patches     : %llu\n", (unsigned long long)stat_dbl_patches);
+    printf("  DBL pending     : %d\n", patch_sites_count);
     fflush(stdout);
 #endif
 }
@@ -737,7 +745,7 @@ static uint32_t *compile_block(uint32_t psx_pc)
     /* Load delay slot tracking */
     int pending_load_reg = 0;       /* PSX register with pending load (0=none) */
     int pending_load_apply_now = 0; /* 1 = apply before this instruction */
-    int block_mult_count = 0;      /* Tracking for R5900 pipeline balancing (Section 1.3) */
+    int block_mult_count = 0;       /* Tracking for R5900 pipeline balancing (Section 1.3) */
 
     while (!block_ended)
     {
@@ -765,7 +773,10 @@ static uint32_t *compile_block(uint32_t psx_pc)
                 pending_load_reg == RT(opcode))
                 dynarec_lwx_pending = 1;
             if (emit_instruction(opcode, cur_pc, &block_mult_count) < 0)
-            { block_ended = 1; break; }
+            {
+                block_ended = 1;
+                break;
+            }
             dynarec_lwx_pending = 0;
             cur_pc += 4;
             total_instructions++;
@@ -1067,7 +1078,10 @@ static uint32_t *compile_block(uint32_t psx_pc)
                 pending_load_reg == RT(opcode))
                 dynarec_lwx_pending = 1;
             if (emit_instruction(opcode, cur_pc, &block_mult_count) < 0)
-            { block_ended = 1; break; }
+            {
+                block_ended = 1;
+                break;
+            }
             dynarec_lwx_pending = 0;
             dynarec_load_defer = 0;
 
@@ -1164,19 +1178,29 @@ static uint32_t *compile_block(uint32_t psx_pc)
                 /* Store instructions: SB(28) SH(29) SWL(2A) SW(2B) SWR(2E) SWC2(3A) */
                 if (sop == 0x28 || sop == 0x29 || sop == 0x2A ||
                     sop == 0x2B || sop == 0x2E || sop == 0x3A)
-                { is_idle = 0; break; }
+                {
+                    is_idle = 0;
+                    break;
+                }
                 /* COP0/COP2 register writes (MTC0=04, CTC0=06) */
                 if ((sop == 0x10 || sop == 0x12) && (RS(inst) == 4 || RS(inst) == 6))
-                { is_idle = 0; break; }
+                {
+                    is_idle = 0;
+                    break;
+                }
                 /* SYSCALL / BREAK */
                 if (sop == 0 && (FUNC(inst) == 0x0C || FUNC(inst) == 0x0D))
-                { is_idle = 0; break; }
+                {
+                    is_idle = 0;
+                    break;
+                }
                 spc += 4;
             }
         }
 
         uint32_t idx = (psx_pc >> 2) & BLOCK_CACHE_MASK;
         block_cache[idx].instr_count = block_instr_count;
+        block_cache[idx].native_count = (uint32_t)(code_ptr - block_start);
         block_cache[idx].cycle_count = block_cycle_count > 0 ? block_cycle_count : block_instr_count;
         block_cache[idx].is_idle = is_idle;
     }
@@ -1204,20 +1228,20 @@ static void emit_block_prologue(void)
     EMIT_MOVE(REG_S1, REG_A1);
     EMIT_MOVE(REG_S2, 6); /* $a2 = register 6 */
     /* Load pinned PSX registers from cpu struct */
-    EMIT_LW(REG_S4, CPU_REG(29), REG_S0);  /* PSX $sp */
-    EMIT_LW(REG_S5, CPU_REG(31), REG_S0);  /* PSX $ra */
-    EMIT_LW(REG_S6, CPU_REG(2),  REG_S0);  /* PSX $v0 */
-    EMIT_LW(REG_S7, CPU_REG(30), REG_S0);  /* PSX $s8 */
+    EMIT_LW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
+    EMIT_LW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
+    EMIT_LW(REG_S6, CPU_REG(2), REG_S0);  /* PSX $v0 */
+    EMIT_LW(REG_S7, CPU_REG(30), REG_S0); /* PSX $s8 */
 }
 
 /* ---- Block epilogue: flush pinned, restore and return ---- */
 static void emit_block_epilogue(void)
 {
     /* Flush pinned PSX registers back to cpu struct */
-    EMIT_SW(REG_S4, CPU_REG(29), REG_S0);  /* PSX $sp */
-    EMIT_SW(REG_S5, CPU_REG(31), REG_S0);  /* PSX $ra */
-    EMIT_SW(REG_S6, CPU_REG(2),  REG_S0);  /* PSX $v0 */
-    EMIT_SW(REG_S7, CPU_REG(30), REG_S0);  /* PSX $s8 */
+    EMIT_SW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
+    EMIT_SW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
+    EMIT_SW(REG_S6, CPU_REG(2), REG_S0);  /* PSX $v0 */
+    EMIT_SW(REG_S7, CPU_REG(30), REG_S0); /* PSX $s8 */
     /* Restore callee-saved */
     EMIT_LW(REG_S7, 60, REG_SP);
     EMIT_LW(REG_S6, 56, REG_SP);
@@ -1240,10 +1264,10 @@ static void emit_branch_epilogue(uint32_t target_pc)
     EMIT_SW(REG_T0, CPU_PC, REG_S0);
 
     /* Flush pinned PSX registers back to cpu struct */
-    EMIT_SW(REG_S4, CPU_REG(29), REG_S0);  /* PSX $sp */
-    EMIT_SW(REG_S5, CPU_REG(31), REG_S0);  /* PSX $ra */
-    EMIT_SW(REG_S6, CPU_REG(2),  REG_S0);  /* PSX $v0 */
-    EMIT_SW(REG_S7, CPU_REG(30), REG_S0);  /* PSX $s8 */
+    EMIT_SW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
+    EMIT_SW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
+    EMIT_SW(REG_S6, CPU_REG(2), REG_S0);  /* PSX $v0 */
+    EMIT_SW(REG_S7, CPU_REG(30), REG_S0); /* PSX $s8 */
 
     /* Prepare argument registers for the next block's prologue (which expects
      * $a0=cpu, $a1=ram, $a2=bios).  We copy from $s0-$s2 BEFORE restoring. */
@@ -1338,7 +1362,7 @@ static void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset)
         *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff2 & 0xFFFF);
         EMIT_MOVE(REG_A0, REG_T0);
         emit_call_c((uint32_t)ReadWord);
-/* @done */
+        /* @done */
         int32_t doff = (int32_t)(code_ptr - fast_done - 1);
         *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
 
@@ -1355,7 +1379,7 @@ static void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset)
     else
         func_addr = (uint32_t)ReadByte;
     emit_call_c((uint32_t)func_addr);
-if (!dynarec_load_defer)
+    if (!dynarec_load_defer)
         emit_store_psx_reg(rt_psx, REG_V0);
 }
 
@@ -1456,7 +1480,7 @@ static void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
         EMIT_MOVE(REG_A1, REG_T2); /* a1 = data */
         emit_call_c((uint32_t)WriteWord);
-/* @done */
+        /* @done */
         int32_t doff = (int32_t)(code_ptr - fast_done - 1);
         *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
         return;
@@ -1659,13 +1683,13 @@ static int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_call_c((uint32_t)Helper_Syscall_Exception);
             emit_block_epilogue();
             return -1; /* Signal caller to end block */
-        case 0x0D: /* BREAK */
+        case 0x0D:     /* BREAK */
             /* Trigger proper PSX exception (code 9) — end block here */
             emit_load_imm32(REG_A0, psx_pc);
             emit_call_c((uint32_t)Helper_Break_Exception);
             emit_block_epilogue();
             return -1; /* Signal caller to end block */
-        case 0x10: /* MFHI */
+        case 0x10:     /* MFHI */
             EMIT_LW(REG_T0, CPU_HI, REG_S0);
             emit_store_psx_reg(rd, REG_T0);
             break;
@@ -1685,16 +1709,19 @@ static int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_load_psx_reg(REG_T0, rs);
             emit_load_psx_reg(REG_T1, rt);
             /* Pipeline balancing: use Pipeline 1 for first mult, then Pipeline 0, etc. (Section 1.3) */
-            if (((*mult_count)++ & 1) == 0) {
+            if (((*mult_count)++ & 1) == 0)
+            {
                 EMIT_MULT1(REG_T0, REG_T1);
                 EMIT_MFLO1(REG_T0);
                 EMIT_SW(REG_T0, CPU_LO, REG_S0);
                 EMIT_MFHI1(REG_T0);
-            } else {
+            }
+            else
+            {
                 emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x18)); /* mult p0 */
                 emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));      /* mflo p0 */
                 EMIT_SW(REG_T0, CPU_LO, REG_S0);
-                emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));      /* mfhi p0 */
+                emit(MK_R(0, 0, 0, REG_T0, 0, 0x10)); /* mfhi p0 */
             }
             EMIT_SW(REG_T0, CPU_HI, REG_S0);
             break;
@@ -1702,16 +1729,19 @@ static int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_load_psx_reg(REG_T0, rs);
             emit_load_psx_reg(REG_T1, rt);
             /* Pipeline balancing (Section 1.3) */
-            if (((*mult_count)++ & 1) == 0) {
+            if (((*mult_count)++ & 1) == 0)
+            {
                 EMIT_MULTU1(REG_T0, REG_T1);
                 EMIT_MFLO1(REG_T0);
                 EMIT_SW(REG_T0, CPU_LO, REG_S0);
                 EMIT_MFHI1(REG_T0);
-            } else {
+            }
+            else
+            {
                 emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x19)); /* multu p0 */
                 emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));      /* mflo p0 */
                 EMIT_SW(REG_T0, CPU_LO, REG_S0);
-                emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));      /* mfhi p0 */
+                emit(MK_R(0, 0, 0, REG_T0, 0, 0x10)); /* mfhi p0 */
             }
             EMIT_SW(REG_T0, CPU_HI, REG_S0);
             break;
@@ -1724,7 +1754,7 @@ static int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             EMIT_ADDIU(6, REG_S0, CPU_LO); /* a2 = s0 + CPU_LO */
             EMIT_ADDIU(7, REG_S0, CPU_HI); /* a3 = s0 + CPU_HI */
             emit_call_c((uint32_t)Helper_DIV);
-break;
+            break;
         }
         case 0x1B: /* DIVU */
         {
@@ -1734,7 +1764,7 @@ break;
             EMIT_ADDIU(6, REG_S0, CPU_LO); /* a2 = s0 + CPU_LO */
             EMIT_ADDIU(7, REG_S0, CPU_HI); /* a3 = s0 + CPU_HI */
             emit_call_c((uint32_t)Helper_DIVU);
-break;
+            break;
         }
         case 0x20:                         /* ADD (with overflow check) */
             emit_load_psx_reg(REG_A0, rs); /* a0 = rs_val */
@@ -1742,7 +1772,7 @@ break;
             emit_load_imm32(6, rd);        /* a2 = rd index */
             emit_load_imm32(7, psx_pc);    /* a3 = PC */
             emit_call_c((uint32_t)Helper_ADD);
-break;
+            break;
         case 0x21: /* ADDU */
             emit_load_psx_reg(REG_T0, rs);
             emit_load_psx_reg(REG_T1, rt);
@@ -1755,7 +1785,7 @@ break;
             emit_load_imm32(6, rd);        /* a2 = rd index */
             emit_load_imm32(7, psx_pc);    /* a3 = PC */
             emit_call_c((uint32_t)Helper_SUB);
-break;
+            break;
         case 0x23: /* SUBU */
             emit_load_psx_reg(REG_T0, rs);
             emit_load_psx_reg(REG_T1, rt);
@@ -1813,7 +1843,7 @@ break;
         emit_load_imm32(6, rt);                          /* a2 = rt index */
         emit_load_imm32(7, psx_pc);                      /* a3 = PC */
         emit_call_c((uint32_t)Helper_ADDI);
-break;
+        break;
     }
     case 0x09: /* ADDIU */
         emit_load_psx_reg(REG_T0, rs);
@@ -1872,7 +1902,7 @@ break;
                 /* Call debug_mtc0_sr(val) for SR writes */
                 EMIT_MOVE(REG_A0, REG_T0);
                 emit_call_c((uint32_t)debug_mtc0_sr);
-}
+            }
             else
             {
                 EMIT_SW(REG_T0, CPU_COP0(rd), REG_S0);
@@ -1917,7 +1947,7 @@ break;
         EMIT_NOP();
         /* CU1 not set -> fire exception */
         emit_call_c((uint32_t)Helper_CU_Exception);
-/* Patch skip target */
+        /* Patch skip target */
         *skip_patch_1 = (*skip_patch_1 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_patch_1 - 1) & 0xFFFF);
         /* COP1 doesn't exist on PSX, so if enabled we just NOP */
         break;
@@ -1936,7 +1966,7 @@ break;
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 2); /* cop_num = 2 */
         emit_call_c((uint32_t)Helper_CU_Exception);
-*skip_cu2 = (*skip_cu2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu2 - 1) & 0xFFFF);
+        *skip_cu2 = (*skip_cu2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu2 - 1) & 0xFFFF);
 
         if (total_instructions < 20000000)
         { // Log COP2 instructions
@@ -1961,14 +1991,14 @@ break;
                 EMIT_MOVE(REG_A0, REG_S0);   /* a0 = cpu */
                 emit_load_imm32(REG_A1, rd); /* a1 = reg index */
                 emit_call_c((uint32_t)GTE_ReadData);
-emit_store_psx_reg(rt, REG_V0); /* rt = result */
+                emit_store_psx_reg(rt, REG_V0); /* rt = result */
             }
             else if (rs == 0x02)
             {                                /* CFC2 rt, rd - read GTE control register */
                 EMIT_MOVE(REG_A0, REG_S0);   /* a0 = cpu */
                 emit_load_imm32(REG_A1, rd); /* a1 = reg index */
                 emit_call_c((uint32_t)GTE_ReadCtrl);
-emit_store_psx_reg(rt, REG_V0); /* rt = result */
+                emit_store_psx_reg(rt, REG_V0); /* rt = result */
             }
             else if (rs == 0x04)
             {                                /* MTC2 rt, rd - write GTE data register */
@@ -1976,14 +2006,14 @@ emit_store_psx_reg(rt, REG_V0); /* rt = result */
                 emit_load_imm32(REG_A1, rd); /* a1 = reg index */
                 emit_load_psx_reg(6, rt);    /* a2 = value */
                 emit_call_c((uint32_t)GTE_WriteData);
-}
+            }
             else if (rs == 0x06)
             {                                /* CTC2 rt, rd - write GTE control register */
                 EMIT_MOVE(REG_A0, REG_S0);   /* a0 = cpu */
                 emit_load_imm32(REG_A1, rd); /* a1 = reg index */
                 emit_load_psx_reg(6, rt);    /* a2 = value */
                 emit_call_c((uint32_t)GTE_WriteCtrl);
-}
+            }
             else
             {
                 if (total_instructions < 100)
@@ -1992,50 +2022,50 @@ emit_store_psx_reg(rt, REG_V0); /* rt = result */
         }
         else
         {
-             /* GTE Command (Bit 25 = 1) */
-             /* Inline dispatch for simple GTE commands: call specific wrapper
-              * directly instead of the generic GTE_Execute dispatcher. This
-              * eliminates runtime opcode re-read and dispatcher overhead.
-              * Note: uses compile-time opcode; self-modifying code for these
-              * specific opcodes would use stale values (extremely rare). */
-             uint32_t gte_func = opcode & 0x3F;
-             switch (gte_func)
-             {
-             case 0x06: /* NCLIP */
-                 EMIT_MOVE(REG_A0, REG_S0);
-                 emit_call_c((uint32_t)GTE_Inline_NCLIP);
-                 break;
-             case 0x28: /* SQR */
-             {
-                 int gte_sf = (opcode >> 19) & 1;
-                 int gte_lm = (opcode >> 10) & 1;
-                 EMIT_MOVE(REG_A0, REG_S0);
-                 emit_load_imm32(REG_A1, gte_sf);
-                 emit_load_imm32(REG_A2, gte_lm);
-                 emit_call_c((uint32_t)GTE_Inline_SQR);
-                 break;
-             }
-             case 0x2D: /* AVSZ3 */
-                 EMIT_MOVE(REG_A0, REG_S0);
-                 emit_call_c((uint32_t)GTE_Inline_AVSZ3);
-                 break;
-             case 0x2E: /* AVSZ4 */
-                 EMIT_MOVE(REG_A0, REG_S0);
-                 emit_call_c((uint32_t)GTE_Inline_AVSZ4);
-                 break;
-             default:
-                 /* Fallback: read opcode from PSX RAM at runtime to handle
-                  * self-modifying code, then dispatch through GTE_Execute */
-                 {
-                     uint32_t phys = psx_pc & 0x1FFFFFFF;
-                     emit_load_imm32(REG_T0, phys);     /* t0 = physical PSX address */
-                     EMIT_ADDU(REG_T0, REG_T0, REG_S1); /* t0 = psx_ram + phys */
-                     EMIT_LW(REG_A0, 0, REG_T0);        /* a0 = *(psx_ram + phys) = current opcode */
-                 }
-                 EMIT_MOVE(REG_A1, REG_S0);
-                 emit_call_c((uint32_t)GTE_Execute);
-                 break;
-             }
+            /* GTE Command (Bit 25 = 1) */
+            /* Inline dispatch for simple GTE commands: call specific wrapper
+             * directly instead of the generic GTE_Execute dispatcher. This
+             * eliminates runtime opcode re-read and dispatcher overhead.
+             * Note: uses compile-time opcode; self-modifying code for these
+             * specific opcodes would use stale values (extremely rare). */
+            uint32_t gte_func = opcode & 0x3F;
+            switch (gte_func)
+            {
+            case 0x06: /* NCLIP */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_call_c((uint32_t)GTE_Inline_NCLIP);
+                break;
+            case 0x28: /* SQR */
+            {
+                int gte_sf = (opcode >> 19) & 1;
+                int gte_lm = (opcode >> 10) & 1;
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_call_c((uint32_t)GTE_Inline_SQR);
+                break;
+            }
+            case 0x2D: /* AVSZ3 */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_call_c((uint32_t)GTE_Inline_AVSZ3);
+                break;
+            case 0x2E: /* AVSZ4 */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_call_c((uint32_t)GTE_Inline_AVSZ4);
+                break;
+            default:
+                /* Fallback: read opcode from PSX RAM at runtime to handle
+                 * self-modifying code, then dispatch through GTE_Execute */
+                {
+                    uint32_t phys = psx_pc & 0x1FFFFFFF;
+                    emit_load_imm32(REG_T0, phys);     /* t0 = physical PSX address */
+                    EMIT_ADDU(REG_T0, REG_T0, REG_S1); /* t0 = psx_ram + phys */
+                    EMIT_LW(REG_A0, 0, REG_T0);        /* a0 = *(psx_ram + phys) = current opcode */
+                }
+                EMIT_MOVE(REG_A1, REG_S0);
+                emit_call_c((uint32_t)GTE_Execute);
+                break;
+            }
         }
         break;
     }
@@ -2053,7 +2083,7 @@ emit_store_psx_reg(rt, REG_V0); /* rt = result */
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 3); /* cop_num = 3 */
         emit_call_c((uint32_t)Helper_CU_Exception);
-*skip_cu3 = (*skip_cu3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu3 - 1) & 0xFFFF);
+        *skip_cu3 = (*skip_cu3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu3 - 1) & 0xFFFF);
         /* COP3 doesn't exist on PSX, NOP if enabled */
         break;
     }
@@ -2097,7 +2127,7 @@ emit_store_psx_reg(rt, REG_V0); /* rt = result */
         else
             emit_load_psx_reg(REG_A1, rt);
         emit_call_c((uint32_t)Helper_LWL);
-if (!dynarec_load_defer)
+        if (!dynarec_load_defer)
             emit_store_psx_reg(rt, REG_V0);
         break;
     }
@@ -2111,7 +2141,7 @@ if (!dynarec_load_defer)
         else
             emit_load_psx_reg(REG_A1, rt);
         emit_call_c((uint32_t)Helper_LWR);
-if (!dynarec_load_defer)
+        if (!dynarec_load_defer)
             emit_store_psx_reg(rt, REG_V0);
         break;
     }
@@ -2122,7 +2152,7 @@ if (!dynarec_load_defer)
         EMIT_ADDIU(REG_A0, REG_A0, imm);
         emit_load_psx_reg(REG_A1, rt);
         emit_call_c((uint32_t)Helper_SWL);
-break;
+        break;
     }
     case 0x2E: /* SWR */
     {
@@ -2131,7 +2161,7 @@ break;
         EMIT_ADDIU(REG_A0, REG_A0, imm);
         emit_load_psx_reg(REG_A1, rt);
         emit_call_c((uint32_t)Helper_SWR);
-break;
+        break;
     }
 
     /* LWC0 - CU check for COP0 (SWC0/LWC0 respect CU0 bit, unlike MFC0/MTC0) */
@@ -2147,7 +2177,7 @@ break;
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 0); /* cop_num = 0 */
         emit_call_c((uint32_t)Helper_CU_Exception);
-*skip_lwc0 = (*skip_lwc0 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc0 - 1) & 0xFFFF);
+        *skip_lwc0 = (*skip_lwc0 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc0 - 1) & 0xFFFF);
         /* COP0 has no actual coprocessor data registers to load into, so NOP if enabled */
         break;
     }
@@ -2165,19 +2195,19 @@ break;
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 2); /* cop_num = 2 */
         emit_call_c((uint32_t)Helper_CU_Exception);
-*skip_lwc2 = (*skip_lwc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc2 - 1) & 0xFFFF);
+        *skip_lwc2 = (*skip_lwc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc2 - 1) & 0xFFFF);
 
         // LWC2 rt, offset(base)
         // rt is destination in CP2 Data Registers
         emit_load_psx_reg(REG_A0, rs);
         EMIT_ADDIU(REG_A0, REG_A0, imm);
         emit_call_c((uint32_t)ReadWord);
-// Write result through GTE helper for proper register behavior
+        // Write result through GTE helper for proper register behavior
         EMIT_MOVE(REG_A0, REG_S0);   /* a0 = cpu */
         emit_load_imm32(REG_A1, rt); /* a1 = reg index */
         EMIT_MOVE(6, REG_V0);        /* a2 = value from ReadWord */
         emit_call_c((uint32_t)GTE_WriteData);
-}
+    }
     break;
 
     /* LWC3 */
@@ -2192,7 +2222,7 @@ break;
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 3); /* cop_num = 3 */
         emit_call_c((uint32_t)Helper_CU_Exception);
-*skip_lwc3 = (*skip_lwc3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc3 - 1) & 0xFFFF);
+        *skip_lwc3 = (*skip_lwc3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc3 - 1) & 0xFFFF);
         /* COP3 doesn't exist, NOP if enabled */
         break;
     }
@@ -2210,7 +2240,7 @@ break;
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 0); /* cop_num = 0 */
         emit_call_c((uint32_t)Helper_CU_Exception);
-*skip_swc0 = (*skip_swc0 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc0 - 1) & 0xFFFF);
+        *skip_swc0 = (*skip_swc0 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc0 - 1) & 0xFFFF);
         /* COP0 store: NOP if enabled (no meaningful coprocessor data) */
         break;
     }
@@ -2228,7 +2258,7 @@ break;
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 2); /* cop_num = 2 */
         emit_call_c((uint32_t)Helper_CU_Exception);
-*skip_swc2 = (*skip_swc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc2 - 1) & 0xFFFF);
+        *skip_swc2 = (*skip_swc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc2 - 1) & 0xFFFF);
 
         // SWC2 rt, offset(base)
         // rt is source from CP2 Data Registers
@@ -2236,12 +2266,12 @@ break;
         EMIT_MOVE(REG_A0, REG_S0);   /* a0 = cpu */
         emit_load_imm32(REG_A1, rt); /* a1 = reg index */
         emit_call_c((uint32_t)GTE_ReadData);
-// Then write to memory
+        // Then write to memory
         emit_load_psx_reg(REG_A0, rs);
         EMIT_ADDIU(REG_A0, REG_A0, imm);
         EMIT_MOVE(REG_A1, REG_V0); /* a1 = value from GTE_ReadData */
         emit_call_c((uint32_t)WriteWord);
-}
+    }
     break;
 
     /* SWC3 */
@@ -2256,7 +2286,7 @@ break;
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 3); /* cop_num = 3 */
         emit_call_c((uint32_t)Helper_CU_Exception);
-*skip_swc3 = (*skip_swc3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc3 - 1) & 0xFFFF);
+        *skip_swc3 = (*skip_swc3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc3 - 1) & 0xFFFF);
         /* COP3 doesn't exist, NOP if enabled */
         break;
     }
@@ -2444,7 +2474,7 @@ static void Sched_HBlank_Callback(void)
         /* End of frame — fire VBlank */
         hblank_scanline = 0;
         GPU_VBlank();
-        SignalInterrupt(0);   /* PSX IRQ0 = VBLANK */
+        SignalInterrupt(0);    /* PSX IRQ0 = VBLANK */
         SPU_GenerateSamples(); /* Mix and output one frame of audio */
 
         /* Emulation speed report every 60 emulated frames (~1 sec of PSX time) */
@@ -2482,6 +2512,8 @@ static void Sched_HBlank_Callback(void)
 
             perf_last_report_tick = now_ms;
             perf_last_report_cycle = global_cycles;
+
+            dynarec_print_stats();
         }
     }
 
@@ -2570,9 +2602,12 @@ void Run_CPU(void)
             if (__builtin_expect((pc & 0x1FFFFFFF) <= 0xC0, 0))
             {
                 uint32_t phys_pc = pc & 0x1FFFFFFF;
-                if (phys_pc == 0xA0 && BIOS_HLE_A()) continue;
-                if (phys_pc == 0xB0 && BIOS_HLE_B()) continue;
-                if (phys_pc == 0xC0 && BIOS_HLE_C()) continue;
+                if (phys_pc == 0xA0 && BIOS_HLE_A())
+                    continue;
+                if (phys_pc == 0xB0 && BIOS_HLE_B())
+                    continue;
+                if (phys_pc == 0xC0 && BIOS_HLE_C())
+                    continue;
             }
 
             /* === BIOS Shell Hook (skip once binary is loaded) === */
@@ -2703,7 +2738,8 @@ void Run_CPU(void)
                 uint8_t idle_flag = be->is_idle;
                 if (__builtin_expect(idle_flag && cpu.pc == pc, 0))
                 {
-                    if (pc != idle_skip_pc) {
+                    if (pc != idle_skip_pc)
+                    {
                         idle_skip_pc = pc;
                         idle_skip_count = 0;
                     }
@@ -2713,7 +2749,8 @@ void Run_CPU(void)
                         threshold = 1; /* Unconditional: always safe */
                     else
                         threshold = (pc >= 0xBFC00000) ? 2048 : 0x7FFFFFFF; /* Conditional: BIOS only */
-                    if (idle_skip_count >= threshold) {
+                    if (idle_skip_count >= threshold)
+                    {
                         if (deadline > global_cycles)
                             global_cycles = deadline;
                         break;
@@ -2727,6 +2764,8 @@ void Run_CPU(void)
 #ifdef ENABLE_DYNAREC_STATS
             stat_blocks_executed++;
             stat_total_cycles += cycles;
+            stat_total_native_instrs += be->native_count;
+            stat_total_psx_instrs += be->instr_count;
 #endif
 
             /* Level-triggered CD-ROM IRQ re-assertion (inline, no function call).

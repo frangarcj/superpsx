@@ -21,7 +21,7 @@
 
 uint8_t *psx_ram;
 uint8_t *psx_bios;
-static uint8_t scratchpad_buf[1024] __attribute__((aligned(128)));
+uint8_t scratchpad_buf[1024] __attribute__((aligned(128)));
 
 /* Memory control regs the BIOS writes during init */
 static uint32_t mem_ctrl[16];
@@ -64,23 +64,27 @@ int Load_BIOS_From_ROM(void)
     /* Verify signature to be sure */
     const char *sig = "Sony Computer Entertainment Inc.";
     int found_sig = 0;
-    for(int i = 0; i < PSX_BIOS_SIZE - strlen(sig); i += 4) {
-        if (memcmp(psx_bios + i, sig, strlen(sig)) == 0) {
+    for (int i = 0; i < PSX_BIOS_SIZE - strlen(sig); i += 4)
+    {
+        if (memcmp(psx_bios + i, sig, strlen(sig)) == 0)
+        {
             found_sig = 1;
             break;
         }
     }
 
-    if (found_sig) {
+    if (found_sig)
+    {
         printf("  Loaded PS1 BIOS from PS2 ROM0 (Sig found).\n");
         return 0;
-    } else {
+    }
+    else
+    {
         printf("  WARNING: No PS1 BIOS signature found in ROM0 copy.\n");
         /* Return 0 anyway as we want to try running it */
         return 0;
     }
 }
-
 
 int Load_BIOS(const char *filename)
 {
@@ -101,7 +105,7 @@ int Load_BIOS(const char *filename)
         size_t rd = fread(psx_bios, 1, size, f);
         fclose(f);
         printf("  BIOS loaded: %lu bytes at %p\n", (unsigned long)rd, psx_bios);
-        
+
         /* Print first 4 instructions for verification */
         uint32_t *bios32 = (uint32_t *)psx_bios;
         int i;
@@ -111,7 +115,7 @@ int Load_BIOS(const char *filename)
         }
         return 0;
     }
-    
+
     printf("  File not found or cannot open. Trying PS2 ROM0...\n");
 
     /* Try loading from ROM if file failed */

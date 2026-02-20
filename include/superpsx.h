@@ -11,8 +11,14 @@
 #define DLOG(fmt, ...) printf("[" LOG_TAG "] " fmt, ##__VA_ARGS__)
 #define DLOG_RAW(fmt, ...) printf(fmt, ##__VA_ARGS__)
 #else
-#define DLOG(...) do {} while (0)
-#define DLOG_RAW(...) do {} while (0)
+#define DLOG(...) \
+    do            \
+    {             \
+    } while (0)
+#define DLOG_RAW(...) \
+    do                \
+    {                 \
+    } while (0)
 #endif
 
 /*=== CPU State ===*/
@@ -59,6 +65,7 @@ extern R3000CPU cpu;
 
 extern uint8_t *psx_ram;
 extern uint8_t *psx_bios;
+extern uint8_t scratchpad_buf[];
 
 void Init_Memory(void);
 int Load_BIOS(const char *filename);
@@ -83,6 +90,7 @@ void UpdateTimers(uint32_t cycles);
 /*=== Dynarec ===*/
 void Init_Dynarec(void);
 void Run_CPU(void);
+void dynarec_print_stats(void);
 void GTE_Execute(uint32_t opcode, R3000CPU *cpu);
 uint32_t GTE_ReadData(R3000CPU *cpu, int reg);
 void GTE_WriteData(R3000CPU *cpu, int reg, uint32_t val);
@@ -160,8 +168,8 @@ void Init_SuperPSX(void);
 extern const char *psx_exe_filename;
 
 /* Boot mode: 0 = PS-X EXE, 1 = ISO disc */
-#define BOOT_MODE_EXE  0
-#define BOOT_MODE_ISO  1
+#define BOOT_MODE_EXE 0
+#define BOOT_MODE_ISO 1
 extern int psx_boot_mode;
 
 #endif
