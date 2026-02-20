@@ -6,6 +6,7 @@
 #include "superpsx.h"
 #include "scheduler.h"
 #include "joystick.h"
+#include "spu.h"
 #include "gpu_state.h"
 
 #define LOG_TAG "HW"
@@ -113,8 +114,7 @@ static uint16_t serial_baud = 0;
 #define SIO_IRQ_DELAY 500
 volatile uint64_t sio_irq_delay_cycle = 0;
 
-/* SPU */
-static uint16_t spu_regs[512]; /* 0x1F801C00-0x1F801DFF */
+/* SPU — see spu.c */
 
 /* Cache control */
 static uint32_t cache_control = 0;
@@ -295,8 +295,7 @@ uint32_t ReadHardware(uint32_t addr)
     /* SPU */
     if (phys >= 0x1F801C00 && phys < 0x1F801E00)
     {
-        int idx = (phys - 0x1F801C00) >> 1;
-        return spu_regs[idx & 0x1FF];
+        return SPU_ReadReg((phys - 0x1F801C00) >> 1);
     }
 
     /* Expansion 2 - open bus returns all 1s when no device responds */
@@ -860,6 +859,11 @@ void WriteHardware(uint32_t addr, uint32_t data)
                         /* CD-ROM DMA */
                         CDROM_DMA3(dma_channels[ch].madr, dma_channels[ch].bcr, dma_channels[ch].chcr);
                     }
+                    else if (ch == 4)
+                    {
+                        /* SPU DMA */
+                        SPU_DMA4(dma_channels[ch].madr, dma_channels[ch].bcr, dma_channels[ch].chcr);
+                    }
                     else if (ch == 6)
                     {
                         /* OTC DMA */
@@ -970,11 +974,14 @@ void WriteHardware(uint32_t addr, uint32_t data)
     if (phys == 0x1F801820 || phys == 0x1F801824)
         return;
 
-    /* SPU */
+    /* SPU — registers are 16-bit; a 32-bit store must write both halves.
+     * WriteHalf zero-extends data so (data >> 16) == 0 for half-word writes. */
     if (phys >= 0x1F801C00 && phys < 0x1F801E00)
     {
-        int idx = (phys - 0x1F801C00) >> 1;
-        spu_regs[idx & 0x1FF] = (uint16_t)data;
+        uint32_t off = (phys - 0x1F801C00) >> 1;
+        SPU_WriteReg(off, (uint16_t)data);
+        if ((data >> 16) && (phys + 2) < 0x1F801E00)
+            SPU_WriteReg(off + 1, (uint16_t)(data >> 16));
         return;
     }
 

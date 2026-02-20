@@ -48,6 +48,7 @@ set(SUPERPSX_SOURCES
     src/cdrom.c
     src/loader.c
     src/joystick.c
+    src/spu.c
     src/scheduler.c
     src/iso_image.c
     src/iso_fs.c
