@@ -37,7 +37,7 @@ static int VBlankHandler(int cause)
      * updating at 60 Hz even when the emulated PSX CPU runs slower. */
     gpu_pending_vblank_flush = 1;
     (void)cause;
-    return -1;          /* Call next handler */
+    return -1; /* Call next handler */
 }
 
 void Init_Interrupts(void)
@@ -109,10 +109,18 @@ static uint16_t serial_baud = 0;
 
 /* Delayed IRQ7: the PSX BIOS kernel waits ~100 cycles after sending a byte
  * before acknowledging any old IRQ7 and then polling for the new one.
- * Firing IRQ7 immediately causes the ack to eat the pending bit.  We defer
- * the SignalInterrupt(7) call until this many cycles later. */
+ * Firing IRQ7 immediately causes the ack to eat the pending bit.
+ *
+ * With DBL (direct block linking), global_cycles is frozen during block
+ * chains, so a cycle-based delay doesn't work.  Instead we use an
+ * IO-operation trigger: set a pending flag on SIO byte exchange, then
+ * deliver IRQ7 when the BIOS writes to I_STAT (clearing old IRQs) or
+ * reads I_STAT while the pending flag is armed. */
 #define SIO_IRQ_DELAY 500
 volatile uint64_t sio_irq_delay_cycle = 0;
+
+/* Pending SIO IRQ7 — 0=none, 1=armed (waiting for BIOS ACK), 2=ready to fire */
+static int sio_irq_pending = 0;
 
 /* SPU — see spu.c */
 
@@ -122,6 +130,7 @@ static uint32_t cache_control = 0;
 /* Forward declaration for timer interpolation in ReadHardware */
 static uint32_t timer_clock_divider(int t);
 static int timer_is_stopped(int t);
+static void Timer_SyncValue(int t);
 
 /* ---- Read ---- */
 uint32_t ReadHardware(uint32_t addr)
@@ -144,13 +153,15 @@ uint32_t ReadHardware(uint32_t addr)
     }
     if (phys == 0x1F801044)
     {
-        /* JOY_STAT: bit0=TX Ready1, bit1=RX Not Empty, bit2=TX Ready2, bit7=/ACK */
+        /* JOY_STAT: bit0=TX Ready1, bit1=RX Not Empty, bit2=TX Ready2, bit7=/ACK, bit9=IRQ */
         uint32_t stat = 0x00000005; /* TX Ready 1 + 2 always set */
         if (sio_tx_pending)
             stat |= 0x02; /* RX Not Empty */
         /* Report /ACK low (active) during active transfer (bytes 0-3) */
         if (sio_selected && sio_state > 0 && sio_state < 5)
             stat |= 0x80; /* /ACK input level */
+        /* Include the IRQ flag from sio_stat */
+        stat |= (sio_stat & (1 << 9));
         return stat;
     }
     if (phys == 0x1F801048)
@@ -238,24 +249,11 @@ uint32_t ReadHardware(uint32_t addr)
             {
             case 0:
             {
-                /* If timer is stopped, just return current value */
-                if (timer_is_stopped(t))
-                    return timers[t].value & 0xFFFF;
-                /* Interpolate current counter value based on elapsed cycles */
-                uint32_t divider = timer_divider_cache[t];
-                uint64_t elapsed = global_cycles - timers[t].last_sync_cycle;
-                uint32_t ticks = (uint32_t)(elapsed / divider);
-                uint32_t current;
-                if ((timers[t].mode & (1 << 3)) && (timers[t].target & 0xFFFF) > 0)
-                {
-                    /* Reset-on-target: counter wraps at target+1 */
-                    current = (timers[t].value + ticks) % ((timers[t].target & 0xFFFF) + 1);
-                }
-                else
-                {
-                    current = (timers[t].value + ticks) & 0xFFFF;
-                }
-                return current;
+                /* Sync counter to current cycle and return its value.
+                 * Previous code interpolated with a second modulo here,
+                 * causing off-by-one errors.  Now we just sync and read. */
+                Timer_SyncValue(t);
+                return timers[t].value & 0xFFFF;
             }
             case 1:
             {
@@ -365,18 +363,37 @@ static void timer_update_divider_cache(int t)
     {
         if (disp_hres368)
             timer_divider_cache[0] = DOTCLOCK_DIV_368;
-        else switch (disp_hres)
-        {
-        case 0: timer_divider_cache[0] = DOTCLOCK_DIV_256; break;
-        case 1: timer_divider_cache[0] = DOTCLOCK_DIV_320; break;
-        case 2: timer_divider_cache[0] = DOTCLOCK_DIV_512; break;
-        case 3: timer_divider_cache[0] = DOTCLOCK_DIV_640; break;
-        default: timer_divider_cache[0] = DOTCLOCK_DIV_320; break;
-        }
+        else
+            switch (disp_hres)
+            {
+            case 0:
+                timer_divider_cache[0] = DOTCLOCK_DIV_256;
+                break;
+            case 1:
+                timer_divider_cache[0] = DOTCLOCK_DIV_320;
+                break;
+            case 2:
+                timer_divider_cache[0] = DOTCLOCK_DIV_512;
+                break;
+            case 3:
+                timer_divider_cache[0] = DOTCLOCK_DIV_640;
+                break;
+            default:
+                timer_divider_cache[0] = DOTCLOCK_DIV_320;
+                break;
+            }
         return;
     }
-    if (t == 1 && (src == 1 || src == 3)) { timer_divider_cache[1] = CYCLES_PER_HBLANK; return; }
-    if (t == 2 && (src == 2 || src == 3)) { timer_divider_cache[2] = 8; return; }
+    if (t == 1 && (src == 1 || src == 3))
+    {
+        timer_divider_cache[1] = CYCLES_PER_HBLANK;
+        return;
+    }
+    if (t == 2 && (src == 2 || src == 3))
+    {
+        timer_divider_cache[2] = 8;
+        return;
+    }
     timer_divider_cache[t] = 1;
 }
 
@@ -384,11 +401,27 @@ static void timer_update_divider_cache(int t)
 static void timer_update_stopped_cache(int t)
 {
     uint32_t mode = timers[t].mode;
-    if (!(mode & 1)) { timer_stopped_cache[t] = 0; return; }
+    if (!(mode & 1))
+    {
+        timer_stopped_cache[t] = 0;
+        return;
+    }
     uint32_t sync_mode = (mode >> 1) & 3;
-    if (t == 0 && sync_mode == 2) { timer_stopped_cache[t] = 1; return; }
-    if (t == 1 && (sync_mode == 2 || sync_mode == 3)) { timer_stopped_cache[t] = 1; return; }
-    if (t == 2 && (sync_mode == 0 || sync_mode == 3)) { timer_stopped_cache[t] = 1; return; }
+    if (t == 0 && sync_mode == 2)
+    {
+        timer_stopped_cache[t] = 1;
+        return;
+    }
+    if (t == 1 && (sync_mode == 2 || sync_mode == 3))
+    {
+        timer_stopped_cache[t] = 1;
+        return;
+    }
+    if (t == 2 && (sync_mode == 0 || sync_mode == 3))
+    {
+        timer_stopped_cache[t] = 1;
+        return;
+    }
     timer_stopped_cache[t] = 0;
 }
 
@@ -421,26 +454,33 @@ static void Timer_SyncValue(int t)
     uint32_t val = timers[t].value & 0xFFFF;
     uint32_t mode = timers[t].mode;
     uint32_t target = timers[t].target & 0xFFFF;
+    uint32_t new_val = val + ticks;
 
-    /* Reset-on-target mode (bit 3): counter wraps at target */
+    /* Reset-on-target mode (bit 3): counter resets when reaching target.
+     * Use pcsx-redux's subtraction approach instead of modulo to correctly
+     * model the counter cycling through target repeatedly. */
     if ((mode & (1 << 3)) && target > 0)
     {
-        uint32_t period = target + 1;
-        uint32_t new_val = val + ticks;
         if (new_val >= target)
+        {
             timers[t].mode |= (1 << 11); /* reached target flag */
-        /* Overflow: counter reached 0x10000 (wrapped past 0xFFFF) */
-        if (new_val >= 0x10000)
-            timers[t].mode |= (1 << 12); /* overflow flag */
-        timers[t].value = new_val % period;
+            uint32_t period = target + 1;
+            /* In reset-on-target mode the counter cycles 0..target and
+             * never actually reaches 0xFFFF unless target itself is
+             * 0xFFFF.  Only set the overflow flag in that case. */
+            if (target >= 0xFFFF && new_val >= 0x10000)
+                timers[t].mode |= (1 << 12); /* overflow flag */
+            new_val %= period;
+        }
+        timers[t].value = new_val;
     }
     else
     {
-        uint32_t new_val = val + ticks;
+        /* Free-running: counter wraps at 0x10000 */
+        if (target > 0 && new_val >= target)
+            timers[t].mode |= (1 << 11); /* reached target flag */
         if (new_val >= 0x10000)
             timers[t].mode |= (1 << 12); /* overflow flag */
-        if (target > 0 && val <= target && new_val >= target)
-            timers[t].mode |= (1 << 11); /* reached target flag */
         timers[t].value = new_val & 0xFFFF;
     }
 }
@@ -460,35 +500,34 @@ static void Timer_ScheduleOne(int t)
     if (timer_is_stopped(t))
         return;
 
-    /* Find how many timer ticks until next event */
-    uint32_t ticks_to_event = 0xFFFF; /* default: overflow */
+    /* Find how many timer ticks until next event.
+     * Always schedule BOTH target and overflow events properly so that
+     * the counter stays alive and flag bits get set on time. */
+    uint32_t ticks_to_event;
 
-    /* Reset-on-target (bit 3): schedule at target regardless of IRQ enable */
     if ((mode & (1 << 3)) && target > 0)
     {
+        /* Reset-on-target: schedule at target hit */
         if (val < target)
             ticks_to_event = target - val;
         else
-            ticks_to_event = (target + 1) - val; /* already at/past target, wrap */
+            ticks_to_event = (target + 1) - val; /* at/past target, schedule next period */
     }
     else
     {
-        /* Check: will we hit target first? (if target IRQ enabled and target > 0) */
+        /* Free-running: schedule at whichever comes first — target or overflow */
+        uint32_t ticks_to_overflow = 0x10000 - val;
+        ticks_to_event = ticks_to_overflow;
+
+        /* If target IRQ enabled, check if target comes first */
         if ((mode & (1 << 4)) && target > 0 && val < target)
         {
-            ticks_to_event = target - val;
-        }
-
-        /* Check: overflow (if overflow IRQ enabled) */
-        if (mode & (1 << 5))
-        {
-            uint32_t ticks_to_overflow = 0x10000 - val;
-            if (ticks_to_overflow < ticks_to_event)
-                ticks_to_event = ticks_to_overflow;
+            uint32_t ticks_to_target = target - val;
+            if (ticks_to_target < ticks_to_event)
+                ticks_to_event = ticks_to_target;
         }
     }
 
-    /* If neither IRQ is enabled, schedule at overflow anyway to keep counter alive */
     if (ticks_to_event == 0)
         ticks_to_event = 1;
 
@@ -510,44 +549,46 @@ static void Timer_FireEvent(int t)
     uint32_t target = timers[t].target & 0xFFFF;
     uint32_t val = timers[t].value & 0xFFFF;
 
-    /* Check target match.
-     * When bit 3 (reset-on-target) is set, this event was always scheduled
-     * for a target hit. SyncValue's modulo may have already wrapped val below
-     * target, so we cannot rely on val >= target here. */
+    /* Determine whether we hit target or overflow.
+     * In reset-on-target mode (bit 3), the event was scheduled at target.
+     * In free-running mode, it depends on what came first. */
     int hit_target = 0;
     if ((mode & (1 << 3)) && target > 0)
     {
-        /* Reset-on-target mode: event was scheduled at target */
+        /* Reset-on-target: SyncValue already wrapped the counter.
+         * We know this event was scheduled at the target boundary. */
         hit_target = 1;
     }
-    else if ((mode & (1 << 4)) && target > 0 && val >= target)
+    else if (target > 0 && val >= target && val < 0x10000)
     {
+        /* Free-running mode, value at/past target but not overflowed */
         hit_target = 1;
     }
 
     if (hit_target)
     {
         timers[t].mode |= (1 << 11); /* bit 11 = reached target */
-        /* When target == 0xFFFF, reaching target also means reaching 0xFFFF */
         if (target >= 0xFFFF)
-            timers[t].mode |= (1 << 12);
+            timers[t].mode |= (1 << 12); /* also overflow if target is max */
         if (mode & (1 << 4))
             SignalInterrupt(4 + t);
 
-        /* Reset on target? */
+        /* Reset counter if reset-on-target is enabled */
         if (mode & (1 << 3))
-            val = 0;
+        {
+            /* Counter was already wrapped by SyncValue; just ensure it's <= target */
+            /* value is already correct from SyncValue */
+        }
     }
     else
     {
-        /* Overflow */
-        val = 0;
+        /* Overflow event */
         timers[t].mode |= (1 << 12); /* bit 12 = overflow */
         if (mode & (1 << 5))
             SignalInterrupt(4 + t);
+        /* SyncValue already wrapped the value via & 0xFFFF */
     }
 
-    timers[t].value = val;
     timers[t].last_sync_cycle = global_cycles;
 
     /* Reschedule for next event */
@@ -685,7 +726,8 @@ void WriteHardware(uint32_t addr, uint32_t data)
                 sio_data = sio_response[0]; /* 0xFF */
                 sio_state = 1;
                 sio_tx_pending = 1;
-                /* Delay IRQ7 — the BIOS acks the old IRQ ~100 cycles later */
+                /* Arm SIO IRQ7 — will fire when BIOS ACKs old IRQ via I_STAT */
+                sio_irq_pending = 1;
                 sio_irq_delay_cycle = global_cycles + SIO_IRQ_DELAY;
             }
             else
@@ -700,6 +742,7 @@ void WriteHardware(uint32_t addr, uint32_t data)
             sio_data = sio_response[1]; /* 0x41 = digital pad ID */
             sio_state = 2;
             sio_tx_pending = 1;
+            sio_irq_pending = 1;
             sio_irq_delay_cycle = global_cycles + SIO_IRQ_DELAY;
             break;
         case 2:
@@ -707,6 +750,7 @@ void WriteHardware(uint32_t addr, uint32_t data)
             sio_data = sio_response[2]; /* 0x5A */
             sio_state = 3;
             sio_tx_pending = 1;
+            sio_irq_pending = 1;
             sio_irq_delay_cycle = global_cycles + SIO_IRQ_DELAY;
             break;
         case 3:
@@ -714,6 +758,7 @@ void WriteHardware(uint32_t addr, uint32_t data)
             sio_data = sio_response[3];
             sio_state = 4;
             sio_tx_pending = 1;
+            sio_irq_pending = 1;
             sio_irq_delay_cycle = global_cycles + SIO_IRQ_DELAY;
             break;
         case 4:
@@ -751,13 +796,29 @@ void WriteHardware(uint32_t addr, uint32_t data)
             sio_state = 0;
             sio_selected = 0;
             sio_data = 0xFF;
-            sio_irq_delay_cycle = 0; /* Cancel any pending SIO IRQ */
+            sio_irq_pending = 0; /* Cancel any pending SIO IRQ */
+            sio_irq_delay_cycle = 0;
             return;
         }
         if (data & 0x10)
         {
             /* ACK - acknowledge interrupt */
             sio_stat &= ~(1 << 9); /* Clear IRQ flag */
+            /* If a SIO IRQ7 is pending, DON'T fire SignalInterrupt here.
+             * The BIOS sequence is: CTRL ACK → IREG = ~IRQ7 (clear) → poll IREG.
+             * If we fire the IRQ now, the BIOS immediately clears it and the
+             * poll loop never sees it.  Instead, leave sio_irq_pending=1 so
+             * the I_STAT write handler (0x1F801070) re-fires the IRQ AFTER
+             * the BIOS's clear.  We still abort the block chain so we return
+             * to C dispatch promptly. */
+            if (sio_irq_pending)
+            {
+                sio_irq_delay_cycle = 0;
+                /* Force block chain abort — write to JOY_CTRL goes through
+                 * WriteHalf (size=2), so emit_abort_check is present. */
+                psx_abort_pc = cpu.current_pc + 4;
+                cpu.block_aborted = 1;
+            }
         }
         /* Bit 1: JOYn output select - directly controls /SEL line */
         if (data & 0x02)
@@ -773,7 +834,8 @@ void WriteHardware(uint32_t addr, uint32_t data)
         {
             sio_selected = 0;
             sio_state = 0;
-            sio_irq_delay_cycle = 0; /* Cancel any pending SIO IRQ */
+            sio_irq_pending = 0; /* Cancel any pending SIO IRQ */
+            sio_irq_delay_cycle = 0;
         }
         return;
     }
@@ -818,6 +880,15 @@ void WriteHardware(uint32_t addr, uint32_t data)
     if (phys == 0x1F801070)
     {
         cpu.i_stat &= data; /* Write-to-acknowledge (AND with written value) */
+        /* If SIO IRQ7 is armed and the BIOS just cleared bit 7, deliver the
+         * IRQ NOW — after the AND, so bit 7 gets re-set.  This models the
+         * real hardware timing where /ACK fires after the BIOS's clear. */
+        if (sio_irq_pending && !(data & (1 << 7)))
+        {
+            sio_irq_pending = 0;
+            sio_irq_delay_cycle = 0;
+            SignalInterrupt(7);
+        }
         return;
     }
     if (phys == 0x1F801074)

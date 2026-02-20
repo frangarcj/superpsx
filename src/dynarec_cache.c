@@ -42,12 +42,16 @@ uint32_t *lookup_block_native(uint32_t psx_pc)
  */
 void emit_direct_link(uint32_t target_psx_pc)
 {
-    uint32_t *native = lookup_block_native(target_psx_pc);
-    if (native)
+    BlockEntry *be = &block_cache[(target_psx_pc >> 2) & BLOCK_CACHE_MASK];
+    if (be->native != NULL && be->psx_pc == target_psx_pc)
     {
-        /* Target already compiled: jump directly, skipping C overhead */
-        EMIT_J_ABS((uint32_t)native);
+        /* Block already exists (e.g., backward loop). Link immediately! */
+        uint32_t native_addr = (uint32_t)(be->native + DYNAREC_PROLOGUE_WORDS);
+        EMIT_J_ABS(native_addr);
         EMIT_NOP();
+#ifdef ENABLE_DYNAREC_STATS
+        stat_dbl_patches++;
+#endif
         return;
     }
 
@@ -58,8 +62,8 @@ void emit_direct_link(uint32_t target_psx_pc)
         ps->site_word = code_ptr;
         ps->target_psx_pc = target_psx_pc;
     }
-    /* J to slow-path trampoline (code_buffer[0] = JR $ra) */
-    EMIT_J_ABS((uint32_t)code_buffer);
+    /* J to JIT exit trampoline (abort_trampoline_addr) */
+    EMIT_J_ABS((uint32_t)abort_trampoline_addr);
     EMIT_NOP();
 }
 
@@ -72,7 +76,7 @@ void apply_pending_patches(uint32_t target_psx_pc, uint32_t *native_addr)
         PatchSite *ps = &patch_sites[i];
         if (ps->target_psx_pc == target_psx_pc)
         {
-            uint32_t j_target = ((uint32_t)native_addr >> 2) & 0x03FFFFFF;
+            uint32_t j_target = ((uint32_t)(native_addr + DYNAREC_PROLOGUE_WORDS) >> 2) & 0x03FFFFFF;
             *ps->site_word = MK_J(2, j_target);
 #ifdef ENABLE_DYNAREC_STATS
             stat_dbl_patches++;

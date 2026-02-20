@@ -206,20 +206,16 @@ void emit_block_prologue(void)
     EMIT_SW(REG_S7, 60, REG_SP);
     EMIT_MOVE(REG_S0, REG_A0);
     EMIT_MOVE(REG_S1, REG_A1);
-    EMIT_MOVE(REG_S2, 6); /* $a2 = register 6 */
-    EMIT_LW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
-    EMIT_LW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
-    EMIT_LW(REG_S6, CPU_REG(2), REG_S0);  /* PSX $v0 */
-    EMIT_LW(REG_S7, CPU_REG(30), REG_S0); /* PSX $s8 */
+    EMIT_MOVE(REG_S2, REG_A3); /* $s2 = cycles_left */
+    emit_reload_pinned();
 }
 
 /* ---- Block epilogue: flush pinned, restore and return ---- */
 void emit_block_epilogue(void)
 {
-    EMIT_SW(REG_S4, CPU_REG(29), REG_S0);
-    EMIT_SW(REG_S5, CPU_REG(31), REG_S0);
-    EMIT_SW(REG_S6, CPU_REG(2), REG_S0);
-    EMIT_SW(REG_S7, CPU_REG(30), REG_S0);
+    EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
+    EMIT_MOVE(REG_V0, REG_S2);
+    emit_flush_pinned();
     EMIT_LW(REG_S7, 60, REG_SP);
     EMIT_LW(REG_S6, 56, REG_SP);
     EMIT_LW(REG_S5, 52, REG_SP);
@@ -236,34 +232,20 @@ void emit_block_epilogue(void)
 
 void emit_branch_epilogue(uint32_t target_pc)
 {
-    /* Update cpu.pc (needed for C dispatch and exception handling) */
+    /* Calculate remaining cycles after this block */
+    EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
+    
+    /* Update cpu.pc IMMEDIATELY, before any potential abort check */
     emit_load_imm32(REG_T0, target_pc);
     EMIT_SW(REG_T0, CPU_PC, REG_S0);
 
-    /* Flush pinned PSX registers back to cpu struct */
-    EMIT_SW(REG_S4, CPU_REG(29), REG_S0);
-    EMIT_SW(REG_S5, CPU_REG(31), REG_S0);
-    EMIT_SW(REG_S6, CPU_REG(2), REG_S0);
-    EMIT_SW(REG_S7, CPU_REG(30), REG_S0);
+    /* If remaining cycles <= 0, abort to C scheduler */
+    emit(MK_I(0x07, REG_S2, REG_ZERO, 2)); /* BGTZ s2, +2 */
+    EMIT_NOP(); /* Delay slot */
+    EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+    EMIT_NOP(); /* Delay slot */
 
-    /* Prepare argument registers for the next block's prologue */
-    EMIT_MOVE(REG_A0, REG_S0);
-    EMIT_MOVE(REG_A1, REG_S1);
-    EMIT_MOVE(REG_A2, REG_S2);
-
-    /* Restore callee-saved and stack */
-    EMIT_LW(REG_S7, 60, REG_SP);
-    EMIT_LW(REG_S6, 56, REG_SP);
-    EMIT_LW(REG_S5, 52, REG_SP);
-    EMIT_LW(REG_S4, 48, REG_SP);
-    EMIT_LW(REG_S3, 28, REG_SP);
-    EMIT_LW(REG_S2, 32, REG_SP);
-    EMIT_LW(REG_S1, 36, REG_SP);
-    EMIT_LW(REG_S0, 40, REG_SP);
-    EMIT_LW(REG_RA, 44, REG_SP);
-    EMIT_ADDIU(REG_SP, REG_SP, 80);
-
-    /* Direct link to target block */
+    /* Direct link to target block (bypassing prologue, maintaining stack and pinned regs) */
     emit_direct_link(target_pc);
 }
 
@@ -283,8 +265,8 @@ uint32_t *compile_block(uint32_t psx_pc)
     {
         DLOG("Code buffer nearly full (%u/%u), flushing cache\n",
              (unsigned)used, CODE_BUFFER_SIZE);
-        code_ptr = code_buffer + 24;
-        memset(code_buffer + 24, 0, CODE_BUFFER_SIZE - 24 * sizeof(uint32_t));
+        code_ptr = code_buffer + 128;
+        memset(code_buffer + 128, 0, CODE_BUFFER_SIZE - 128 * sizeof(uint32_t));
         memset(block_cache, 0, BLOCK_CACHE_SIZE * sizeof(BlockEntry));
         memset(block_node_pool, 0, BLOCK_NODE_POOL_SIZE * sizeof(BlockEntry));
         block_node_pool_idx = 0;
@@ -313,6 +295,36 @@ uint32_t *compile_block(uint32_t psx_pc)
     }
 
     emit_block_prologue();
+
+    /* Inject BIOS HLE hooks natively so that DBL jumps do not bypass them */
+    uint32_t phys_pc = psx_pc & 0x1FFFFFFF;
+    if (phys_pc == 0xA0)
+    {
+        emit_call_c((uint32_t)BIOS_HLE_A);
+        EMIT_BEQ(REG_V0, REG_ZERO, 3);
+        EMIT_NOP(); /* Delay slot */
+        EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
+        EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+        EMIT_NOP();
+    }
+    else if (phys_pc == 0xB0)
+    {
+        emit_call_c((uint32_t)BIOS_HLE_B);
+        EMIT_BEQ(REG_V0, REG_ZERO, 3);
+        EMIT_NOP(); /* Delay slot */
+        EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
+        EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+        EMIT_NOP();
+    }
+    else if (phys_pc == 0xC0)
+    {
+        emit_call_c((uint32_t)BIOS_HLE_C);
+        EMIT_BEQ(REG_V0, REG_ZERO, 3);
+        EMIT_NOP(); /* Delay slot */
+        EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
+        EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+        EMIT_NOP();
+    }
 
     int block_ended = 0;
     int in_delay_slot = 0;
@@ -378,20 +390,57 @@ uint32_t *compile_block(uint32_t psx_pc)
                 branch_opcode = (uint32_t)bp;
 
                 /* Not taken: fall through PC */
-                emit_load_imm32(REG_T0, cur_pc);
-                EMIT_SW(REG_T0, CPU_PC, REG_S0);
-                emit_block_epilogue();
+                emit_branch_epilogue(cur_pc);
+                
                 /* Taken path target */
                 uint32_t *taken_addr = code_ptr;
                 int32_t offset = (int32_t)(taken_addr - bp - 1);
                 *bp = (*bp & 0xFFFF0000) | (offset & 0xFFFF);
-                emit_load_imm32(REG_T0, branch_target);
-                EMIT_SW(REG_T0, CPU_PC, REG_S0);
-                emit_block_epilogue();
+                emit_branch_epilogue(branch_target);
             }
             else if (branch_type == 3)
             {
-                emit_block_epilogue();
+                /* Register jump (JR/JALR): try inline block cache lookup */
+                
+                /* 1. Calculate remaining cycles and check abort boundary */
+                EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
+                emit(MK_I(0x07, REG_S2, REG_ZERO, 2)); /* BGTZ s2, +2 */
+                EMIT_NOP(); /* Delay slot */
+                EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+                EMIT_NOP(); /* Delay slot */
+
+                /* 2. Load target PC from CPU struct (it was saved there by JR opcode emitter) */
+                EMIT_LW(REG_T0, CPU_PC, REG_S0);
+                
+                /* 3. Compute Hash Index: (target_pc >> 2) & BLOCK_CACHE_MASK */
+                emit(MK_R(0, 0, REG_T0, REG_T1, 2, 0x02));          /* SRL t1, t0, 2 */
+                emit(MK_I(0x0C, REG_T1, REG_T1, BLOCK_CACHE_MASK)); /* ANDI t1, t1, mask */
+                
+                /* 4. Multiply by 32 (sizeof BlockEntry is strictly 32 bytes) */
+                emit(MK_R(0, 0, REG_T1, REG_T1, 5, 0x00));          /* SLL t1, t1, 5 */
+                
+                /* 5. Add base of block_cache */
+                emit_load_imm32(REG_T2, (uint32_t)block_cache);
+                EMIT_ADDU(REG_T1, REG_T1, REG_T2);                  /* t1 = &block_cache[idx] */
+                
+                /* 6. Verify psx_pc matches */
+                EMIT_LW(REG_T2, 0, REG_T1);                         /* t2 = be->psx_pc */
+                emit(MK_I(0x05, REG_T0, REG_T2, 7));                /* BNE t0, t2, MISS (+7) */
+                EMIT_NOP();
+                
+                /* 7. Verify native matches */
+                EMIT_LW(REG_T2, 4, REG_T1);                         /* t2 = be->native */
+                emit(MK_I(0x04, REG_T2, REG_ZERO, 4));              /* BEQ t2, zero, MISS (+4) */
+                EMIT_NOP();
+                
+                /* 8. Jump to target block bypassing prologue */
+                EMIT_ADDIU(REG_T2, REG_T2, DYNAREC_PROLOGUE_WORDS * 4);
+                EMIT_JR(REG_T2);
+                EMIT_NOP();
+                
+                /* MISS target */
+                EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+                EMIT_NOP();
             }
             block_ended = 1;
             break;
@@ -645,9 +694,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                 emit_store_psx_reg(pending_load_reg, REG_T0);
                 pending_load_reg = 0;
             }
-            emit_load_imm32(REG_T0, cur_pc);
-            EMIT_SW(REG_T0, CPU_PC, REG_S0);
-            emit_block_epilogue();
+            emit_branch_epilogue(cur_pc);
             block_ended = 1;
         }
     }

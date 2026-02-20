@@ -20,6 +20,7 @@
 uint32_t *code_buffer;
 uint32_t *code_ptr;
 uint32_t *abort_trampoline_addr;
+uint32_t *call_c_trampoline_addr = NULL;
 
 /* ================================================================
  *  Variable definitions — host log
@@ -112,17 +113,27 @@ void Init_Dynarec(void)
     code_buffer[0] = MK_R(0, REG_RA, 0, 0, 0, 0x08); /* JR $ra */
     code_buffer[1] = 0;                              /* NOP (delay slot) */
 
-    /* ---- Abort trampoline at code_buffer[2] ----
-     * Shared exit path for mid-block exception aborts.
-     * Flushes pinned regs, restores callee-saved, returns to C dispatch. */
+    /* ---- Abort/Exit trampoline at code_buffer[2] ----
+     * Shared exit path for mid-block exception aborts and DBL cache misses.
+     * Flushes ALL pinned regs, restores callee-saved, returns to C dispatch. */
     abort_trampoline_addr = &code_buffer[2];
     {
         uint32_t *p = &code_buffer[2];
-        /* Flush pinned PSX registers */
-        *p++ = MK_I(0x2B, REG_S0, REG_S4, CPU_REG(29)); /* sw s4, CPU_REG(29)(s0) */
-        *p++ = MK_I(0x2B, REG_S0, REG_S5, CPU_REG(31)); /* sw s5, CPU_REG(31)(s0) */
+        /* Return remaining cycles */
+        *p++ = MK_R(0, REG_S2, 0, REG_V0, 0, 0x25); /* or v0, s2, zero */
+        /* Flush pinned PSX registers (12 registers) */
         *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(2));  /* sw s6, CPU_REG(2)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_V1, CPU_REG(3));  /* sw v1, CPU_REG(3)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_T3, CPU_REG(4));  /* sw t3, CPU_REG(4)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_T4, CPU_REG(5));  /* sw t4, CPU_REG(5)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_T5, CPU_REG(6));  /* sw t5, CPU_REG(6)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_T6, CPU_REG(7));  /* sw t6, CPU_REG(7)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_T7, CPU_REG(8));  /* sw t7, CPU_REG(8)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_T8, CPU_REG(9));  /* sw t8, CPU_REG(9)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_T9, CPU_REG(10)); /* sw t9, CPU_REG(10)(s0) */
+        *p++ = MK_I(0x2B, REG_S0, REG_S4, CPU_REG(29)); /* sw s4, CPU_REG(29)(s0) */
         *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(30)); /* sw s7, CPU_REG(30)(s0) */
+        *p++ = MK_I(0x2B, REG_S0, REG_S5, CPU_REG(31)); /* sw s5, CPU_REG(31)(s0) */
         /* Restore callee-saved */
         *p++ = MK_I(0x23, REG_SP, REG_S7, 60); /* lw s7, 60(sp) */
         *p++ = MK_I(0x23, REG_SP, REG_S6, 56); /* lw s6, 56(sp) */
@@ -137,8 +148,59 @@ void Init_Dynarec(void)
         *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08); /* jr ra */
         *p++ = 0;                              /* nop (delay slot) */
     }
-    /* Reserve 24 words for trampolines; real compiled blocks start at [24] */
-    code_ptr = code_buffer + 24;
+    /* ---- C-call trampoline at code_buffer[32] ----
+     * Helper for inline C calls to avoid emitting 24 flush/reload instructions
+     * per memory access block. Target C function is passed in REG_T0. */
+    call_c_trampoline_addr = &code_buffer[32];
+    {
+        uint32_t *p = call_c_trampoline_addr;
+        /* Flush ALL pinned PSX registers (12 registers) */
+        *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(2));  /* sw s6, CPU_REG(2)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_V1, CPU_REG(3));  /* sw v1, CPU_REG(3)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_T3, CPU_REG(4));  /* sw t3, CPU_REG(4)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_T4, CPU_REG(5));  /* sw t4, CPU_REG(5)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_T5, CPU_REG(6));  /* sw t5, CPU_REG(6)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_T6, CPU_REG(7));  /* sw t6, CPU_REG(7)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_T7, CPU_REG(8));  /* sw t7, CPU_REG(8)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_T8, CPU_REG(9));  /* sw t8, CPU_REG(9)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_T9, CPU_REG(10)); /* sw t9, CPU_REG(10)(s0) */
+        *p++ = MK_I(0x2B, REG_S0, REG_S4, CPU_REG(29)); /* sw s4, CPU_REG(29)(s0) */
+        *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(30)); /* sw s7, CPU_REG(30)(s0) */
+        *p++ = MK_I(0x2B, REG_S0, REG_S5, CPU_REG(31)); /* sw s5, CPU_REG(31)(s0) */
+
+        /* Save ra, provide ABI shadow space (32 bytes) */
+        *p++ = MK_I(0x09, REG_SP, REG_SP, (uint32_t)(int32_t)-32); /* addiu sp, sp, -32 */
+        *p++ = MK_I(0x2B, REG_SP, REG_RA, 28);                     /* sw ra, 28(sp) */
+
+        /* Call the target function (address in REG_T0) */
+        *p++ = MK_R(0, REG_T0, 0, REG_RA, 0, 0x09); /* jalr t0 */
+        *p++ = 0;                                   /* nop */
+
+        /* Restore ra & discard shadow space */
+        *p++ = MK_I(0x23, REG_SP, REG_RA, 28); /* lw ra, 28(sp) */
+        *p++ = MK_I(0x09, REG_SP, REG_SP, 32); /* addiu sp, sp, 32 */
+
+        /* Reload ALL pinned PSX registers (12 registers) */
+        *p++ = MK_I(0x23, REG_S0, REG_S6, CPU_REG(2));
+        *p++ = MK_I(0x23, REG_S0, REG_V1, CPU_REG(3));
+        *p++ = MK_I(0x23, REG_S0, REG_T3, CPU_REG(4));
+        *p++ = MK_I(0x23, REG_S0, REG_T4, CPU_REG(5));
+        *p++ = MK_I(0x23, REG_S0, REG_T5, CPU_REG(6));
+        *p++ = MK_I(0x23, REG_S0, REG_T6, CPU_REG(7));
+        *p++ = MK_I(0x23, REG_S0, REG_T7, CPU_REG(8));
+        *p++ = MK_I(0x23, REG_S0, REG_T8, CPU_REG(9));
+        *p++ = MK_I(0x23, REG_S0, REG_T9, CPU_REG(10));
+        *p++ = MK_I(0x23, REG_S0, REG_S4, CPU_REG(29));
+        *p++ = MK_I(0x23, REG_S0, REG_S7, CPU_REG(30));
+        *p++ = MK_I(0x23, REG_S0, REG_S5, CPU_REG(31));
+
+        /* Return to JIT block */
+        *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08); /* jr ra */
+        *p++ = 0;                              /* nop */
+    }
+
+    /* Reserve 128 words for trampolines; real compiled blocks start at [128] */
+    code_ptr = code_buffer + 128;
 
     printf("  Code buffer at %p, size %d bytes\n", code_buffer, CODE_BUFFER_SIZE);
     printf("  Block cache at %p, %d entries\n", block_cache, BLOCK_CACHE_SIZE);
@@ -159,6 +221,11 @@ void CDROM_ScheduleEvent(void); /* Defined in cdrom.c */
 
 /* HBlank scanline counter within the current frame (0..262 for NTSC) */
 static uint32_t hblank_scanline = 0;
+
+/* Ideal (drift-free) deadline for HBlank events.  We advance this by
+ * exact multiples of CYCLES_PER_HBLANK so that block-overshoot in the
+ * dynarec never accumulates into VBlank timing jitter. */
+static uint64_t hblank_ideal_deadline = 0;
 
 /* Emulation speed measurement */
 static uint64_t perf_frame_count = 0;
@@ -226,12 +293,21 @@ static void Sched_HBlank_Callback(void)
         }
     }
 
-    /* Re-schedule next HBlank batch */
+    /* Re-schedule next HBlank batch using the ideal (drift-free) deadline.
+     * Advancing from the ideal rather than global_cycles prevents block-
+     * overshoot from accumulating into VBlank timing jitter. */
     {
         uint32_t next_remaining = SCANLINES_PER_FRAME - hblank_scanline;
         uint32_t next_batch = (next_remaining < HBLANK_BATCH_SIZE) ? next_remaining : HBLANK_BATCH_SIZE;
+        hblank_ideal_deadline += (uint64_t)next_batch * CYCLES_PER_HBLANK;
+
+        /* Safety: if we've fallen behind (shouldn't happen normally),
+         * snap forward so we don't schedule in the past. */
+        if (hblank_ideal_deadline <= global_cycles)
+            hblank_ideal_deadline = global_cycles + 1;
+
         Scheduler_ScheduleEvent(SCHED_EVENT_HBLANK,
-                                global_cycles + next_batch * CYCLES_PER_HBLANK,
+                                hblank_ideal_deadline,
                                 Sched_HBlank_Callback);
     }
 }
@@ -266,8 +342,9 @@ void Run_CPU(void)
     perf_frame_count = 0;
     perf_last_report_cycle = 0;
     perf_last_report_tick = get_wall_ms();
+    hblank_ideal_deadline = global_cycles + HBLANK_BATCH_SIZE * CYCLES_PER_HBLANK;
     Scheduler_ScheduleEvent(SCHED_EVENT_HBLANK,
-                            global_cycles + HBLANK_BATCH_SIZE * CYCLES_PER_HBLANK,
+                            hblank_ideal_deadline,
                             Sched_HBlank_Callback);
 
     Timer_ScheduleAll();
@@ -406,9 +483,14 @@ void Run_CPU(void)
                 }
             }
 
+            /* Calculate cycles left till deadline */
+            int32_t cycles_left = (int32_t)(deadline - global_cycles);
+            if (cycles_left < 0)
+                cycles_left = 0;
+
             /* Execute the block */
             psx_block_exception = 1;
-            ((block_func_t)block)(&cpu, psx_ram, psx_bios);
+            int32_t remaining = ((block_func_t)block)(&cpu, psx_ram, psx_bios, cycles_left);
             psx_block_exception = 0;
 
             /* If an exception occurred mid-block, restore the correct PC */
@@ -419,14 +501,50 @@ void Run_CPU(void)
             }
 
             /* Advance global cycle counter */
-            uint32_t cycles = be->cycle_count;
-            if (cycles == 0)
-                cycles = be->instr_count;
-            if (cycles == 0)
-                cycles = 8;
-            global_cycles += cycles;
+            /* The real cycles taken is what we gave minus what's remaining */
+            uint32_t cycles_taken = (uint32_t)(cycles_left - remaining);
+            if (cycles_taken == 0)
+                cycles_taken = 8;
+            global_cycles += cycles_taken;
 
-            /* Idle/polling loop fast-forward */
+#ifdef ENABLE_DYNAREC_STATS
+            stat_blocks_executed++;
+            stat_total_cycles += cycles_taken;
+            stat_total_native_instrs += be->native_count;
+            stat_total_psx_instrs += be->instr_count;
+#endif
+
+            /* Level-triggered CD-ROM IRQ re-assertion */
+            if (cdrom_irq_active)
+                SignalInterrupt(2);
+
+            /* Fallback SIO IRQ7: if the IO-operation trigger in WriteHardware
+             * didn't fire (e.g., BIOS doesn't write I_STAT), fall back to the
+             * cycle-based delay check here at C dispatch boundaries. */
+            if (sio_irq_delay_cycle && global_cycles >= sio_irq_delay_cycle)
+            {
+                sio_irq_delay_cycle = 0;
+                SignalInterrupt(7);
+            }
+
+            /* Check for interrupts after each block */
+            if (CheckInterrupts())
+            {
+                cpu.cop0[PSX_COP0_CAUSE] |= (1 << 10);
+                uint32_t sr = cpu.cop0[PSX_COP0_SR];
+                if ((sr & 1) && (sr & (1 << 10)))
+                {
+                    PSX_Exception(0);
+                }
+            }
+            else
+            {
+                cpu.cop0[PSX_COP0_CAUSE] &= ~(1 << 10);
+            }
+
+            /* Idle/polling loop fast-forward — placed AFTER IRQ checks
+             * so that pending interrupts (SIO IRQ7, CD-ROM) are delivered
+             * before we skip ahead to the scheduler deadline. */
             {
                 uint8_t idle_flag = be->is_idle;
                 if (__builtin_expect(idle_flag && cpu.pc == pc, 0))
@@ -453,38 +571,6 @@ void Run_CPU(void)
                 {
                     idle_skip_count = 0;
                 }
-            }
-#ifdef ENABLE_DYNAREC_STATS
-            stat_blocks_executed++;
-            stat_total_cycles += cycles;
-            stat_total_native_instrs += be->native_count;
-            stat_total_psx_instrs += be->instr_count;
-#endif
-
-            /* Level-triggered CD-ROM IRQ re-assertion */
-            if (cdrom_irq_active)
-                SignalInterrupt(2);
-
-            /* Delayed SIO (controller) IRQ7 */
-            if (sio_irq_delay_cycle && global_cycles >= sio_irq_delay_cycle)
-            {
-                sio_irq_delay_cycle = 0;
-                SignalInterrupt(7);
-            }
-
-            /* Check for interrupts after each block */
-            if (CheckInterrupts())
-            {
-                cpu.cop0[PSX_COP0_CAUSE] |= (1 << 10);
-                uint32_t sr = cpu.cop0[PSX_COP0_SR];
-                if ((sr & 1) && (sr & (1 << 10)))
-                {
-                    PSX_Exception(0);
-                }
-            }
-            else
-            {
-                cpu.cop0[PSX_COP0_CAUSE] &= ~(1 << 10);
             }
 
             iterations++;

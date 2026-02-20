@@ -17,14 +17,14 @@
  */
 
 /* ---- PSX timing constants ---- */
-#define PSX_CPU_FREQ          33868800U  /* 33.8688 MHz */
-#define CYCLES_PER_HBLANK     2152U                  /* ~33868800 / 15734 */
-#define CYCLES_PER_SCANLINE   CYCLES_PER_HBLANK
-#define SCANLINES_PER_FRAME   263U                   /* NTSC */
-#define SCANLINES_PER_FRAME_PAL 314U                 /* PAL  */
+#define PSX_CPU_FREQ 33868800U  /* 33.8688 MHz */
+#define CYCLES_PER_HBLANK 2152U /* ~33868800 / 15734 */
+#define CYCLES_PER_SCANLINE CYCLES_PER_HBLANK
+#define SCANLINES_PER_FRAME 263U     /* NTSC */
+#define SCANLINES_PER_FRAME_PAL 314U /* PAL  */
 /* Accurate frame timing: scanlines × cycles/scanline (not CPU_FREQ/fps) */
-#define CYCLES_PER_FRAME_NTSC (SCANLINES_PER_FRAME * CYCLES_PER_HBLANK) /* 565976 */
-#define CYCLES_PER_FRAME_PAL  (SCANLINES_PER_FRAME_PAL * CYCLES_PER_HBLANK) /* 675728 */
+#define CYCLES_PER_FRAME_NTSC (SCANLINES_PER_FRAME * CYCLES_PER_HBLANK)    /* 565976 */
+#define CYCLES_PER_FRAME_PAL (SCANLINES_PER_FRAME_PAL * CYCLES_PER_HBLANK) /* 675728 */
 
 /* Timer0 dotclock dividers: CPU_FREQ / dotclock_freq (integer approx)
  * 256-wide:  5.3222400 MHz → div≈7  (exact: 6.366)
@@ -32,27 +32,27 @@
  * 368-wide:  7.6032000 MHz → div≈4  (exact: 4.454)
  * 512-wide: 10.6444800 MHz → div≈3  (exact: 3.183)
  * 640-wide: 13.3056000 MHz → div≈3  (exact: 2.546)   */
-#define DOTCLOCK_DIV_256      7U
-#define DOTCLOCK_DIV_320      5U
-#define DOTCLOCK_DIV_368      4U  /* actually ~4.45, fractional handled */
-#define DOTCLOCK_DIV_512      3U
-#define DOTCLOCK_DIV_640      3U  /* actually ~2.55, fractional handled */
+#define DOTCLOCK_DIV_256 7U
+#define DOTCLOCK_DIV_320 5U
+#define DOTCLOCK_DIV_368 4U /* actually ~4.45, fractional handled */
+#define DOTCLOCK_DIV_512 3U
+#define DOTCLOCK_DIV_640 3U /* actually ~2.55, fractional handled */
 
 /* Approximate CD-ROM sector read delay (1x speed, ~150 sectors/s) */
-#define CDROM_READ_CYCLES     (PSX_CPU_FREQ / 150)   /* ~225792 */
+#define CDROM_READ_CYCLES (PSX_CPU_FREQ / 150) /* ~225792 */
 /* Fast approximation for usability (not exact) */
 #define CDROM_READ_CYCLES_FAST 50000U
 
 /* ---- Event IDs ---- */
-#define SCHED_EVENT_TIMER0          0
-#define SCHED_EVENT_TIMER1          1
-#define SCHED_EVENT_TIMER2          2
-#define SCHED_EVENT_VBLANK          3
-#define SCHED_EVENT_CDROM           4
-#define SCHED_EVENT_CDROM_DEFERRED  5  /* Deferred first-response delivery */
-#define SCHED_EVENT_CDROM_IRQ       6  /* IRQ signal delay (I_STAT assertion) */
-#define SCHED_EVENT_HBLANK          7  /* Per-scanline HBlank event           */
-#define SCHED_EVENT_COUNT           8
+#define SCHED_EVENT_TIMER0 0
+#define SCHED_EVENT_TIMER1 1
+#define SCHED_EVENT_TIMER2 2
+#define SCHED_EVENT_VBLANK 3
+#define SCHED_EVENT_CDROM 4
+#define SCHED_EVENT_CDROM_DEFERRED 5 /* Deferred first-response delivery */
+#define SCHED_EVENT_CDROM_IRQ 6      /* IRQ signal delay (I_STAT assertion) */
+#define SCHED_EVENT_HBLANK 7         /* Per-scanline HBlank event           */
+#define SCHED_EVENT_COUNT 8
 
 /* ---- Callback type ---- */
 typedef void (*sched_callback_t)(void);
@@ -89,7 +89,7 @@ static inline void sched_recompute_cached(void)
 }
 
 static inline void Scheduler_ScheduleEvent(int event_id, uint64_t absolute_cycle,
-                                            sched_callback_t cb)
+                                           sched_callback_t cb)
 {
     sched_events[event_id].active = 1;
     sched_events[event_id].deadline = absolute_cycle;

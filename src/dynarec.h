@@ -41,8 +41,9 @@ typedef struct BlockEntry
     uint32_t instr_count;    /* Number of PSX instructions in this block */
     uint32_t native_count;   /* Number of native R5900 instructions generated */
     uint32_t cycle_count;    /* Weighted R3000A cycle count for this block */
-    uint8_t is_idle;         /* 1 = idle loop (self-jump, no side effects) */
+    uint32_t is_idle;        /* 1 = idle loop (self-jump, no side effects) */
     struct BlockEntry *next; /* Collision chain pointer */
+    uint32_t padding;        /* Ensure struct is exactly 32 bytes */
 } BlockEntry;
 
 typedef struct
@@ -51,7 +52,7 @@ typedef struct
     uint32_t target_psx_pc;
 } PatchSite;
 
-typedef void (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios);
+typedef int32_t (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios, int32_t cycles_left);
 
 /* ================================================================
  *  Opcode field extraction macros
@@ -80,13 +81,24 @@ typedef void (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios);
 #define REG_T0   8
 #define REG_T1   9
 #define REG_T2   10
+#define REG_T3   11
+#define REG_T4   12
+#define REG_T5   13
+#define REG_T6   14
+#define REG_T7   15
+#define REG_T8   24
+#define REG_T9   25
 #define REG_A0   4
 #define REG_A1   5
 #define REG_A2   6
+#define REG_A3   7
 #define REG_V0   2
+#define REG_V1   3
 #define REG_RA   31
 #define REG_SP   29
 #define REG_ZERO 0
+
+#define DYNAREC_PROLOGUE_WORDS 25
 
 /* ================================================================
  *  MIPS instruction builders
@@ -106,6 +118,7 @@ typedef void (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios);
 extern uint32_t *code_buffer;
 extern uint32_t *code_ptr;
 extern uint32_t *abort_trampoline_addr;
+extern uint32_t *call_c_trampoline_addr;
 
 /* ================================================================
  *  Shared state — block cache
