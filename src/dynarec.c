@@ -239,32 +239,34 @@ static void emit_call_c(uint32_t func_addr)
     emit_reload_pinned();
 }
 
+/* Address of shared abort trampoline in code_buffer, set by Init_Dynarec */
+static uint32_t *abort_trampoline_addr;
+
 /*
  * Emit a mid-block abort check after a C helper that may trigger a PSX
  * exception (ADD/SUB/ADDI overflow, LW/LH/SH/SW alignment, CpU, etc.).
  *
- * Generated code:
- *   lui  t0, hi(&psx_block_aborted)
- *   ori  t0, t0, lo(&psx_block_aborted)
- *   lw   t0, 0(t0)
- *   beq  t0, zero, @skip    ; no abort → continue block
+ * $s3 is preloaded in the block prologue with &psx_block_aborted.
+ * The abort trampoline (emit_block_epilogue style) lives at a fixed offset
+ * in code_buffer and is shared across all blocks.
+ *
+ * Generated code (5 instructions, 3 on normal path):
+ *   lw   t0, 0(s3)          ; load abort flag
+ *   beq  t0, zero, @skip    ; no abort → continue
  *   nop
- *   <inline epilogue>       ; abort → flush pinned, restore, return
+ *   j    abort_trampoline   ; abort → shared epilogue
+ *   nop
  * @skip:
  */
 static void emit_load_imm32(int hwreg, uint32_t val); /* fwd decl */
 static void emit_block_epilogue(void);                /* fwd decl */
 static void emit_abort_check(void)
 {
-    uint32_t addr = (uint32_t)(uintptr_t)&psx_block_aborted;
-    emit_load_imm32(REG_T0, addr);
-    EMIT_LW(REG_T0, 0, REG_T0);
-    uint32_t *branch = code_ptr;
-    EMIT_BEQ(REG_T0, REG_ZERO, 0); /* patched below */
+    EMIT_LW(REG_T0, 0, REG_S3);    /* t0 = psx_block_aborted */
+    EMIT_BEQ(REG_T0, REG_ZERO, 3); /* skip next 2 instrs if zero */
     EMIT_NOP();
-    emit_block_epilogue();
-    int32_t off = (int32_t)(code_ptr - branch - 1);
-    *branch = (*branch & 0xFFFF0000) | ((uint32_t)off & 0xFFFF);
+    EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+    EMIT_NOP();
 }
 
 /* Load 32-bit immediate into hw register */
@@ -731,9 +733,9 @@ static uint32_t *compile_block(uint32_t psx_pc)
     {
         DLOG("Code buffer nearly full (%u/%u), flushing cache\n",
              (unsigned)used, CODE_BUFFER_SIZE);
-        /* Reset code ptr PAST the slow-path trampoline (first 8 words) */
-        code_ptr = code_buffer + 8;
-        memset(code_buffer + 8, 0, CODE_BUFFER_SIZE - 8 * sizeof(uint32_t));
+        /* Reset code ptr PAST the trampolines (first 24 words) */
+        code_ptr = code_buffer + 24;
+        memset(code_buffer + 24, 0, CODE_BUFFER_SIZE - 24 * sizeof(uint32_t));
         memset(block_cache, 0, BLOCK_CACHE_SIZE * sizeof(BlockEntry));
         memset(block_node_pool, 0, BLOCK_NODE_POOL_SIZE * sizeof(BlockEntry));
         block_node_pool_idx = 0;
@@ -1255,6 +1257,12 @@ static void emit_block_prologue(void)
     EMIT_MOVE(REG_S0, REG_A0);
     EMIT_MOVE(REG_S1, REG_A1);
     EMIT_MOVE(REG_S2, 6); /* $a2 = register 6 */
+    /* $s3 = &psx_block_aborted (for fast abort checks in generated code) */
+    {
+        uint32_t aborted_addr = (uint32_t)(uintptr_t)&psx_block_aborted;
+        EMIT_LUI(REG_S3, aborted_addr >> 16);
+        EMIT_ORI(REG_S3, REG_S3, aborted_addr & 0xFFFF);
+    }
     /* Load pinned PSX registers from cpu struct */
     EMIT_LW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
     EMIT_LW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
@@ -2462,8 +2470,35 @@ void Init_Dynarec(void)
      */
     code_buffer[0] = MK_R(0, REG_RA, 0, 0, 0, 0x08); /* JR $ra */
     code_buffer[1] = 0;                              /* NOP (delay slot) */
-    /* Reserve 8 words for trampoline; real compiled blocks start at [8] */
-    code_ptr = code_buffer + 8;
+
+    /* ---- Abort trampoline at code_buffer[2] ----
+     * Shared exit path for mid-block exception aborts.
+     * Flushes pinned regs, restores callee-saved, returns to C dispatch.
+     * All blocks share this single copy instead of inlining per-site. */
+    abort_trampoline_addr = &code_buffer[2];
+    {
+        uint32_t *p = &code_buffer[2];
+        /* Flush pinned PSX registers */
+        *p++ = MK_I(0x2B, REG_S0, REG_S4, CPU_REG(29)); /* sw s4, CPU_REG(29)(s0) */
+        *p++ = MK_I(0x2B, REG_S0, REG_S5, CPU_REG(31)); /* sw s5, CPU_REG(31)(s0) */
+        *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(2));  /* sw s6, CPU_REG(2)(s0)  */
+        *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(30)); /* sw s7, CPU_REG(30)(s0) */
+        /* Restore callee-saved */
+        *p++ = MK_I(0x23, REG_SP, REG_S7, 60); /* lw s7, 60(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_S6, 56); /* lw s6, 56(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_S5, 52); /* lw s5, 52(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_S4, 48); /* lw s4, 48(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_S3, 28); /* lw s3, 28(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_S2, 32); /* lw s2, 32(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_S1, 36); /* lw s1, 36(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_S0, 40); /* lw s0, 40(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_RA, 44); /* lw ra, 44(sp) */
+        *p++ = MK_I(0x09, REG_SP, REG_SP, 80); /* addiu sp, sp, 80 */
+        *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08); /* jr ra */
+        *p++ = 0;                              /* nop (delay slot) */
+    }
+    /* Reserve 24 words for trampolines; real compiled blocks start at [24] */
+    code_ptr = code_buffer + 24;
 
     printf("  Code buffer at %p, size %d bytes\n", code_buffer, CODE_BUFFER_SIZE);
     printf("  Block cache at %p, %d entries\n", block_cache, BLOCK_CACHE_SIZE);
