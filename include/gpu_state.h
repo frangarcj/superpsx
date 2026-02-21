@@ -207,6 +207,7 @@ void Upload_Shadow_VRAM_Region(int x, int y, int w, int h);
 uint16_t *GS_ReadbackRegion(int x, int y, int w_aligned, int h,
                             void *buf, int buf_qwc);
 void GS_UploadRegion(int x, int y, int w, int h, const uint16_t *pixels);
+void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uint32_t word_count);
 void DumpVRAM(const char *filename);
 
 /* gpu_texture.c — CLUT texture decode */
@@ -231,6 +232,7 @@ void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
 
 /* gpu_commands.c — GP0/GP1 command processing */
 int GPU_GetCommandSize(uint32_t cmd);
+void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count);
 
 /* gpu_core.c — Display update */
 void Update_GS_Display(void);

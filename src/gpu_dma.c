@@ -71,12 +71,8 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                 total_words = block_size * block_count;
             }
 
-            for (uint32_t i = 0; i < total_words; i++)
-            {
-                uint32_t word = *(uint32_t *)(psx_ram + (addr & 0x1FFFFC));
-                GPU_WriteGP0(word);
-                addr += 4;
-            }
+            GPU_ProcessDmaBlock((uint32_t *)(psx_ram + (addr & 0x1FFFFC)), total_words);
+            addr += (total_words * 4);
 
             /* ── DMA bus + GPU processing cycle cost ── */
             {
@@ -200,20 +196,22 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                 }
                 else if ((cmd_word >> 24) == 0xA0)
                 {
-                    GPU_WriteGP0(cmd_word);
-                    i++;
-                    addr += 4;
+                    uint32_t coords = GPU_GetWord(addr + 4);
+                    uint32_t dims   = GPU_GetWord(addr + 8);
+                    uint32_t image_words = ((dims & 0xFFFF) * (dims >> 16)) / 2;
 
-                    while (i < count && gpu_cmd_remaining > 0)
+                    // Procesar por vía rápida solo si el bloque está completo en este paquete
+                    if (3 + image_words <= count - i)
                     {
-                        GPU_WriteGP0(GPU_GetWord(addr));
-                        i++;
-                        addr += 4;
+                        GS_UploadRegionFast(coords, dims, (uint32_t *)(psx_ram + ((addr + 12) & 0x1FFFFC)), image_words);
+                        uint32_t skip = 3 + image_words;
+                        i    += skip;
+                        addr += (skip * 4);
                     }
-
-                    while (i < count && gpu_transfer_words > 0)
+                    else
                     {
-                        GPU_WriteGP0(GPU_GetWord(addr));
+                        // Fallback al modo normal si está fragmentado (poco común)
+                        GPU_WriteGP0(cmd_word);
                         i++;
                         addr += 4;
                     }

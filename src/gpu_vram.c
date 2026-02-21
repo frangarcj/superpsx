@@ -216,8 +216,102 @@ void GS_UploadRegion(int x, int y, int w, int h, const uint16_t *pixels)
             uint64_t *pp = (uint64_t *)&buf_image[j];
             Push_GIF_Data(pp[0], pp[1]);
         }
+    }
+}
+
+void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uint32_t word_count)
+{
+    int x = coords & 0x3FF;
+    int y = (coords >> 16) & 0x1FF;
+    int w = dims & 0xFFFF;
+    int h = (dims >> 16) & 0xFFFF;
+
+    if (w <= 0 || h <= 0) return;
+
+    // 1. Update shadow VRAM (optional, but good for CLUT textures since they might be used immediately)
+    if (psx_vram_shadow)
+    {
+        for (uint32_t i = 0; i < word_count; i++)
+        {
+            uint32_t data = data_ptr[i];
+            uint32_t n = i * 2;
+
+            // Pixel 0 of the word
+            int px0 = x + (n % w);
+            int py0 = y + (n / w);
+            if (px0 < 1024 && py0 < 512)
+                psx_vram_shadow[py0 * 1024 + px0] = data & 0xFFFF;
+
+            // Pixel 1 of the word
+            int px1 = x + ((n + 1) % w);
+            int py1 = y + ((n + 1) / w);
+            if (px1 < 1024 && py1 < 512)
+                psx_vram_shadow[py1 * 1024 + px1] = data >> 16;
+        }
+    }
+
+    // 2. Upload to GS via GIF IMAGE transfer
+    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), 0xE);
+    Push_GIF_Data(((uint64_t)GS_PSM_16S << 56) | ((uint64_t)PSX_VRAM_FBW << 48), 0x50);
+    Push_GIF_Data(((uint64_t)y << 48) | ((uint64_t)x << 32), 0x51);
+    Push_GIF_Data(((uint64_t)h << 32) | (uint64_t)w, 0x52);
+    Push_GIF_Data(0, 0x53); // Host -> Local
+
+    buf_image_ptr = 0;
+    uint32_t pend[4];
+    int pc = 0;
+
+    for (uint32_t i = 0; i < word_count; i++)
+    {
+        uint32_t word = data_ptr[i];
+        uint16_t p0 = word & 0xFFFF;
+        uint16_t p1 = word >> 16;
+
+        if (p0 != 0) p0 |= 0x8000;
+        if (p1 != 0) p1 |= 0x8000;
+
+        pend[pc++] = (uint32_t)p0 | ((uint32_t)p1 << 16);
+
+        if (pc >= 4)
+        {
+            uint64_t lo = (uint64_t)pend[0] | ((uint64_t)pend[1] << 32);
+            uint64_t hi = (uint64_t)pend[2] | ((uint64_t)pend[3] << 32);
+            buf_image[buf_image_ptr++] = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
+            pc = 0;
+
+            if (buf_image_ptr >= 1000)
+            {
+                Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 1, 0, 0, 2, 0), 0); // IMAGE mode
+                for (int j = 0; j < buf_image_ptr; j++)
+                {
+                    uint64_t *p = (uint64_t *)&buf_image[j];
+                    Push_GIF_Data(p[0], p[1]);
+                }
+                buf_image_ptr = 0;
+            }
+        }
+    }
+
+    if (pc > 0)
+    {
+        while (pc < 4) pend[pc++] = 0;
+        uint64_t lo = (uint64_t)pend[0] | ((uint64_t)pend[1] << 32);
+        uint64_t hi = (uint64_t)pend[2] | ((uint64_t)pend[3] << 32);
+        buf_image[buf_image_ptr++] = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
+    }
+
+    if (buf_image_ptr > 0)
+    {
+        Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 1, 0, 0, 2, 0), 0); // IMAGE mode
+        for (int j = 0; j < buf_image_ptr; j++)
+        {
+            uint64_t *p = (uint64_t *)&buf_image[j];
+            Push_GIF_Data(p[0], p[1]);
+        }
         buf_image_ptr = 0;
     }
+
+    Flush_GIF();
 }
 
 /* ── Full VRAM dump to file (for testing / debugging) ─────────────── */

@@ -865,3 +865,34 @@ void GPU_WriteGP1(uint32_t data)
     break;
     }
 }
+
+void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count)
+{
+    uint32_t i = 0;
+    while (i < word_count)
+    {
+        uint32_t data = data_ptr[i];
+
+        // Vía rápida para ráfagas de imágenes (LoadImage 0xA0)
+        // Solo si no estamos ya en medio de otra transferencia y el bloque cabe completo
+        if (gpu_transfer_words == 0 && gpu_cmd_remaining == 0 && (data >> 24) == 0xA0)
+        {
+            if (i + 2 < word_count)
+            {
+                uint32_t dims = data_ptr[i + 2];
+                uint32_t image_words = ((dims & 0xFFFF) * (dims >> 16)) / 2;
+                if (i + 3 + image_words <= word_count)
+                {
+                    uint32_t coords = data_ptr[i + 1];
+                    GS_UploadRegionFast(coords, dims, &data_ptr[i + 3], image_words);
+                    i += 3 + image_words;
+                    continue;
+                }
+            }
+        }
+
+        // Caso normal: procesar palabra por palabra
+        GPU_WriteGP0(data);
+        i++;
+    }
+}
