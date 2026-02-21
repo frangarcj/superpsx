@@ -88,15 +88,11 @@ int Decode_TexWindow_Rect(int tex_format,
 
     uint16_t *decoded = decode_buf;
 
-    /* ── Pre-compute texture window masks inline ────────────────── */
-    const uint32_t tw_mx = tex_win_mask_x;
-    const uint32_t tw_my = tex_win_mask_y;
-    const uint32_t mask_u  = tw_mx * 8;
-    const uint32_t off_u   = (tex_win_off_x & tw_mx) * 8;
-    const uint32_t mask_v  = tw_my * 8;
-    const uint32_t off_v   = (tex_win_off_y & tw_my) * 8;
-    const int has_tw_u = (tw_mx != 0);
-    const int has_tw_v = (tw_my != 0);
+    /* ── Pre-compute texture window masks inline (register optimized) ── */
+    register uint32_t m_x = ~(tex_win_mask_x * 8) & 0xFF;
+    register uint32_t o_x = (tex_win_off_x & tex_win_mask_x) * 8;
+    register uint32_t m_y = ~(tex_win_mask_y * 8) & 0xFF;
+    register uint32_t o_y = (tex_win_off_y & tex_win_mask_y) * 8;
 
     /* ── Pre-compute CLUT base pointer for indexed modes ───────── */
     const uint16_t *clut_ptr = &psx_vram_shadow[clut_y * 1024 + clut_x];
@@ -106,19 +102,15 @@ int Decode_TexWindow_Rect(int tex_format,
     {
         for (int row = 0; row < h; row++)
         {
-            int v_iter = flip_y ? (v0_cmd - row) : (v0_cmd + row);
-            uint32_t v_win = (uint32_t)(v_iter & 0xFF);
-            if (has_tw_v)
-                v_win = (v_win & ~mask_v) | off_v;
+            uint32_t v_iter = flip_y ? (uint32_t)(v0_cmd - row) : (uint32_t)(v0_cmd + row);
+            uint32_t v_win = (v_iter & m_y) | o_y;
             const uint16_t *tex_row = &psx_vram_shadow[(tex_page_y + v_win) * 1024];
             uint16_t *dst = &decoded[row * w];
 
             for (int col = 0; col < w; col++)
             {
-                int u_iter = flip_x ? (u0_cmd - col) : (u0_cmd + col);
-                uint32_t u_win = (uint32_t)(u_iter & 0xFF);
-                if (has_tw_u)
-                    u_win = (u_win & ~mask_u) | off_u;
+                uint32_t u_iter = flip_x ? (uint32_t)(u0_cmd - col) : (uint32_t)(u0_cmd + col);
+                uint32_t u_win = (u_iter & m_x) | o_x;
 
                 uint16_t packed = tex_row[tex_page_x + (u_win >> 2)];
                 int idx = (packed >> ((u_win & 3) * 4)) & 0xF;
@@ -133,19 +125,15 @@ int Decode_TexWindow_Rect(int tex_format,
     {
         for (int row = 0; row < h; row++)
         {
-            int v_iter = flip_y ? (v0_cmd - row) : (v0_cmd + row);
-            uint32_t v_win = (uint32_t)(v_iter & 0xFF);
-            if (has_tw_v)
-                v_win = (v_win & ~mask_v) | off_v;
+            uint32_t v_iter = flip_y ? (uint32_t)(v0_cmd - row) : (uint32_t)(v0_cmd + row);
+            uint32_t v_win = (v_iter & m_y) | o_y;
             const uint16_t *tex_row = &psx_vram_shadow[(tex_page_y + v_win) * 1024];
             uint16_t *dst = &decoded[row * w];
 
             for (int col = 0; col < w; col++)
             {
-                int u_iter = flip_x ? (u0_cmd - col) : (u0_cmd + col);
-                uint32_t u_win = (uint32_t)(u_iter & 0xFF);
-                if (has_tw_u)
-                    u_win = (u_win & ~mask_u) | off_u;
+                uint32_t u_iter = flip_x ? (uint32_t)(u0_cmd - col) : (uint32_t)(u0_cmd + col);
+                uint32_t u_win = (u_iter & m_x) | o_x;
 
                 uint16_t packed = tex_row[tex_page_x + (u_win >> 1)];
                 int idx = (packed >> ((u_win & 1) * 8)) & 0xFF;
@@ -160,19 +148,15 @@ int Decode_TexWindow_Rect(int tex_format,
     {
         for (int row = 0; row < h; row++)
         {
-            int v_iter = flip_y ? (v0_cmd - row) : (v0_cmd + row);
-            uint32_t v_win = (uint32_t)(v_iter & 0xFF);
-            if (has_tw_v)
-                v_win = (v_win & ~mask_v) | off_v;
+            uint32_t v_iter = flip_y ? (uint32_t)(v0_cmd - row) : (uint32_t)(v0_cmd + row);
+            uint32_t v_win = (v_iter & m_y) | o_y;
             const uint16_t *tex_row = &psx_vram_shadow[(tex_page_y + v_win) * 1024 + tex_page_x];
             uint16_t *dst = &decoded[row * w];
 
             for (int col = 0; col < w; col++)
             {
-                int u_iter = flip_x ? (u0_cmd - col) : (u0_cmd + col);
-                uint32_t u_win = (uint32_t)(u_iter & 0xFF);
-                if (has_tw_u)
-                    u_win = (u_win & ~mask_u) | off_u;
+                uint32_t u_iter = flip_x ? (uint32_t)(u0_cmd - col) : (uint32_t)(u0_cmd + col);
+                uint32_t u_win = (u_iter & m_x) | o_x;
 
                 uint16_t pixel = tex_row[u_win];
                 if (pixel != 0)
