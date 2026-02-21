@@ -24,11 +24,6 @@ uint64_t stat_dbl_patches = 0;
 /* ---- Temp buffer for IO code execution ---- */
 static uint32_t io_code_buffer[64];
 
-uint32_t *lookup_block_native(uint32_t psx_pc)
-{
-    BlockEntry *be = lookup_block(psx_pc);
-    return be ? be->native : NULL;
-}
 
 /*
  * emit_direct_link: at the end of a block epilogue, emit a J to the
@@ -118,46 +113,6 @@ uint32_t *get_psx_code_ptr(uint32_t psx_pc)
     return NULL;
 }
 
-/* ---- Block lookup (Deterministic Page Table Lookup) ---- */
-BlockEntry *lookup_block(uint32_t psx_pc)
-{
-    uint32_t phys = psx_pc & 0x1FFFFFFF;
-    uint32_t l1_idx, l2_idx;
-    BlockEntry *be = NULL;
-
-    if (phys < PSX_RAM_SIZE)
-    {
-        l1_idx = phys >> 12;
-        if (__builtin_expect(jit_l1_ram[l1_idx] != NULL, 1))
-        {
-            l2_idx = (phys >> 2) & (JIT_L2_ENTRIES - 1);
-            be = (*jit_l1_ram[l1_idx])[l2_idx];
-        }
-    }
-    else if (phys >= 0x1FC00000 && phys < 0x1FC00000 + PSX_BIOS_SIZE)
-    {
-        l1_idx = (phys - 0x1FC00000) >> 12;
-        if (__builtin_expect(jit_l1_bios[l1_idx] != NULL, 1))
-        {
-            l2_idx = (phys >> 2) & (JIT_L2_ENTRIES - 1);
-            be = (*jit_l1_bios[l1_idx])[l2_idx];
-        }
-    }
-
-    if (be)
-    {
-#ifdef ENABLE_DYNAREC_STATS
-        stat_cache_hits++;
-#endif
-    }
-    else
-    {
-#ifdef ENABLE_DYNAREC_STATS
-        stat_cache_misses++;
-#endif
-    }
-    return be;
-}
 
 BlockEntry *cache_block(uint32_t psx_pc, uint32_t *native)
 {

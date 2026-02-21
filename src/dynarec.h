@@ -230,11 +230,51 @@ void emit_load_imm32(int hwreg, uint32_t val);
 /* ================================================================
  *  Function prototypes — dynarec_cache.c
  * ================================================================ */
-uint32_t *lookup_block_native(uint32_t psx_pc);
+/* ================================================================
+ *  Function prototypes — dynarec_cache.c
+ * ================================================================ */
+static inline BlockEntry *lookup_block(uint32_t psx_pc)
+{
+    uint32_t phys = psx_pc & 0x1FFFFFFF;
+    uint32_t l1_idx, l2_idx;
+    BlockEntry *be = NULL;
+
+    if (phys < PSX_RAM_SIZE)
+    {
+        l1_idx = phys >> 12;
+        if (__builtin_expect(jit_l1_ram[l1_idx] != NULL, 1))
+        {
+            l2_idx = (phys >> 2) & (JIT_L2_ENTRIES - 1);
+            be = (*jit_l1_ram[l1_idx])[l2_idx];
+        }
+    }
+    else if (phys >= 0x1FC00000 && phys < 0x1FC00000 + PSX_BIOS_SIZE)
+    {
+        l1_idx = (phys - 0x1FC00000) >> 12;
+        if (__builtin_expect(jit_l1_bios[l1_idx] != NULL, 1))
+        {
+            l2_idx = (phys >> 2) & (JIT_L2_ENTRIES - 1);
+            be = (*jit_l1_bios[l1_idx])[l2_idx];
+        }
+    }
+
+#ifdef ENABLE_DYNAREC_STATS
+    if (be) stat_cache_hits++;
+    else stat_cache_misses++;
+#endif
+
+    return be;
+}
+
+static inline uint32_t *lookup_block_native(uint32_t psx_pc)
+{
+    BlockEntry *be = lookup_block(psx_pc);
+    return be ? be->native : NULL;
+}
+
 void emit_direct_link(uint32_t target_psx_pc);
 void apply_pending_patches(uint32_t target_psx_pc, uint32_t *native_addr);
 uint32_t *get_psx_code_ptr(uint32_t psx_pc);
-BlockEntry *lookup_block(uint32_t psx_pc);
 BlockEntry *cache_block(uint32_t psx_pc, uint32_t *native);
 void Free_PageTable(void);
 
