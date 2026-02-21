@@ -878,7 +878,6 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
         int32_t y2 = (y + h + 2048) << 4;
         Push_GIF_Data(GS_set_XYZ(x1, y1, 0), 0x05);
         Push_GIF_Data(GS_set_XYZ(x2, y2, 0), 0x05);
-        Flush_GIF();
 
         // Restore original scissor (PSX E4 is exclusive, GS SCISSOR is inclusive)
         Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), 0xE);
@@ -886,7 +885,6 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
         uint64_t sc_y2 = (draw_clip_y2 > 0) ? (draw_clip_y2 - 1) : 0;
         uint64_t orig_scissor = (uint64_t)draw_clip_x1 | (sc_x2 << 16) | ((uint64_t)draw_clip_y1 << 32) | (sc_y2 << 48);
         Push_GIF_Data(orig_scissor, 0x40);
-        Flush_GIF();
 
         // Update shadow VRAM for filled area
         if (psx_vram_shadow)

@@ -169,7 +169,6 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
 
                 if ((cmd_byte & 0xE0) == 0x40)
                 {
-                    Flush_GIF();
                     while (i < count)
                     {
                         GPU_WriteGP0(GPU_GetWord(addr));

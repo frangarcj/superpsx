@@ -39,7 +39,6 @@ void Upload_Shadow_VRAM_Region(int x, int y, int w, int h)
     Push_GIF_Data(((uint64_t)y << 48) | ((uint64_t)x << 32), 0x51);
     Push_GIF_Data(((uint64_t)h << 32) | (uint64_t)w, 0x52);
     Push_GIF_Data(0, 0x53); // Host -> Local
-    Flush_GIF();
 
     // Send pixel data from shadow VRAM
     for (int row = 0; row < h; row++)
@@ -165,7 +164,6 @@ void GS_UploadRegion(int x, int y, int w, int h, const uint16_t *pixels)
     Push_GIF_Data(((uint64_t)y << 48) | ((uint64_t)x << 32), 0x51);
     Push_GIF_Data(((uint64_t)h << 32) | (uint64_t)w, 0x52);
     Push_GIF_Data(0, 0x53); // Host → Local
-    Flush_GIF();
 
     // Pack pixels into IMAGE transfer qwords
     buf_image_ptr = 0;
@@ -220,7 +218,6 @@ void GS_UploadRegion(int x, int y, int w, int h, const uint16_t *pixels)
         }
         buf_image_ptr = 0;
     }
-    Flush_GIF();
 }
 
 /* ── Full VRAM dump to file (for testing / debugging) ─────────────── */
