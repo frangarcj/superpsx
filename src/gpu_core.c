@@ -24,9 +24,10 @@ int fb_height = 448;
 int fb_psm = GS_PSM_16S;
 
 /* GIF double-buffered packet buffers */
-unsigned __int128 gif_packet_buf[2][GIF_BUFFER_SIZE] __attribute__((aligned(64)));
+unsigned __int128 gif_packet_buf[2][GIF_BUFFER_SIZE] __attribute__((aligned(128)));
+gif_qword_t *fast_gif_ptr = NULL;
+gif_qword_t *gif_buffer_end_safe = NULL;
 int current_buffer = 0;
-int gif_packet_ptr = 0;
 
 /* GS shadow drawing state */
 int draw_offset_x = 0;
@@ -338,7 +339,7 @@ void Init_Graphics(void)
      * covering the entire 1024×512 PSX VRAM area. */
     {
         /* GIF tag: NLOOP=3, EOP=1, PRE=1, PRIM=sprite(6), FLG=PACKED, NREG=1, REGS=AD */
-        Push_GIF_Tag(3, 1, 1, 6, 0, 1, 0xE);
+        Push_GIF_Tag(GIF_TAG_LO(3, 1, 1, 6, 0, 1), 0xE);
         /* RGBAQ = black, full alpha */
         Push_GIF_Data(GS_set_RGBAQ(0, 0, 0, 0x80, 0x3F800000), 0x01);
         /* XYZ2: top-left and bottom-right with 2048 offset already baked into GS coords */

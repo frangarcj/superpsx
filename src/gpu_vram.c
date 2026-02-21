@@ -11,7 +11,7 @@
 void Start_VRAM_Transfer(int x, int y, int w, int h)
 {
     // Using simple GIF tags to set registers
-    Push_GIF_Tag(4, 1, 0, 0, 0, 1, 0xE); // NLOOP=4, EOP=1, A+D
+    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), 0xE); // NLOOP=4, EOP=1, A+D
 
     // BITBLTBUF (0x50): DBP=0 (Base 0), DBW=16 (1024px), DPSM=CT16S
     Push_GIF_Data(((uint64_t)GS_PSM_16S << 56) | ((uint64_t)PSX_VRAM_FBW << 48), 0x50);
@@ -34,7 +34,7 @@ void Upload_Shadow_VRAM_Region(int x, int y, int w, int h)
         return;
 
     // Set up GS IMAGE transfer for the region
-    Push_GIF_Tag(4, 1, 0, 0, 0, 1, 0xE);
+    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), 0xE);
     Push_GIF_Data(((uint64_t)GS_PSM_16S << 56) | ((uint64_t)PSX_VRAM_FBW << 48), 0x50);
     Push_GIF_Data(((uint64_t)y << 48) | ((uint64_t)x << 32), 0x51);
     Push_GIF_Data(((uint64_t)h << 32) | (uint64_t)w, 0x52);
@@ -75,7 +75,7 @@ void Upload_Shadow_VRAM_Region(int x, int y, int w, int h)
 
                 if (buf_image_ptr >= 1000)
                 {
-                    Push_GIF_Tag(buf_image_ptr, 0, 0, 0, 2, 0, 0);
+                    Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 0, 0, 0, 2, 0), 0);
                     for (int i = 0; i < buf_image_ptr; i++)
                     {
                         uint64_t *pp = (uint64_t *)&buf_image[i];
@@ -102,7 +102,7 @@ void Upload_Shadow_VRAM_Region(int x, int y, int w, int h)
     // Final flush
     if (buf_image_ptr > 0)
     {
-        Push_GIF_Tag(buf_image_ptr, 1, 0, 0, 2, 0, 0);
+        Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 1, 0, 0, 2, 0), 0);
         for (int i = 0; i < buf_image_ptr; i++)
         {
             uint64_t *pp = (uint64_t *)&buf_image[i];
@@ -160,7 +160,7 @@ uint16_t *GS_ReadbackRegion(int x, int y, int w_aligned, int h, void *buf, int b
 void GS_UploadRegion(int x, int y, int w, int h, const uint16_t *pixels)
 {
     // Set up BITBLTBUF, TRXPOS, TRXREG, TRXDIR for Host→Local
-    Push_GIF_Tag(4, 1, 0, 0, 0, 1, 0xE);
+    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), 0xE);
     Push_GIF_Data(((uint64_t)GS_PSM_16S << 56) | ((uint64_t)PSX_VRAM_FBW << 48), 0x50);
     Push_GIF_Data(((uint64_t)y << 48) | ((uint64_t)x << 32), 0x51);
     Push_GIF_Data(((uint64_t)h << 32) | (uint64_t)w, 0x52);
@@ -191,7 +191,7 @@ void GS_UploadRegion(int x, int y, int w, int h, const uint16_t *pixels)
             pc = 0;
             if (buf_image_ptr >= 1000)
             {
-                Push_GIF_Tag(buf_image_ptr, 0, 0, 0, 2, 0, 0);
+                Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 0, 0, 0, 2, 0), 0);
                 for (int j = 0; j < buf_image_ptr; j++)
                 {
                     uint64_t *pp = (uint64_t *)&buf_image[j];
@@ -212,7 +212,7 @@ void GS_UploadRegion(int x, int y, int w, int h, const uint16_t *pixels)
     }
     if (buf_image_ptr > 0)
     {
-        Push_GIF_Tag(buf_image_ptr, 1, 0, 0, 2, 0, 0);
+        Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 1, 0, 0, 2, 0), 0);
         for (int j = 0; j < buf_image_ptr; j++)
         {
             uint64_t *pp = (uint64_t *)&buf_image[j];

@@ -48,64 +48,41 @@ uint64_t Get_Alpha_Reg(int mode)
 
 void Flush_GIF(void)
 {
-    if (gif_packet_ptr > 0)
+    gif_qword_t *base = (gif_qword_t *)&gif_packet_buf[current_buffer][0];
+    int qwc = fast_gif_ptr - base;
+
+    if (qwc > 0)
     {
         // Flush CPU cache to RAM so DMA sees the data
         FlushCache(0);
 
+        // Send current buffer to GIF (Channel 2)
+        dma_channel_send_normal(DMA_CHANNEL_GIF, base, qwc, 0, 0);
+
         // Wait for the PREVIOUS transfer on this channel to complete
         dma_wait_fast();
 
-        // Send current buffer to GIF (Channel 2)
-        dma_channel_send_normal(DMA_CHANNEL_GIF, gif_packet_buf[current_buffer], gif_packet_ptr, 0, 0);
-
         // Switch to the other buffer for next writes
         current_buffer ^= 1;
-        gif_packet_ptr = 0;
+        fast_gif_ptr = (gif_qword_t *)&gif_packet_buf[current_buffer][0];
+        gif_buffer_end_safe = fast_gif_ptr + (GIF_BUFFER_SIZE - 1024);
     }
 }
 
-void Push_GIF_Tag(uint64_t nloop, uint64_t eop, uint64_t pre,
-                  uint64_t prim, uint64_t flg, uint64_t nreg, uint64_t regs)
-{
-    // Batching: Only flush at Tag boundaries to ensure a single GS packet
-    // is never split across two DMA transfers. A 256 qword margin is enough
-    // for any PSX primitive translation to follow.
-    if (gif_packet_ptr > (GIF_BUFFER_SIZE - 256))
-        Flush_GIF();
-
-    GifTag *tag = (GifTag *)&gif_packet_buf[current_buffer][gif_packet_ptr];
-    tag->NLOOP = nloop;
-    tag->EOP = eop;
-    tag->pad1 = 0;
-    tag->PRE = pre;
-    tag->PRIM = prim;
-    tag->FLG = flg;
-    tag->NREG = nreg;
-    tag->REGS = regs;
-
-    gif_packet_ptr++;
-}
-
-void Push_GIF_Data(uint64_t d0, uint64_t d1)
-{
-    // NEVER flush mid-packet. Tag check ensures enough space.
-    uint64_t *p = (uint64_t *)&gif_packet_buf[current_buffer][gif_packet_ptr];
-    p[0] = d0;
-    p[1] = d1;
-
-    gif_packet_ptr++;
-}
 
 /* ── GS Environment Setup ────────────────────────────────────────── */
 
 void Setup_GS_Environment(void)
 {
+    // Setup GIF pointer initially
+    fast_gif_ptr = (gif_qword_t *)&gif_packet_buf[current_buffer][0];
+    gif_buffer_end_safe = fast_gif_ptr + (GIF_BUFFER_SIZE - 1024);
+
     // Setup GS registers like draw_setup_environment does
     // This mimics what libdraw does
 
     // NLOOP=16, EOP=1, PRE=0, PRIM=0, FLG=PACKED, NREG=1, REGS=AD(0xE)
-    Push_GIF_Tag(16, 1, 0, 0, 0, 1, 0xE);
+    Push_GIF_Tag(GIF_TAG_LO(16, 1, 0, 0, 0, 1), 0xE);
 
     // FRAME_1 (Reg 0x4C) - Framebuffer address and settings
     // FBP=0 (Base 0), FBW=16 (1024/64 - matches PSX VRAM width), PSM=0 (CT32)

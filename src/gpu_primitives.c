@@ -56,7 +56,7 @@ void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
     if (is_semi_trans)
         nregs++;
 
-    Push_GIF_Tag(nregs, 1, 0, 0, 0, 1, 0xE); // A+D mode
+    Push_GIF_Tag(GIF_TAG_LO(nregs, 1, 0, 0, 0, 1), 0xE); // A+D mode
 
     if (is_semi_trans)
     {
@@ -203,7 +203,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 int nregs_sprite = 7;
                 if (is_semi_trans_sprite)
                     nregs_sprite += 1;
-                Push_GIF_Tag(nregs_sprite, 1, 0, 0, 0, 1, 0xE);
+                Push_GIF_Tag(GIF_TAG_LO(nregs_sprite, 1, 0, 0, 0, 1), 0xE);
                 if (is_semi_trans_sprite)
                     Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), 0x42);
                 Push_GIF_Data(sprite_prim, 0x00);
@@ -279,7 +279,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                         ndata += 2; // TEX0 + TEXFLUSH restore
                     if (t == 1 && is_textured)
                         ndata += 1; // TEST restore
-                    Push_GIF_Tag(ndata, (t == 1) ? 1 : 0, 0, 0, 0, 1, 0xE);
+                    Push_GIF_Tag(GIF_TAG_LO(ndata, (t == 1) ? 1 : 0, 0, 0, 0, 1), 0xE);
 
                     if (t == 0)
                     {
@@ -405,7 +405,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 ndata += 4; // TEX0+TEXFLUSH before + TEX0+TEXFLUSH after
             if (is_textured)
                 ndata += 2; // TEST enable + TEST restore
-            Push_GIF_Tag(ndata, 1, 0, 0, 0, 1, 0xE);
+            Push_GIF_Tag(GIF_TAG_LO(ndata, 1, 0, 0, 0, 1), 0xE);
 
             Push_GIF_Data((uint64_t)use_dither_tri, 0x45); // DTHE
             if (is_semi_trans_tri)
@@ -648,7 +648,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 if (is_raw_texture)
                     nregs_tri += 4;
 
-                Push_GIF_Tag(nregs_tri, 1, 0, 0, 0, 1, 0xE);
+                Push_GIF_Tag(GIF_TAG_LO(nregs_tri, 1, 0, 0, 0, 1), 0xE);
                 Push_GIF_Data(0, 0x45); // DTHE = 0
 
                 if (is_semi_trans)
@@ -753,7 +753,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 if (clut_decoded || is_raw_texture)
                     nregs += 4;
 
-                Push_GIF_Tag(nregs, 1, 0, 0, 0, 1, 0xE);
+                Push_GIF_Tag(GIF_TAG_LO(nregs, 1, 0, 0, 0, 1), 0xE);
                 Push_GIF_Data(0, 0x45); // DTHE = 0
 
                 if (is_semi_trans)
@@ -826,7 +826,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
             if (is_semi_trans)
                 nregs += 1;
 
-            Push_GIF_Tag(nregs, 1, 0, 0, 0, 1, 0xE);
+            Push_GIF_Tag(GIF_TAG_LO(nregs, 1, 0, 0, 0, 1), 0xE);
 
             Push_GIF_Data(0, 0x45);
 
@@ -864,7 +864,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
         gpu_estimated_pixels += (uint32_t)w * (uint32_t)h;
 
 
-        Push_GIF_Tag(5, 1, 0, 0, 0, 1, 0xE);
+        Push_GIF_Tag(GIF_TAG_LO(5, 1, 0, 0, 0, 1), 0xE);
         uint64_t full_scissor = 0 | ((uint64_t)(PSX_VRAM_WIDTH - 1) << 16) | ((uint64_t)0 << 32) | ((uint64_t)(PSX_VRAM_HEIGHT - 1) << 48);
         Push_GIF_Data(full_scissor, 0x40);
         Push_GIF_Data(6, 0x00);
@@ -881,7 +881,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
         Flush_GIF();
 
         // Restore original scissor (PSX E4 is exclusive, GS SCISSOR is inclusive)
-        Push_GIF_Tag(1, 1, 0, 0, 0, 1, 0xE);
+        Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), 0xE);
         uint64_t sc_x2 = (draw_clip_x2 > 0) ? (draw_clip_x2 - 1) : 0;
         uint64_t sc_y2 = (draw_clip_y2 > 0) ? (draw_clip_y2 - 1) : 0;
         uint64_t orig_scissor = (uint64_t)draw_clip_x1 | (sc_x2 << 16) | ((uint64_t)draw_clip_y1 << 32) | (sc_y2 << 48);

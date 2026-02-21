@@ -52,6 +52,11 @@ typedef struct
     uint64_t REGS;
 } GifTag __attribute__((aligned(16)));
 
+typedef struct __attribute__((aligned(16))) {
+    uint64_t d0;
+    uint64_t d1;
+} gif_qword_t;
+
 /* ── Helper macros ───────────────────────────────────────────────── */
 #define GS_set_RGBAQ(r, g, b, a, q)                                 \
     ((uint64_t)(r) | ((uint64_t)(g) << 8) | ((uint64_t)(b) << 16) | \
@@ -88,8 +93,9 @@ extern int fb_psm;
 
 /* GIF double-buffered packet buffers */
 extern unsigned __int128 gif_packet_buf[2][GIF_BUFFER_SIZE];
+extern gif_qword_t *fast_gif_ptr;
+extern gif_qword_t *gif_buffer_end_safe;
 extern int current_buffer;
-extern int gif_packet_ptr;
 
 /* GS shadow drawing state */
 extern int draw_offset_x;
@@ -167,9 +173,30 @@ extern int buf_image_ptr;
 
 /* gpu_gif.c — GIF buffer management */
 void Flush_GIF(void);
-void Push_GIF_Tag(uint64_t nloop, uint64_t eop, uint64_t pre,
-                  uint64_t prim, uint64_t flg, uint64_t nreg, uint64_t regs);
-void Push_GIF_Data(uint64_t d0, uint64_t d1);
+
+#define GIF_TAG_LO(nloop, eop, pre, prim, flg, nreg) \
+    (((uint64_t)(nloop) & 0x7FFF) | \
+    (((uint64_t)(eop) & 1) << 15) | \
+    (((uint64_t)(pre) & 1) << 46) | \
+    (((uint64_t)(prim) & 0x7FF) << 47) | \
+    (((uint64_t)(flg) & 3) << 58) | \
+    (((uint64_t)(nreg) & 15) << 60))
+
+static inline void Push_GIF_Tag(uint64_t tag_lo, uint64_t tag_hi)
+{
+    if (__builtin_expect(fast_gif_ptr >= gif_buffer_end_safe, 0))
+        Flush_GIF();
+
+    *(unsigned __int128 *)fast_gif_ptr = ((unsigned __int128)tag_hi << 64) | (unsigned __int128)tag_lo;
+    fast_gif_ptr++;
+}
+
+static inline void Push_GIF_Data(uint64_t d0, uint64_t d1)
+{
+    *(unsigned __int128 *)fast_gif_ptr = ((unsigned __int128)d1 << 64) | (unsigned __int128)d0;
+    fast_gif_ptr++;
+}
+
 void Setup_GS_Environment(void);
 uint64_t Get_Alpha_Reg(int mode);
 uint64_t Get_Base_TEST(void);
