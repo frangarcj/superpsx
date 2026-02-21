@@ -124,10 +124,9 @@ void Init_Dynarec(void)
 
     /* Allocate buffers */
     code_buffer = (uint32_t *)memalign(64, CODE_BUFFER_SIZE);
-    block_cache = (BlockEntry *)memalign(64, BLOCK_CACHE_SIZE * sizeof(BlockEntry));
     block_node_pool = (BlockEntry *)memalign(64, BLOCK_NODE_POOL_SIZE * sizeof(BlockEntry));
 
-    if (!code_buffer || !block_cache || !block_node_pool)
+    if (!code_buffer || !block_node_pool)
     {
         printf("  ERROR: Failed to allocate dynarec buffers!\n");
         return;
@@ -135,8 +134,10 @@ void Init_Dynarec(void)
 
     code_ptr = code_buffer;
     memset(code_buffer, 0, CODE_BUFFER_SIZE);
-    memset(block_cache, 0, BLOCK_CACHE_SIZE * sizeof(BlockEntry));
     memset(block_node_pool, 0, BLOCK_NODE_POOL_SIZE * sizeof(BlockEntry));
+    memset(jit_l1_ram, 0, sizeof(jit_l1_ram));
+    memset(jit_l1_bios, 0, sizeof(jit_l1_bios));
+
     block_node_pool_idx = 0;
     blocks_compiled = 0;
     total_instructions = 0;
@@ -217,7 +218,7 @@ void Init_Dynarec(void)
     code_ptr = code_buffer + 128;
 
     printf("  Code buffer at %p (%u KB)\n", code_buffer, CODE_BUFFER_SIZE/1024);
-    printf("  Block cache at %p (%u entries)\n", block_cache, BLOCK_CACHE_SIZE);
+    printf("  Page Table (L1) initialized: %u + %u entries\n", JIT_L1_RAM_PAGES, JIT_L1_BIOS_PAGES);
     FlushCache(0);
     FlushCache(2);
 }
@@ -411,16 +412,16 @@ static inline int run_jit_chain(uint64_t deadline)
 {
     uint32_t pc = cpu.pc;
 
-    /* Block Lookup */
-    uint32_t cache_idx = (pc >> 2) & BLOCK_CACHE_MASK;
-    BlockEntry *be = &block_cache[cache_idx];
-    uint32_t *block = (be->native != NULL && be->psx_pc == pc) ? be->native : lookup_block(pc);
+    /* Block Lookup - SOTA Page Table */
+    BlockEntry *be = lookup_block(pc);
+    uint32_t *block = be ? be->native : NULL;
 
     if (!block)
     {
         block = compile_block(pc);
         if (!block) { DLOG("IBE at %08X\n", (unsigned)pc); cpu.pc = pc; PSX_Exception(6); return RUN_RES_NORMAL; }
-        cache_block(pc, block); apply_pending_patches(pc, block);
+        be = lookup_block(pc); 
+        apply_pending_patches(pc, block);
         FlushCache(0); FlushCache(2);
     }
 
@@ -438,13 +439,13 @@ static inline int run_jit_chain(uint64_t deadline)
     if (cycles_taken == 0) cycles_taken = 8;
     global_cycles += cycles_taken;
 
-    update_dynarec_stats(be, cycles_taken);
+    if (be) update_dynarec_stats(be, cycles_taken);
     run_iterations++;
     check_stuck_detection(pc);
     handle_vram_dump(run_iterations);
 
     /* Idle skip logic (integrated execution control) */
-    if (__builtin_expect(be->is_idle && cpu.pc == pc, 0))
+    if (__builtin_expect(be && be->is_idle && cpu.pc == pc, 0))
     {
         if (pc != idle_skip_pc) { idle_skip_pc = pc; idle_skip_count = 0; }
         uint32_t threshold = (be->is_idle == 1) ? 1 : ((pc >= 0xBFC00000) ? 2048 : 0x7FFFFFFF);

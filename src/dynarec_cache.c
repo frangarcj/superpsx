@@ -7,7 +7,10 @@
 #include "dynarec.h"
 
 /* ---- Block cache storage ---- */
-BlockEntry *block_cache;
+/* ---- Page Table storage ---- */
+jit_l2_t jit_l1_ram[JIT_L1_RAM_PAGES];
+jit_l2_t jit_l1_bios[JIT_L1_BIOS_PAGES];
+
 BlockEntry *block_node_pool;
 int block_node_pool_idx = 0;
 
@@ -21,18 +24,10 @@ uint64_t stat_dbl_patches = 0;
 /* ---- Temp buffer for IO code execution ---- */
 static uint32_t io_code_buffer[64];
 
-/* ---- Block lookup (native pointer only, no stats) ---- */
 uint32_t *lookup_block_native(uint32_t psx_pc)
 {
-    uint32_t idx = (psx_pc >> 2) & BLOCK_CACHE_MASK;
-    BlockEntry *e = &block_cache[idx];
-    while (e)
-    {
-        if (e->native && e->psx_pc == psx_pc)
-            return e->native;
-        e = e->next;
-    }
-    return NULL;
+    BlockEntry *be = lookup_block(psx_pc);
+    return be ? be->native : NULL;
 }
 
 /*
@@ -42,10 +37,10 @@ uint32_t *lookup_block_native(uint32_t psx_pc)
  */
 void emit_direct_link(uint32_t target_psx_pc)
 {
-    BlockEntry *be = &block_cache[(target_psx_pc >> 2) & BLOCK_CACHE_MASK];
-    if (be->native != NULL && be->psx_pc == target_psx_pc)
+    BlockEntry *be = lookup_block(target_psx_pc);
+    if (be && be->native != NULL)
     {
-        /* Block already exists (e.g., backward loop). Link immediately! */
+        /* Block already exists. Link immediately! */
         uint32_t native_addr = (uint32_t)(be->native + DYNAREC_PROLOGUE_WORDS);
         EMIT_J_ABS(native_addr);
         EMIT_NOP();
@@ -123,76 +118,112 @@ uint32_t *get_psx_code_ptr(uint32_t psx_pc)
     return NULL;
 }
 
-/* ---- Block lookup (with collision chain traversal and stats) ---- */
-uint32_t *lookup_block(uint32_t psx_pc)
+/* ---- Block lookup (Deterministic Page Table Lookup) ---- */
+BlockEntry *lookup_block(uint32_t psx_pc)
 {
-    uint32_t idx = (psx_pc >> 2) & BLOCK_CACHE_MASK;
-    BlockEntry *e = &block_cache[idx];
-    while (e)
+    uint32_t phys = psx_pc & 0x1FFFFFFF;
+    uint32_t l1_idx, l2_idx;
+    BlockEntry *be = NULL;
+
+    if (phys < PSX_RAM_SIZE)
     {
-        if (e->native && e->psx_pc == psx_pc)
+        l1_idx = phys >> 12;
+        if (__builtin_expect(jit_l1_ram[l1_idx] != NULL, 1))
         {
-#ifdef ENABLE_DYNAREC_STATS
-            stat_cache_hits++;
-#endif
-            return e->native;
+            l2_idx = (phys >> 2) & (JIT_L2_ENTRIES - 1);
+            be = (*jit_l1_ram[l1_idx])[l2_idx];
         }
-        e = e->next;
     }
-    /* Not found - check if bucket is occupied (collision) */
-    if (block_cache[idx].native && block_cache[idx].psx_pc != psx_pc)
+    else if (phys >= 0x1FC00000 && phys < 0x1FC00000 + PSX_BIOS_SIZE)
     {
-#ifdef ENABLE_DYNAREC_STATS
-        stat_cache_collisions++;
-#endif
-    }
-#ifdef ENABLE_DYNAREC_STATS
-    stat_cache_misses++;
-#endif
-    return NULL;
-}
-
-void cache_block(uint32_t psx_pc, uint32_t *native)
-{
-    uint32_t idx = (psx_pc >> 2) & BLOCK_CACHE_MASK;
-    BlockEntry *bucket = &block_cache[idx];
-
-    /* Case 1: bucket is empty */
-    if (!bucket->native)
-    {
-        bucket->psx_pc = psx_pc;
-        bucket->native = native;
-        return;
-    }
-
-    /* Case 2: same PC - update in place (recompile) */
-    BlockEntry *e = bucket;
-    while (e)
-    {
-        if (e->psx_pc == psx_pc)
+        l1_idx = (phys - 0x1FC00000) >> 12;
+        if (__builtin_expect(jit_l1_bios[l1_idx] != NULL, 1))
         {
-            e->native = native;
-            return;
+            l2_idx = (phys >> 2) & (JIT_L2_ENTRIES - 1);
+            be = (*jit_l1_bios[l1_idx])[l2_idx];
         }
-        e = e->next;
     }
 
-    /* Case 3: collision - allocate from pool and prepend to chain */
-    if (block_node_pool_idx < BLOCK_NODE_POOL_SIZE)
+    if (be)
     {
-        BlockEntry *node = &block_node_pool[block_node_pool_idx++];
-        node->psx_pc = psx_pc;
-        node->native = native;
-        node->instr_count = 0;
-        node->cycle_count = 0;
-        node->next = bucket->next;
-        bucket->next = node;
+#ifdef ENABLE_DYNAREC_STATS
+        stat_cache_hits++;
+#endif
     }
     else
     {
-        /* Pool exhausted: fall back to overwrite (rare) */
-        DLOG("Block node pool exhausted! Overwriting bucket at idx=%u\n", (unsigned)idx);
-        bucket->psx_pc = psx_pc;
-        bucket->native = native;
+#ifdef ENABLE_DYNAREC_STATS
+        stat_cache_misses++;
+#endif
+    }
+    return be;
+}
+
+BlockEntry *cache_block(uint32_t psx_pc, uint32_t *native)
+{
+    uint32_t phys = psx_pc & 0x1FFFFFFF;
+    uint32_t l1_idx, l2_idx;
+    jit_l2_t *l1_table = NULL;
+
+    if (phys < PSX_RAM_SIZE)
+    {
+        l1_table = jit_l1_ram;
+        l1_idx = phys >> 12;
+    }
+    else if (phys >= 0x1FC00000 && phys < 0x1FC00000 + PSX_BIOS_SIZE)
+    {
+        l1_table = jit_l1_bios;
+        l1_idx = (phys - 0x1FC00000) >> 12;
+    }
+
+    if (!l1_table) return NULL;
+
+    /* Allocate L2 page if needed */
+    if (l1_table[l1_idx] == NULL)
+    {
+        l1_table[l1_idx] = calloc(1, sizeof(BlockEntry*) * JIT_L2_ENTRIES);
+        if (!l1_table[l1_idx]) return NULL;
+    }
+
+    l2_idx = (phys >> 2) & (JIT_L2_ENTRIES - 1);
+    
+    /* Allocate or reuse BlockEntry */
+    BlockEntry *be = (*l1_table[l1_idx])[l2_idx];
+    if (!be)
+    {
+        if (block_node_pool_idx < BLOCK_NODE_POOL_SIZE)
+        {
+            be = &block_node_pool[block_node_pool_idx++];
+            (*l1_table[l1_idx])[l2_idx] = be;
+        }
+    }
+
+    if (be)
+    {
+        be->psx_pc = psx_pc;
+        be->native = native;
+        be->next = NULL;
+    }
+    return be;
+}
+
+void Free_PageTable(void)
+{
+    int i;
+    for (i = 0; i < JIT_L1_RAM_PAGES; i++)
+    {
+        if (jit_l1_ram[i])
+        {
+            free(jit_l1_ram[i]);
+            jit_l1_ram[i] = NULL;
+        }
+    }
+    for (i = 0; i < JIT_L1_BIOS_PAGES; i++)
+    {
+        if (jit_l1_bios[i])
+        {
+            free(jit_l1_bios[i]);
+            jit_l1_bios[i] = NULL;
+        }
     }
 }

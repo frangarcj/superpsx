@@ -267,7 +267,9 @@ uint32_t *compile_block(uint32_t psx_pc)
              (unsigned)used, CODE_BUFFER_SIZE);
         code_ptr = code_buffer + 128;
         memset(code_buffer + 128, 0, CODE_BUFFER_SIZE - 128 * sizeof(uint32_t));
-        memset(block_cache, 0, BLOCK_CACHE_SIZE * sizeof(BlockEntry));
+        Free_PageTable();
+        memset(jit_l1_ram, 0, sizeof(jit_l1_ram));
+        memset(jit_l1_bios, 0, sizeof(jit_l1_bios));
         memset(block_node_pool, 0, BLOCK_NODE_POOL_SIZE * sizeof(BlockEntry));
         block_node_pool_idx = 0;
         patch_sites_count = 0;
@@ -398,50 +400,9 @@ uint32_t *compile_block(uint32_t psx_pc)
                 *bp = (*bp & 0xFFFF0000) | (offset & 0xFFFF);
                 emit_branch_epilogue(branch_target);
             }
-            else if (branch_type == 3)
-            {
-                /* Register jump (JR/JALR): try inline block cache lookup */
-                
-                /* 1. Calculate remaining cycles and check abort boundary */
-                EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
-                emit(MK_I(0x07, REG_S2, REG_ZERO, 2)); /* BGTZ s2, +2 */
-                EMIT_NOP(); /* Delay slot */
-                EMIT_J_ABS((uint32_t)abort_trampoline_addr);
-                EMIT_NOP(); /* Delay slot */
-
-                /* 2. Load target PC from CPU struct (it was saved there by JR opcode emitter) */
-                EMIT_LW(REG_T0, CPU_PC, REG_S0);
-                
-                /* 3. Compute Hash Index: (target_pc >> 2) & BLOCK_CACHE_MASK */
-                emit(MK_R(0, 0, REG_T0, REG_T1, 2, 0x02));          /* SRL t1, t0, 2 */
-                emit(MK_I(0x0C, REG_T1, REG_T1, BLOCK_CACHE_MASK)); /* ANDI t1, t1, mask */
-                
-                /* 4. Multiply by 32 (sizeof BlockEntry is strictly 32 bytes) */
-                emit(MK_R(0, 0, REG_T1, REG_T1, 5, 0x00));          /* SLL t1, t1, 5 */
-                
-                /* 5. Add base of block_cache */
-                emit_load_imm32(REG_T2, (uint32_t)block_cache);
-                EMIT_ADDU(REG_T1, REG_T1, REG_T2);                  /* t1 = &block_cache[idx] */
-                
-                /* 6. Verify psx_pc matches */
-                EMIT_LW(REG_T2, 0, REG_T1);                         /* t2 = be->psx_pc */
-                emit(MK_I(0x05, REG_T0, REG_T2, 7));                /* BNE t0, t2, MISS (+7) */
-                EMIT_NOP();
-                
-                /* 7. Verify native matches */
-                EMIT_LW(REG_T2, 4, REG_T1);                         /* t2 = be->native */
-                emit(MK_I(0x04, REG_T2, REG_ZERO, 4));              /* BEQ t2, zero, MISS (+4) */
-                EMIT_NOP();
-                
-                /* 8. Jump to target block bypassing prologue */
-                EMIT_ADDIU(REG_T2, REG_T2, DYNAREC_PROLOGUE_WORDS * 4);
-                EMIT_JR(REG_T2);
-                EMIT_NOP();
-                
-                /* MISS target */
+                /* Register jump (JR/JALR): Abort to C for lookup through Page Table */
                 EMIT_J_ABS((uint32_t)abort_trampoline_addr);
                 EMIT_NOP();
-            }
             block_ended = 1;
             break;
         }
@@ -758,11 +719,15 @@ uint32_t *compile_block(uint32_t psx_pc)
             }
         }
 
-        uint32_t idx = (psx_pc >> 2) & BLOCK_CACHE_MASK;
-        block_cache[idx].instr_count = block_instr_count;
-        block_cache[idx].native_count = (uint32_t)(code_ptr - block_start);
-        block_cache[idx].cycle_count = block_cycle_count > 0 ? block_cycle_count : block_instr_count;
-        block_cache[idx].is_idle = is_idle;
+        BlockEntry *be = cache_block(psx_pc, block_start);
+        if (be)
+        {
+            uint32_t block_instr_count = (cur_pc - psx_pc) / 4;
+            be->instr_count = block_instr_count;
+            be->native_count = (uint32_t)(code_ptr - block_start);
+            be->cycle_count = block_cycle_count > 0 ? block_cycle_count : block_instr_count;
+            be->is_idle = is_idle;
+        }
     }
 
     return block_start;

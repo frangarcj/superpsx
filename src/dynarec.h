@@ -24,10 +24,7 @@
  * ================================================================ */
 #define CODE_BUFFER_SIZE (4 * 1024 * 1024)
 
-#define BLOCK_CACHE_BITS 14
-#define BLOCK_CACHE_SIZE (1 << BLOCK_CACHE_BITS)
-#define BLOCK_CACHE_MASK (BLOCK_CACHE_SIZE - 1)
-#define BLOCK_NODE_POOL_SIZE 4096
+#define BLOCK_NODE_POOL_SIZE 32768
 
 #define PATCH_SITE_MAX 8192
 
@@ -121,9 +118,17 @@ extern uint32_t *abort_trampoline_addr;
 extern uint32_t *call_c_trampoline_addr;
 
 /* ================================================================
- *  Shared state — block cache
+ *  Shared state — Page Table (Lookup)
  * ================================================================ */
-extern BlockEntry *block_cache;
+#define JIT_L1_RAM_PAGES   512  /* 2MB / 4KB */
+#define JIT_L1_BIOS_PAGES  128  /* 512KB / 4KB */
+#define JIT_L2_ENTRIES     1024 /* 4KB / 4 bytes */
+
+typedef BlockEntry* (*jit_l2_t)[JIT_L2_ENTRIES];
+
+extern jit_l2_t jit_l1_ram[JIT_L1_RAM_PAGES];
+extern jit_l2_t jit_l1_bios[JIT_L1_BIOS_PAGES];
+
 extern BlockEntry *block_node_pool;
 extern int block_node_pool_idx;
 
@@ -229,8 +234,9 @@ uint32_t *lookup_block_native(uint32_t psx_pc);
 void emit_direct_link(uint32_t target_psx_pc);
 void apply_pending_patches(uint32_t target_psx_pc, uint32_t *native_addr);
 uint32_t *get_psx_code_ptr(uint32_t psx_pc);
-uint32_t *lookup_block(uint32_t psx_pc);
-void cache_block(uint32_t psx_pc, uint32_t *native);
+BlockEntry *lookup_block(uint32_t psx_pc);
+BlockEntry *cache_block(uint32_t psx_pc, uint32_t *native);
+void Free_PageTable(void);
 
 /* ================================================================
  *  Function prototypes — dynarec_memory.c
