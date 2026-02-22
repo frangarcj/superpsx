@@ -171,7 +171,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
 
         if (is_quad)
         {
-            // Always use two-triangle + Decode_TexWindow_Rect path for textured quads.
+            // Always use two-triangle + Decode_TexPage_Cached path for textured quads.
             // The sprite shortcut bypasses CLUT decode (broken for 4BPP/8BPP) and has
             // rasterization edge-pixel differences vs the reference even for 15BPP.
             int use_sprite = 0;
@@ -291,13 +291,14 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                                 tex0_c |= (uint64_t)1 << 34;                    /* TCC: RGBA */
                                 tex0_c |= (uint64_t)(is_raw_tex ? 1 : 0) << 35; /* TFX */
                                 tex0_c |= (uint64_t)poly_hw_cbp << 37;          /* CBP: CLUT base */
-                                tex0_c |= (uint64_t)GS_PSM_16S << 51;           /* CPSM: CT16S */
+                                tex0_c |= (uint64_t)GS_PSM_16 << 51;            /* CPSM: CT16 */
                                 /* CSM=0 (bit 55), CSA=0 (bits 56-60) */
                                 tex0_c |= (uint64_t)1 << 61; /* CLD: load if changed */
                             }
                             else
                             {
-                                /* SW decode: CT16S cache at TBP0=8224-area */
+                                /* SW decode: CT16S cache at Y=512 → TBP0=4096 */
+                                tex0_c |= (uint64_t)4096; /* TBP0 */
                                 tex0_c |= (uint64_t)PSX_VRAM_FBW << 14;
                                 tex0_c |= (uint64_t)GS_PSM_16S << 20;
                                 tex0_c |= (uint64_t)10 << 26;
@@ -426,11 +427,13 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                     tex0_c |= (uint64_t)1 << 34;
                     tex0_c |= (uint64_t)(is_raw_tex_tri ? 1 : 0) << 35;
                     tex0_c |= (uint64_t)tri_hw_cbp << 37;
-                    tex0_c |= (uint64_t)GS_PSM_16S << 51;
-                    tex0_c |= (uint64_t)1 << 61; /* CLD: load CLUT */
+                    tex0_c |= (uint64_t)GS_PSM_16 << 51; /* CPSM: CT16 */
+                    tex0_c |= (uint64_t)1 << 61;         /* CLD: load CLUT */
                 }
                 else
                 {
+                    /* SW decode: CT16S cache at Y=512 → TBP0=4096 */
+                    tex0_c |= (uint64_t)4096; /* TBP0 */
                     tex0_c |= (uint64_t)PSX_VRAM_FBW << 14;
                     tex0_c |= (uint64_t)GS_PSM_16S << 20;
                     tex0_c |= (uint64_t)10 << 26;
@@ -613,9 +616,6 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 v1_gs = tmp;
             }
 
-            int32_t gy0 = ((int32_t)y + draw_offset_y + 2048) << 4;
-            int32_t gy1 = ((int32_t)(y + h) + draw_offset_y + 2048) << 4;
-
             uint64_t rgbaq = GS_set_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0x3F800000);
 
             int is_raw_texture = (cmd & 0x01) != 0;
@@ -793,12 +793,13 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                         tex0_before |= (uint64_t)1 << 34;
                         tex0_before |= (uint64_t)(is_raw_texture ? 1 : 0) << 35;
                         tex0_before |= (uint64_t)rect_hw_cbp << 37;
-                        tex0_before |= (uint64_t)GS_PSM_16S << 51;
-                        tex0_before |= (uint64_t)1 << 61; /* CLD */
+                        tex0_before |= (uint64_t)GS_PSM_16 << 51; /* CPSM: CT16 */
+                        tex0_before |= (uint64_t)1 << 61;         /* CLD */
                     }
                     else if (clut_decoded)
                     {
-                        /* SW decode path */
+                        /* SW decode: CT16S cache at Y=512 → TBP0=4096 */
+                        tex0_before |= (uint64_t)4096; /* TBP0 */
                         tex0_before |= (uint64_t)PSX_VRAM_FBW << 14;
                         tex0_before |= (uint64_t)GS_PSM_16S << 20;
                         tex0_before |= (uint64_t)10 << 26;

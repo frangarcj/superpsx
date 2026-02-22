@@ -1,14 +1,20 @@
 /**
- * gpu_texture.c — CLUT texture decode (4-bit / 8-bit) with page-level cache
+ * gpu_texture.c — CLUT texture decode with HW CLUT + page-level cache
  *
- * When PSX uses 4-bit or 8-bit CLUT textures, GS cannot directly decode
- * them from CT16S VRAM.  We read back the packed texture + CLUT, decode
- * in software, and upload the decoded 16-bit pixels to GS VRAM cache slots.
+ * Two rendering paths for indexed (4BPP/8BPP) textures:
  *
- * Page-Level Cache: Instead of caching individual UV rects, we cache entire
- * 256×256 texture pages keyed by (format, page, clut, texwindow, vram_gen).
- * This avoids redundant decodes when multiple primitives share the same page.
- * 8 slots with LRU eviction, arranged in GS VRAM at Y>=512.
+ * 1. HW CLUT (primary): Upload raw PSMT8/4 indices + CT16 CLUT palette.
+ *    GS hardware performs per-pixel CLUT lookup — zero CPU decode.
+ *    Requires CSM1 entry shuffle for 8BPP (256-entry) CLUTs.
+ *
+ * 2. SW decode (fallback): Full 256×256 CPU decode to CT16S when texture
+ *    window is active (GS indexed formats cannot apply PSX tex window).
+ *
+ * 15BPP textures always use SW decode (direct color, no CLUT).
+ *
+ * Page-Level Cache: 16 entries with LRU eviction, keyed by
+ * (format, page, clut, texwindow, vram_gen).  Per-VRAM-page dirty
+ * tracking avoids false invalidations.
  */
 #include "gpu_state.h"
 #include <string.h> /* memcpy, memset */
@@ -116,9 +122,9 @@ static inline uint32_t get_tex_combined_gen(int tex_format,
  *
  *  GS VRAM layout (in 256-byte blocks, TBP0 units):
  *    [0..4095]       PSX VRAM (CT16S, 1MB)
- *    [4096..8191]    PSMT8/4 texture cache (16 slots × 256 blocks)
- *    [8192..8223]    CLUT storage (16 × 2 blocks)
- *    [8224..12319]   SW decode cache (16 slots × 256 blocks, CT16S)
+ *    [4096..8191]    PSMT8/4 indexed texture cache (16 slots × 256 blocks)
+ *    [8192..8703]    CT16 CLUT storage (16 slots × 32 blocks)
+ *    [8704..12799]   CT16S SW decode cache (16 slots × 256 blocks)
  * ═══════════════════════════════════════════════════════════════════ */
 #define TEX_CACHE_SLOTS 16
 
@@ -126,9 +132,9 @@ static inline uint32_t get_tex_combined_gen(int tex_format,
 #define HW_TEX_TBP_BASE 4096
 #define HW_TEX_TBP_STRIDE 256 /* 256×256 PSMT8 = 64KB = 256 blocks */
 
-/* CLUT palette slots — one CT16S page per CLUT to avoid swizzle overlap */
+/* CLUT palette slots — one CT16 page per CLUT to avoid swizzle overlap */
 #define HW_CLUT_CBP_BASE 8192
-#define HW_CLUT_CBP_STRIDE 32 /* 1 CT16S page = 32 blocks (64×64 pixels) */
+#define HW_CLUT_CBP_STRIDE 32 /* 1 CT16 page = 32 blocks (64×64 pixels) */
 
 /* SW decode slots (CT16S format, for texwindow fallback) */
 #define SW_TEX_TBP_BASE (HW_CLUT_CBP_BASE + TEX_CACHE_SLOTS * HW_CLUT_CBP_STRIDE)
@@ -152,15 +158,11 @@ typedef struct
 static TexPageCacheEntry tex_page_cache[TEX_CACHE_SLOTS];
 static uint32_t tex_cache_tick = 0;
 
-/* SW decode slot layout (same as before, using SW_TEX_TBP_BASE area) */
+/* SW decode slot layout — Y=512+ (v4 layout) */
 static inline void tex_cache_get_sw_slot_pos(int slot, int *x, int *y)
 {
-    /* Map TBP to XY: with FBW=16 (1024px), each block-row = 64 scanlines */
-    /* SW slots start at block 8224.  That's page 8224/32 = 257 pages.     */
-    /* With 16 pages per row: 257/16 = 16 rows of 64 = Y=1024, col=257%16=1 */
-    /* Simpler: just use fixed offsets above Y=512+512=1024               */
     *x = (slot % 4) * 256;
-    *y = 1024 + (slot / 4) * 256; /* Y=1024..1792 range */
+    *y = CLUT_DECODED_Y + (slot / 4) * 256; /* Y=512..1792 */
 }
 
 /* ── Statistics ───────────────────────────────────────────────────── */
@@ -317,12 +319,12 @@ static void Upload_CLUT_CSM1(int cbp, int clut_x, int clut_y, int tex_format)
         }
     }
 
-    int upload_w = 16;
-    int upload_h = (num_entries == 256) ? 16 : 1;
+    int upload_w = (num_entries == 256) ? 16 : 8;
+    int upload_h = (num_entries == 256) ? 16 : 2;
 
-    /* BITBLTBUF: DBP=cbp, DBW=1 (64px), DPSM=CT16S */
+    /* BITBLTBUF: DBP=cbp, DBW=1 (64px), DPSM=CT16 (matches CSM1 standard) */
     Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), 0xE);
-    Push_GIF_Data(((uint64_t)GS_PSM_16S << 56) | ((uint64_t)1 << 48) | ((uint64_t)cbp << 32), 0x50);
+    Push_GIF_Data(((uint64_t)GS_PSM_16 << 56) | ((uint64_t)1 << 48) | ((uint64_t)cbp << 32), 0x50);
     Push_GIF_Data(0, 0x51);
     Push_GIF_Data(((uint64_t)upload_h << 32) | (uint64_t)upload_w, 0x52);
     Push_GIF_Data(0, 0x53);
@@ -563,8 +565,7 @@ int Decode_TexPage_Cached(int tex_format,
      * - Must be indexed format (4BPP or 8BPP)
      * - Must NOT have texture window active (mask=0)
      * 15BPP always uses SW path. */
-    int use_hw_clut = (tex_format <= 1) &&
-                      (tex_win_mask_x == 0) && (tex_win_mask_y == 0);
+    int use_hw_clut = (tex_format <= 1 && tex_win_mask_x == 0 && tex_win_mask_y == 0);
 
     /* Compute current combined generation for this texture+CLUT region */
     uint32_t current_gen = get_tex_combined_gen(tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
@@ -599,7 +600,7 @@ int Decode_TexPage_Cached(int tex_format,
             else
             {
                 *out_slot_x = e->slot_x;
-                *out_slot_y = e->slot_y;
+                *out_slot_y = e->slot_y - CLUT_DECODED_Y; /* relative to TBP0=4096 */
                 return 1;
             }
         }
@@ -671,7 +672,7 @@ int Decode_TexPage_Cached(int tex_format,
         e->slot_y = slot_y;
 
         *out_slot_x = slot_x;
-        *out_slot_y = slot_y;
+        *out_slot_y = slot_y - CLUT_DECODED_Y; /* relative to TBP0=4096 base (Y=512) */
     }
 
     /* Update common cache entry fields */
