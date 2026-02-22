@@ -16,6 +16,8 @@ extern char psx_exe_filename_buf[PSX_EXE_PATH_MAX];
 
 #define CONFIG_LINE_MAX 1024
 
+PSXConfig psx_config;
+
 /* Trim leading and trailing whitespace in-place; return pointer into buf. */
 static char *str_trim(char *buf)
 {
@@ -30,6 +32,14 @@ static char *str_trim(char *buf)
 
 int load_config_file(void)
 {
+    /* Apply defaults */
+    psx_config.audio_enabled       = 1;
+    psx_config.controllers_enabled = 1;
+    psx_config.region_pal          = 0;
+    psx_config.boot_bios_only      = 0;
+    strncpy(psx_config.bios_path, BIOS_PATH_DEFAULT, sizeof(psx_config.bios_path) - 1);
+    psx_config.bios_path[sizeof(psx_config.bios_path) - 1] = '\0';
+
     FILE *fp = fopen(CONFIG_FILENAME, "r");
     if (!fp)
     {
@@ -40,7 +50,6 @@ int load_config_file(void)
     printf("CONFIG: Reading %s\n", CONFIG_FILENAME);
 
     char line[CONFIG_LINE_MAX];
-    int found_rom = 0;
 
     while (fgets(line, sizeof(line), fp))
     {
@@ -64,15 +73,39 @@ int load_config_file(void)
             strncpy(psx_exe_filename_buf, val, PSX_EXE_PATH_MAX - 1);
             psx_exe_filename_buf[PSX_EXE_PATH_MAX - 1] = '\0';
             psx_exe_filename = psx_exe_filename_buf;
-            found_rom = 1;
             printf("CONFIG: rom = %s\n", psx_exe_filename);
+        }
+        else if (strcasecmp(key, "boot") == 0)
+        {
+            if (strcasecmp(val, "bios") == 0)
+                psx_config.boot_bios_only = 1;
+            else
+                psx_config.boot_bios_only = 0;
+            printf("CONFIG: boot = %s\n", val);
+        }
+        else if (strcasecmp(key, "bios") == 0 && val[0] != '\0')
+        {
+            strncpy(psx_config.bios_path, val, sizeof(psx_config.bios_path) - 1);
+            psx_config.bios_path[sizeof(psx_config.bios_path) - 1] = '\0';
+            printf("CONFIG: bios = %s\n", psx_config.bios_path);
+        }
+        else if (strcasecmp(key, "audio") == 0)
+        {
+            psx_config.audio_enabled = (strcasecmp(val, "disabled") != 0);
+            printf("CONFIG: audio = %s\n", psx_config.audio_enabled ? "enabled" : "disabled");
+        }
+        else if (strcasecmp(key, "controllers") == 0)
+        {
+            psx_config.controllers_enabled = (strcasecmp(val, "disabled") != 0);
+            printf("CONFIG: controllers = %s\n", psx_config.controllers_enabled ? "enabled" : "disabled");
+        }
+        else if (strcasecmp(key, "region") == 0)
+        {
+            psx_config.region_pal = (strcasecmp(val, "pal") == 0);
+            printf("CONFIG: region = %s\n", psx_config.region_pal ? "pal" : "ntsc");
         }
     }
 
     fclose(fp);
-
-    if (!found_rom)
-        printf("CONFIG: No 'rom' key found in %s\n", CONFIG_FILENAME);
-
-    return found_rom;
+    return 1;
 }
