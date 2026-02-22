@@ -65,7 +65,11 @@ static const int32_t adpcm_filter[5][2] = {
 /* ---- Audio output ---- */
 #define SPU_SAMPLE_RATE   44100
 #define SAMPLES_PER_FRAME 735   /* 44100 / 60 ≈ 735 */
-static int16_t mix_buffer[SAMPLES_PER_FRAME * 2]; /* Interleaved L/R */
+#define SPU_MIX_BUF_SIZE  ((SAMPLES_PER_FRAME + 15) & ~15) /* Align to 16-byte boundary */
+
+static int16_t mix_buffer[SPU_MIX_BUF_SIZE * 2] __attribute__((aligned(16))); /* Interleaved L/R */
+static int32_t mix_buf_l[SPU_MIX_BUF_SIZE] __attribute__((aligned(16)));
+static int32_t mix_buf_r[SPU_MIX_BUF_SIZE] __attribute__((aligned(16)));
 static int spu_initialized = 0;
 
 /* ---- Init / Shutdown ---- */
@@ -397,6 +401,28 @@ void SPU_DMA4(uint32_t madr, uint32_t bcr, uint32_t chcr)
     (void)chcr;
 }
 
+/* ---- Audio mixing and clamping (C Fallback) ---- */
+static void SPU_Mix_And_Clamp(int32_t *mix_buf_l, int32_t *mix_buf_r, int16_t *out_buf, int num_samples, int vol_l, int vol_r)
+{
+    for (int i = 0; i < num_samples; i++)
+    {
+        /* Apply master volume */
+        int32_t sl = (mix_buf_l[i] * vol_l) >> 14;
+        int32_t sr = (mix_buf_r[i] * vol_r) >> 14;
+
+        /* Clamping (Saturation) */
+        if (sl > 32767) sl = 32767;
+        else if (sl < -32768) sl = -32768;
+
+        if (sr > 32767) sr = 32767;
+        else if (sr < -32768) sr = -32768;
+
+        /* Write to final interleaved output buffer (Stereo) */
+        out_buf[i * 2]     = (int16_t)sl;
+        out_buf[i * 2 + 1] = (int16_t)sr;
+    }
+}
+
 /* ---- Audio mixing: generate one frame of samples ---- */
 void SPU_GenerateSamples(void)
 {
@@ -406,77 +432,62 @@ void SPU_GenerateSamples(void)
     /* Check if any voice is active — skip mixing entirely if silent */
     int any_active = 0;
     {
-        int i;
-        for (i = 0; i < SPU_NUM_VOICES; i++) {
-            if (voices[i].active) { any_active = 1; break; }
+        for (int i = 0; i < SPU_NUM_VOICES; i++) {
+            if (voices[i].active) {
+                any_active = 1;
+                break;
+            }
         }
     }
     if (!any_active)
         return;
 
-    memset(mix_buffer, 0, sizeof(mix_buffer));
+    /* Accumulate into intermediate 32-bit buffers */
+    memset(mix_buf_l, 0, SPU_MIX_BUF_SIZE * sizeof(int32_t));
+    memset(mix_buf_r, 0, SPU_MIX_BUF_SIZE * sizeof(int32_t));
 
-    int s;
-    for (s = 0; s < SAMPLES_PER_FRAME; s++) {
-        int32_t sum_l = 0;
-        int32_t sum_r = 0;
+    for (int i = 0; i < SPU_NUM_VOICES; i++) {
+        SPU_Voice *v = &voices[i];
+        if (!v->active)
+            continue;
 
-        int i;
-        for (i = 0; i < SPU_NUM_VOICES; i++) {
-            SPU_Voice *v = &voices[i];
-            if (!v->active)
-                continue;
-
-            /* Determine sample index within the 28-sample ADPCM block */
-            uint32_t sample_idx = v->sample_pos >> 12;
-
+        for (int s = 0; s < SAMPLES_PER_FRAME; s++) {
             /* Decode block if needed */
             if (!v->block_decoded) {
                 decode_adpcm_block(v, v->current_addr);
                 if (!v->active)
-                    continue; /* Voice stopped by loop-end with no repeat */
+                    break; /* Voice stopped by loop-end with no repeat */
             }
 
             /* Fetch sample from decoded buffer */
+            uint32_t sample_idx = v->sample_pos >> 12;
             int16_t pcm = v->decoded[sample_idx];
 
-            /* Apply voice volume (0x3FFF = max, 14-bit range) */
-            int32_t out_l = ((int32_t)pcm * v->vol_l) >> 14;
-            int32_t out_r = ((int32_t)pcm * v->vol_r) >> 14;
-
-            sum_l += out_l;
-            sum_r += out_r;
+            /* Apply voice volume (0x3FFF = max, 14-bit range) and accumulate */
+            mix_buf_l[s] += ((int32_t)pcm * v->vol_l) >> 14;
+            mix_buf_r[s] += ((int32_t)pcm * v->vol_r) >> 14;
 
             /* Advance sample position by pitch */
             v->sample_pos += v->pitch;
 
             /* Check if we've crossed into the next 28-sample block */
-            while ((v->sample_pos >> 12) >= 28) {
-                v->sample_pos -= (28 << 12);
-                v->current_addr += 16; /* 16 bytes per ADPCM block */
-                v->current_addr &= (SPU_RAM_SIZE - 1);
-                v->block_decoded = 0;
-
-                /* Decode the new block (handles loop flags) */
+            if ((v->sample_pos >> 12) >= 28) {
+                while ((v->sample_pos >> 12) >= 28) {
+                    v->sample_pos -= (28 << 12);
+                    v->current_addr += 16; /* 16 bytes per ADPCM block */
+                    v->current_addr &= (SPU_RAM_SIZE - 1);
+                    v->block_decoded = 0;
+                }
+                /* Decode next block immediately to handle flags and have valid samples */
                 decode_adpcm_block(v, v->current_addr);
                 if (!v->active)
                     break;
             }
         }
-
-        /* Apply main volume */
-        sum_l = (sum_l * main_vol_l) >> 14;
-        sum_r = (sum_r * main_vol_r) >> 14;
-
-        /* Clamp */
-        if (sum_l > 32767) sum_l = 32767;
-        if (sum_l < -32768) sum_l = -32768;
-        if (sum_r > 32767) sum_r = 32767;
-        if (sum_r < -32768) sum_r = -32768;
-
-        mix_buffer[s * 2]     = (int16_t)sum_l;
-        mix_buffer[s * 2 + 1] = (int16_t)sum_r;
     }
+
+    /* Perform final mix, volume apply and master clamp */
+    SPU_Mix_And_Clamp(mix_buf_l, mix_buf_r, mix_buffer, SAMPLES_PER_FRAME, main_vol_l, main_vol_r);
 
     /* Output to audsrv */
     int size = SAMPLES_PER_FRAME * 2 * sizeof(int16_t);
