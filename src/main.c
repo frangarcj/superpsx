@@ -26,7 +26,7 @@
 #ifndef PSX_EXE_PATH_MAX
 #define PSX_EXE_PATH_MAX 512
 #endif
-char psx_exe_filename_buf[PSX_EXE_PATH_MAX] = "test.exe";
+char psx_exe_filename_buf[PSX_EXE_PATH_MAX] = "";
 const char *psx_exe_filename = psx_exe_filename_buf;
 int psx_boot_mode = BOOT_MODE_EXE;
 
@@ -71,33 +71,14 @@ static void prepare_IOP()
     sbv_patch_fileio();
 }
 
-static void init_drivers()
-{
-    init_only_boot_ps2_filesystem_driver();
-    SPU_Init();
-    Joystick_Init();
-}
-
-static void deinit_drivers()
-{
-    Joystick_Shutdown();
-    SPU_Shutdown();
-    deinit_only_boot_ps2_filesystem_driver();
-}
-
 int main(int argc, char *argv[])
 {
     prepare_IOP();
-    init_drivers();
+    init_only_boot_ps2_filesystem_driver();
 
-    init_scr();
-    scr_printf("SuperPSX v0.2 - Native Dynarec\n");
-    printf("SuperPSX v0.2 - Native Dynarec\n");
-    printf("Initializing SuperPSX... with %d arguments\n", argc);
-    for (int i = 0; i < argc; i++)
-    {
-        printf("  argv[%d]: %s\n", i, argv[i]);
-    }
+    /* Load config first; populates psx_config + maybe psx_exe_filename */
+    load_config_file();
+
     if (argc > 1)
     {
         /* argv[1] = host PWD, argv[2] = PSX exe filename */
@@ -132,28 +113,55 @@ int main(int argc, char *argv[])
         }
 
         psx_exe_filename = psx_exe_filename_buf;
-        printf("Using PSX exe: %s (cwd set to %s)\n", psx_exe_filename, argv[0]);
+        psx_config.boot_bios_only = 0;
+        printf("Using PSX exe from argv: %s (cwd set to %s)\n", psx_exe_filename, argv[0]);
     }
-    else
+
+    init_scr();
+    scr_printf("SuperPSX v0.2 - Native Dynarec\n");
+    printf("SuperPSX v0.2 - Native Dynarec\n");
+    printf("Initializing SuperPSX... with %d arguments\n", argc);
+    for (int i = 0; i < argc; i++)
     {
-        /* No command-line ROM path — try the config file */
-        if (!load_config_file())
-        {
-            printf("No ROM specified via argument or config file.\n");
-            scr_printf("No ROM specified.\nPlace a superpsx.ini next to the ELF with:\n  rom = path/to/game.cue\n");
-            scr_printf("Halting.\n");
-            deinit_drivers();
-            SleepThread();
-            return 1;
-        }
-        printf("Using PSX exe from config: %s\n", psx_exe_filename);
+        printf("  argv[%d]: %s\n", i, argv[i]);
     }
+
+    /* Print config summary */
+    printf("CONFIG: boot=%s bios=%s audio=%s controllers=%s region=%s\n",
+           psx_config.boot_bios_only ? "bios" : "rom",
+           psx_config.bios_path,
+           psx_config.audio_enabled ? "enabled" : "disabled",
+           psx_config.controllers_enabled ? "enabled" : "disabled",
+           psx_config.region_pal ? "pal" : "ntsc");
+
+    /* Validate: need a ROM unless booting to BIOS shell */
+    if (!psx_config.boot_bios_only && psx_exe_filename_buf[0] == '\0')
+    {
+        printf("No ROM specified via argument or config file.\n");
+        scr_printf("No ROM specified.\nPlace a superpsx.ini next to the ELF with:\n  rom = path/to/game.cue\n  (or: boot = bios)\n");
+        scr_printf("Halting.\n");
+        deinit_only_boot_ps2_filesystem_driver();
+        SleepThread();
+        return 1;
+    }
+
+    if (psx_config.audio_enabled)
+        SPU_Init();
+
+    if (psx_config.controllers_enabled)
+        Joystick_Init();
 
     Init_SuperPSX();
 
     scr_printf("SuperPSX finished.\n");
 
-    deinit_drivers();
+    if (psx_config.controllers_enabled)
+        Joystick_Shutdown();
+
+    if (psx_config.audio_enabled)
+        SPU_Shutdown();
+
+    deinit_only_boot_ps2_filesystem_driver();
 
     SleepThread(); // Halt the main thread (or exit cleanly if desired)
     return 0;
@@ -170,55 +178,64 @@ void Init_SuperPSX(void)
     Init_Interrupts();
     CDROM_Init();
 
-    /* Detect ISO disc image and mount it */
-    if (psx_exe_filename && has_disc_extension(psx_exe_filename))
+    if (!psx_config.boot_bios_only)
     {
-        psx_boot_mode = BOOT_MODE_ISO;
-        printf("Disc image detected: %s\n", psx_exe_filename);
-
-        int open_result;
-        if (has_cue_extension(psx_exe_filename))
-            open_result = ISO_OpenCue(psx_exe_filename);
-        else
-            open_result = ISO_Open(psx_exe_filename);
-
-        if (open_result < 0)
+        /* Detect ISO disc image and mount it */
+        if (psx_exe_filename && has_disc_extension(psx_exe_filename))
         {
-            printf("ERROR: Failed to open disc image: %s\n", psx_exe_filename);
-            scr_printf("Failed to open disc image. Halting.\n");
-            SleepThread();
-        }
+            psx_boot_mode = BOOT_MODE_ISO;
+            printf("Disc image detected: %s\n", psx_exe_filename);
 
-        if (ISOFS_Init() < 0)
-        {
-            printf("ERROR: Failed to parse ISO 9660 filesystem\n");
-            scr_printf("Failed to parse ISO. Halting.\n");
-            SleepThread();
-        }
-
-        /* Report what we found */
-        {
-            char boot_path[256];
-            if (ISOFS_ReadBootPath(boot_path, sizeof(boot_path)) == 0)
-                printf("Boot executable from SYSTEM.CNF: %s\n", boot_path);
+            int open_result;
+            if (has_cue_extension(psx_exe_filename))
+                open_result = ISO_OpenCue(psx_exe_filename);
             else
-                printf("WARNING: Could not parse SYSTEM.CNF boot path\n");
+                open_result = ISO_Open(psx_exe_filename);
+
+            if (open_result < 0)
+            {
+                printf("ERROR: Failed to open disc image: %s\n", psx_exe_filename);
+                scr_printf("Failed to open disc image. Halting.\n");
+                SleepThread();
+            }
+
+            if (ISOFS_Init() < 0)
+            {
+                printf("ERROR: Failed to parse ISO 9660 filesystem\n");
+                scr_printf("Failed to parse ISO. Halting.\n");
+                SleepThread();
+            }
+
+            /* Report what we found */
+            {
+                char boot_path[256];
+                if (ISOFS_ReadBootPath(boot_path, sizeof(boot_path)) == 0)
+                    printf("Boot executable from SYSTEM.CNF: %s\n", boot_path);
+                else
+                    printf("WARNING: Could not parse SYSTEM.CNF boot path\n");
+            }
+
+            CDROM_InsertDisc();
+            printf("ISO mounted, disc inserted. BIOS will boot from CD.\n");
+
+            /* Clear the EXE filename so the BIOS shell hook won't intercept */
+            psx_exe_filename_buf[0] = '\0';
         }
-
-        CDROM_InsertDisc();
-        printf("ISO mounted, disc inserted. BIOS will boot from CD.\n");
-
-        /* Clear the EXE filename so the BIOS shell hook won't intercept */
-        psx_exe_filename_buf[0] = '\0';
+        else
+        {
+            psx_boot_mode = BOOT_MODE_EXE;
+        }
     }
     else
     {
+        printf("Boot mode: BIOS shell (no ROM)\n");
         psx_boot_mode = BOOT_MODE_EXE;
+        psx_exe_filename_buf[0] = '\0';
     }
 
-    if (Load_BIOS("bios/SCPH1001.BIN") < 0)
+    if (Load_BIOS(psx_config.bios_path) < 0)
     {
-        printf("ERROR: Failed to load BIOS!\n");
+        printf("ERROR: Failed to load BIOS from %s!\n", psx_config.bios_path);
         scr_printf("Failed to load BIOS. Halting.\n");
         SleepThread();
     }

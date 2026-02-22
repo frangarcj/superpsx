@@ -26,10 +26,25 @@ option(ENABLE_STUCK_DETECTION "Enable stuck detection" ON)
 option(ENABLE_PROFILING "Build with gprof instrumentation (libprofglue)" OFF)
 option(ENABLE_LTO "Enable Link-Time Optimization" OFF)
 option(ENABLE_DYNAREC_STATS "Enable dynarec execution statistics" OFF)
+option(HEADLESS "Build without GPU/video output (no-op GPU stubs)" OFF)
 
 # ============================================================================
 # Source files
 # ============================================================================
+if(HEADLESS)
+    set(GPU_SOURCES src/gpu_stub.c)
+else()
+    set(GPU_SOURCES
+        src/gpu_core.c
+        src/gpu_gif.c
+        src/gpu_vram.c
+        src/gpu_texture.c
+        src/gpu_primitives.c
+        src/gpu_commands.c
+        src/gpu_dma.c
+    )
+endif()
+
 set(SUPERPSX_SOURCES
     src/main.c
     src/config.c
@@ -39,13 +54,7 @@ set(SUPERPSX_SOURCES
     src/dma.c
     src/sio.c
     src/timers.c
-    src/gpu_core.c
-    src/gpu_gif.c
-    src/gpu_vram.c
-    src/gpu_texture.c
-    src/gpu_primitives.c
-    src/gpu_commands.c
-    src/gpu_dma.c
+    ${GPU_SOURCES}
     src/dynarec_emit.c
     src/dynarec_cache.c
     src/dynarec_memory.c
@@ -92,6 +101,10 @@ endif()
 
 if(ENABLE_DYNAREC_STATS)
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_DYNAREC_STATS)
+endif()
+
+if(HEADLESS)
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE HEADLESS)
 endif()
 
 # ============================================================================
@@ -208,6 +221,7 @@ message(STATUS "  ENABLE_PROFILING:      ${ENABLE_PROFILING}")
 message(STATUS "  ENABLE_LTO:            ${ENABLE_LTO}")
 message(STATUS "  ENABLE_UNLIMITED_SPEED: ${ENABLE_UNLIMITED_SPEED}")
 message(STATUS "  ENABLE_DYNAREC_STATS:  ${ENABLE_DYNAREC_STATS}")
+message(STATUS "  HEADLESS:              ${HEADLESS}")
 message(STATUS "")
 message(STATUS "  Usage:")
 message(STATUS "    cmake -B build && cmake --build build")

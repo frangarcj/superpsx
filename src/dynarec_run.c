@@ -17,6 +17,7 @@
 #undef LOG_TAG
 #define LOG_TAG "DYNAREC"
 #include "loader.h"
+#include "config.h"
 
 /* ================================================================
  *  Constants and Result Codes
@@ -370,7 +371,8 @@ static inline bool handle_bios_boot_hook(uint32_t pc)
 
 static void Sched_VBlank_Callback(void)
 {
-    Scheduler_ScheduleEvent(SCHED_EVENT_VBLANK, global_cycles + CYCLES_PER_FRAME_NTSC, Sched_VBlank_Callback);
+    uint32_t cycles_per_frame = psx_config.region_pal ? CYCLES_PER_FRAME_PAL : CYCLES_PER_FRAME_NTSC;
+    Scheduler_ScheduleEvent(SCHED_EVENT_VBLANK, global_cycles + cycles_per_frame, Sched_VBlank_Callback);
 }
 
 static void Sched_HBlank_Callback(void)
@@ -473,7 +475,10 @@ void Run_CPU(void)
     cpu.cop0[PSX_COP0_PRID] = 0x00000002;
 
     Scheduler_Init();
-    Scheduler_ScheduleEvent(SCHED_EVENT_VBLANK, global_cycles + CYCLES_PER_FRAME_NTSC, Sched_VBlank_Callback);
+    {
+        uint32_t cycles_per_frame = psx_config.region_pal ? CYCLES_PER_FRAME_PAL : CYCLES_PER_FRAME_NTSC;
+        Scheduler_ScheduleEvent(SCHED_EVENT_VBLANK, global_cycles + cycles_per_frame, Sched_VBlank_Callback);
+    }
     
     hblank_scanline = 0;
     perf_frame_count = 0;
