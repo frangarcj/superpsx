@@ -226,7 +226,12 @@ void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uin
     int w = dims & 0xFFFF;
     int h = (dims >> 16) & 0xFFFF;
 
-    if (w <= 0 || h <= 0) return;
+    if (w <= 0 || h <= 0)
+        return;
+
+    /* Track dirty region for texture cache invalidation */
+    vram_gen_counter++;
+    Tex_Cache_DirtyRegion(x, y, w, h);
 
     // 1. Update shadow VRAM (optional, but good for CLUT textures since they might be used immediately)
     if (psx_vram_shadow)
@@ -267,8 +272,10 @@ void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uin
         uint16_t p0 = word & 0xFFFF;
         uint16_t p1 = word >> 16;
 
-        if (p0 != 0) p0 |= 0x8000;
-        if (p1 != 0) p1 |= 0x8000;
+        if (p0 != 0)
+            p0 |= 0x8000;
+        if (p1 != 0)
+            p1 |= 0x8000;
 
         pend[pc++] = (uint32_t)p0 | ((uint32_t)p1 << 16);
 
@@ -294,7 +301,8 @@ void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uin
 
     if (pc > 0)
     {
-        while (pc < 4) pend[pc++] = 0;
+        while (pc < 4)
+            pend[pc++] = 0;
         uint64_t lo = (uint64_t)pend[0] | ((uint64_t)pend[1] << 32);
         uint64_t hi = (uint64_t)pend[2] | ((uint64_t)pend[3] << 32);
         buf_image[buf_image_ptr++] = (unsigned __int128)lo | ((unsigned __int128)hi << 64);

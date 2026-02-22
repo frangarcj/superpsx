@@ -175,7 +175,7 @@ void GPU_WriteGP0(uint32_t data)
             // Flush GS texture cache after VRAM upload
             Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), 0xE);
             Push_GIF_Data(0, 0x3F); // TEXFLUSH
-            Flush_GIF(); // Keep this one for VRAM-to-CPU sync
+            Flush_GIF();            // Keep this one for VRAM-to-CPU sync
 
             if (vram_tx_x + vram_tx_w > 1024)
             {
@@ -251,6 +251,7 @@ void GPU_WriteGP0(uint32_t data)
                 vram_tx_pixel = 0;
 
                 vram_gen_counter++;
+                Tex_Cache_DirtyRegion(vram_tx_x, vram_tx_y, w, h);
                 Start_VRAM_Transfer(vram_tx_x, vram_tx_y, w, h);
             }
             else if (cmd == 0xC0)
@@ -294,6 +295,7 @@ void GPU_WriteGP0(uint32_t data)
                 if (psx_vram_shadow)
                 {
                     vram_gen_counter++;
+                    Tex_Cache_DirtyRegion(dx, dy, w, h);
                     for (int row = 0; row < h; row++)
                     {
                         for (int col = 0; col < w; col++)

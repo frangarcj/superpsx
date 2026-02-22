@@ -52,7 +52,8 @@ typedef struct
     uint64_t REGS;
 } GifTag __attribute__((aligned(16)));
 
-typedef struct __attribute__((aligned(16))) {
+typedef struct __attribute__((aligned(16)))
+{
     uint64_t d0;
     uint64_t d1;
 } gif_qword_t;
@@ -175,12 +176,12 @@ extern int buf_image_ptr;
 void Flush_GIF(void);
 
 #define GIF_TAG_LO(nloop, eop, pre, prim, flg, nreg) \
-    (((uint64_t)(nloop) & 0x7FFF) | \
-    (((uint64_t)(eop) & 1) << 15) | \
-    (((uint64_t)(pre) & 1) << 46) | \
-    (((uint64_t)(prim) & 0x7FF) << 47) | \
-    (((uint64_t)(flg) & 3) << 58) | \
-    (((uint64_t)(nreg) & 15) << 60))
+    (((uint64_t)(nloop) & 0x7FFF) |                  \
+     (((uint64_t)(eop) & 1) << 15) |                 \
+     (((uint64_t)(pre) & 1) << 46) |                 \
+     (((uint64_t)(prim) & 0x7FF) << 47) |            \
+     (((uint64_t)(flg) & 3) << 58) |                 \
+     (((uint64_t)(nreg) & 15) << 60))
 
 static inline void Push_GIF_Tag(uint64_t tag_lo, uint64_t tag_hi)
 {
@@ -210,7 +211,7 @@ void GS_UploadRegion(int x, int y, int w, int h, const uint16_t *pixels);
 void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uint32_t word_count);
 void DumpVRAM(const char *filename);
 
-/* gpu_texture.c — CLUT texture decode */
+/* gpu_texture.c — CLUT texture decode + page-level cache */
 uint32_t Apply_Tex_Window_U(uint32_t u);
 uint32_t Apply_Tex_Window_V(uint32_t v);
 extern uint32_t vram_gen_counter;
@@ -223,6 +224,13 @@ int Decode_TexWindow_Rect(int tex_format,
                           int clut_x, int clut_y,
                           int u0_cmd, int v0_cmd, int w, int h,
                           int flip_x, int flip_y);
+int Decode_TexPage_Cached(int tex_format,
+                          int tex_page_x, int tex_page_y,
+                          int clut_x, int clut_y,
+                          int *out_slot_x, int *out_slot_y);
+void Tex_Cache_DumpStats(void);
+void Tex_Cache_ResetStats(void);
+void Tex_Cache_DirtyRegion(int x, int y, int w, int h);
 
 /* gpu_primitives.c — GP0 command translation to GS */
 void Translate_GP0_to_GS(uint32_t *psx_cmd);
