@@ -49,6 +49,13 @@ typedef struct
     uint32_t target_psx_pc;
 } PatchSite;
 
+typedef struct
+{
+    uint32_t value;    /* Current constant value if is_const is 1 */
+    uint16_t is_const; /* 1 if this register holds a constant value we know */
+    uint16_t is_dirty; /* 1 if the value is newer than what's in cpu.regs[] (unused for now) */
+} RegStatus;
+
 typedef int32_t (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios, int32_t cycles_left);
 
 /* ================================================================
@@ -150,6 +157,7 @@ extern uint32_t block_cycle_count;
 extern uint32_t emit_current_psx_pc;
 extern int dynarec_load_defer;
 extern int dynarec_lwx_pending;
+extern RegStatus vregs[32];
 
 /* ================================================================
  *  Shared state — stats / perf
@@ -230,6 +238,12 @@ void emit_call_c(uint32_t func_addr);
 void emit_abort_check(void);
 void emit_load_imm32(int hwreg, uint32_t val);
 
+void mark_vreg_const(int r, uint32_t val);
+void mark_vreg_var(int r);
+int is_vreg_const(int r);
+uint32_t get_vreg_const(int r);
+void reset_vregs(void);
+
 /* ================================================================
  *  Function prototypes — dynarec_cache.c
  * ================================================================ */
@@ -284,7 +298,7 @@ void Free_PageTable(void);
 /* ================================================================
  *  Function prototypes — dynarec_memory.c
  * ================================================================ */
-void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset);
+void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_signed);
 void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t offset);
 void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset);
 

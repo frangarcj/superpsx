@@ -23,6 +23,8 @@ const int psx_pinned_reg[32] = {
     [31] = REG_S5, /* PSX $ra → native $s5 */
 };
 
+RegStatus vregs[32];
+
 /* Load PSX register 'r' from cpu struct into hw reg 'hwreg' */
 void emit_load_psx_reg(int hwreg, int r)
 {
@@ -169,4 +171,36 @@ void emit_load_imm32(int hwreg, uint32_t val)
         EMIT_LUI(hwreg, val >> 16);
         EMIT_ORI(hwreg, hwreg, val & 0xFFFF);
     }
+}
+
+void mark_vreg_const(int r, uint32_t val)
+{
+    if (r == 0) return;
+    vregs[r].is_const = 1;
+    vregs[r].value = val;
+}
+
+void mark_vreg_var(int r)
+{
+    if (r == 0) return;
+    vregs[r].is_const = 0;
+}
+
+int is_vreg_const(int r)
+{
+    if (r == 0) return 1; /* Zero register is always constant 0 */
+    return vregs[r].is_const;
+}
+
+uint32_t get_vreg_const(int r)
+{
+    if (r == 0) return 0;
+    return vregs[r].value;
+}
+
+void reset_vregs(void)
+{
+    memset(vregs, 0, sizeof(vregs));
+    /* $0 is special, but memset already handles it by setting is_const=0.
+     * However, is_vreg_const(0) handles it specifically. */
 }

@@ -135,6 +135,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         {
         case 0x00: /* SLL */
         {
+            if (is_vreg_const(rt)) {
+                mark_vreg_const(rd, get_vreg_const(rt) << sa);
+            } else {
+                mark_vreg_var(rd);
+            }
             int s = emit_use_reg(rt, REG_T0);
             int d = emit_dst_reg(rd, REG_T0);
             emit(MK_R(0, 0, s, d, sa, 0x00));
@@ -143,6 +148,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         }
         case 0x02: /* SRL */
         {
+            if (is_vreg_const(rt)) {
+                mark_vreg_const(rd, get_vreg_const(rt) >> sa);
+            } else {
+                mark_vreg_var(rd);
+            }
             int s = emit_use_reg(rt, REG_T0);
             int d = emit_dst_reg(rd, REG_T0);
             emit(MK_R(0, 0, s, d, sa, 0x02));
@@ -151,6 +161,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         }
         case 0x03: /* SRA */
         {
+            if (is_vreg_const(rt)) {
+                mark_vreg_const(rd, (uint32_t)((int32_t)get_vreg_const(rt) >> sa));
+            } else {
+                mark_vreg_var(rd);
+            }
             int s = emit_use_reg(rt, REG_T0);
             int d = emit_dst_reg(rd, REG_T0);
             emit(MK_R(0, 0, s, d, sa, 0x03));
@@ -164,6 +179,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             int d = emit_dst_reg(rd, REG_T0);
             emit(MK_R(0, s2, s1, d, 0, 0x04));
             emit_sync_reg(rd, d);
+            mark_vreg_var(rd);
             break;
         }
         case 0x06: /* SRLV */
@@ -173,6 +189,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             int d = emit_dst_reg(rd, REG_T0);
             emit(MK_R(0, s2, s1, d, 0, 0x06));
             emit_sync_reg(rd, d);
+            mark_vreg_var(rd);
             break;
         }
         case 0x07: /* SRAV */
@@ -182,6 +199,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             int d = emit_dst_reg(rd, REG_T0);
             emit(MK_R(0, s2, s1, d, 0, 0x07));
             emit_sync_reg(rd, d);
+            mark_vreg_var(rd);
             break;
         }
         case 0x0C: /* SYSCALL */
@@ -195,6 +213,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_block_epilogue();
             return -1;
         case 0x10: /* MFHI */
+            mark_vreg_var(rd);
             EMIT_LW(REG_T0, CPU_HI, REG_S0);
             emit_store_psx_reg(rd, REG_T0);
             break;
@@ -203,6 +222,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             EMIT_SW(REG_T0, CPU_HI, REG_S0);
             break;
         case 0x12: /* MFLO */
+            mark_vreg_var(rd);
             EMIT_LW(REG_T0, CPU_LO, REG_S0);
             emit_store_psx_reg(rd, REG_T0);
             break;
@@ -276,6 +296,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         case 0x21: /* ADDU */
         {
+            if (is_vreg_const(rs) && is_vreg_const(rt)) {
+                mark_vreg_const(rd, get_vreg_const(rs) + get_vreg_const(rt));
+            } else {
+                mark_vreg_var(rd);
+            }
             int s1 = emit_use_reg(rs, REG_T0);
             int s2 = emit_use_reg(rt, REG_T1);
             int d = emit_dst_reg(rd, REG_T0);
@@ -293,6 +318,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         case 0x23: /* SUBU */
         {
+            if (is_vreg_const(rs) && is_vreg_const(rt)) {
+                mark_vreg_const(rd, get_vreg_const(rs) - get_vreg_const(rt));
+            } else {
+                mark_vreg_var(rd);
+            }
             int s1 = emit_use_reg(rs, REG_T0);
             int s2 = emit_use_reg(rt, REG_T1);
             int d = emit_dst_reg(rd, REG_T0);
@@ -302,6 +332,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         }
         case 0x24: /* AND */
         {
+            if (is_vreg_const(rs) && is_vreg_const(rt)) {
+                mark_vreg_const(rd, get_vreg_const(rs) & get_vreg_const(rt));
+            } else {
+                mark_vreg_var(rd);
+            }
             int s1 = emit_use_reg(rs, REG_T0);
             int s2 = emit_use_reg(rt, REG_T1);
             int d = emit_dst_reg(rd, REG_T0);
@@ -311,6 +346,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         }
         case 0x25: /* OR */
         {
+            if (is_vreg_const(rs) && is_vreg_const(rt)) {
+                mark_vreg_const(rd, get_vreg_const(rs) | get_vreg_const(rt));
+            } else {
+                mark_vreg_var(rd);
+            }
             int s1 = emit_use_reg(rs, REG_T0);
             int s2 = emit_use_reg(rt, REG_T1);
             int d = emit_dst_reg(rd, REG_T0);
@@ -320,6 +360,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         }
         case 0x26: /* XOR */
         {
+            if (is_vreg_const(rs) && is_vreg_const(rt)) {
+                mark_vreg_const(rd, get_vreg_const(rs) ^ get_vreg_const(rt));
+            } else {
+                mark_vreg_var(rd);
+            }
             int s1 = emit_use_reg(rs, REG_T0);
             int s2 = emit_use_reg(rt, REG_T1);
             int d = emit_dst_reg(rd, REG_T0);
@@ -329,6 +374,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         }
         case 0x27: /* NOR */
         {
+            if (is_vreg_const(rs) && is_vreg_const(rt)) {
+                mark_vreg_const(rd, ~(get_vreg_const(rs) | get_vreg_const(rt)));
+            } else {
+                mark_vreg_var(rd);
+            }
             int s1 = emit_use_reg(rs, REG_T0);
             int s2 = emit_use_reg(rt, REG_T1);
             int d = emit_dst_reg(rd, REG_T0);
@@ -364,6 +414,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* I-type ALU */
     case 0x08: /* ADDI (with overflow check) */
     {
+        mark_vreg_var(rt);
         emit_load_psx_reg(REG_A0, rs);
         emit_load_imm32(REG_A1, (uint32_t)(int32_t)imm);
         emit_load_imm32(6, rt);
@@ -374,6 +425,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     }
     case 0x09: /* ADDIU */
     {
+        if (is_vreg_const(rs)) {
+            mark_vreg_const(rt, get_vreg_const(rs) + imm);
+        } else {
+            mark_vreg_var(rt);
+        }
         int s = emit_use_reg(rs, REG_T0);
         int d = emit_dst_reg(rt, REG_T0);
         EMIT_ADDIU(d, s, imm);
@@ -382,6 +438,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     }
     case 0x0A: /* SLTI */
     {
+        if (is_vreg_const(rs)) {
+            mark_vreg_const(rt, ((int32_t)get_vreg_const(rs) < (int32_t)imm) ? 1 : 0);
+        } else {
+            mark_vreg_var(rt);
+        }
         int s = emit_use_reg(rs, REG_T0);
         int d = emit_dst_reg(rt, REG_T0);
         emit(MK_I(0x0A, s, d, imm));
@@ -390,6 +451,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     }
     case 0x0B: /* SLTIU */
     {
+        if (is_vreg_const(rs)) {
+            mark_vreg_const(rt, (get_vreg_const(rs) < (uint32_t)(int32_t)imm) ? 1 : 0);
+        } else {
+            mark_vreg_var(rt);
+        }
         int s = emit_use_reg(rs, REG_T0);
         int d = emit_dst_reg(rt, REG_T0);
         emit(MK_I(0x0B, s, d, imm));
@@ -398,6 +464,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     }
     case 0x0C: /* ANDI */
     {
+        if (is_vreg_const(rs)) {
+            mark_vreg_const(rt, get_vreg_const(rs) & uimm);
+        } else {
+            mark_vreg_var(rt);
+        }
         int s = emit_use_reg(rs, REG_T0);
         int d = emit_dst_reg(rt, REG_T0);
         emit(MK_I(0x0C, s, d, uimm));
@@ -406,6 +477,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     }
     case 0x0D: /* ORI */
     {
+        if (is_vreg_const(rs)) {
+            mark_vreg_const(rt, get_vreg_const(rs) | uimm);
+        } else {
+            mark_vreg_var(rt);
+        }
         int s = emit_use_reg(rs, REG_T0);
         int d = emit_dst_reg(rt, REG_T0);
         EMIT_ORI(d, s, uimm);
@@ -414,6 +490,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     }
     case 0x0E: /* XORI */
     {
+        if (is_vreg_const(rs)) {
+            mark_vreg_const(rt, get_vreg_const(rs) ^ uimm);
+        } else {
+            mark_vreg_var(rt);
+        }
         int s = emit_use_reg(rs, REG_T0);
         int d = emit_dst_reg(rt, REG_T0);
         emit(MK_I(0x0E, s, d, uimm));
@@ -422,6 +503,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     }
     case 0x0F: /* LUI */
     {
+        mark_vreg_const(rt, (uint32_t)uimm << 16);
         int d = emit_dst_reg(rt, REG_T0);
         emit_load_imm32(d, (uint32_t)uimm << 16);
         emit_sync_reg(rt, d);
@@ -434,6 +516,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         if (rs == 0x00)
         {
             /* MFC0 rt, rd */
+            mark_vreg_var(rt);
             EMIT_LW(REG_T0, CPU_COP0(rd), REG_S0);
             emit_store_psx_reg(rt, REG_T0);
         }
@@ -504,6 +587,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         {
             if (rs == 0x00)
             {
+                mark_vreg_var(rt);
                 EMIT_MOVE(REG_A0, REG_S0);
                 emit_load_imm32(REG_A1, rd);
                 emit_call_c((uint32_t)GTE_ReadData);
@@ -511,6 +595,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             }
             else if (rs == 0x02)
             {
+                mark_vreg_var(rt);
                 EMIT_MOVE(REG_A0, REG_S0);
                 emit_load_imm32(REG_A1, rd);
                 emit_call_c((uint32_t)GTE_ReadCtrl);
@@ -594,11 +679,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     }
 
     /* Load instructions */
-    case 0x20: emit_memory_read_signed(1, rt, rs, imm); break; /* LB */
-    case 0x21: emit_memory_read_signed(2, rt, rs, imm); break; /* LH */
-    case 0x23: emit_memory_read(4, rt, rs, imm); break;        /* LW */
-    case 0x24: emit_memory_read(1, rt, rs, imm); break;        /* LBU */
-    case 0x25: emit_memory_read(2, rt, rs, imm); break;        /* LHU */
+    case 0x20: mark_vreg_var(rt); emit_memory_read_signed(1, rt, rs, imm); break; /* LB */
+    case 0x21: mark_vreg_var(rt); emit_memory_read_signed(2, rt, rs, imm); break; /* LH */
+    case 0x23: mark_vreg_var(rt); emit_memory_read(4, rt, rs, imm, 0); break;      /* LW */
+    case 0x24: mark_vreg_var(rt); emit_memory_read(1, rt, rs, imm, 0); break;      /* LBU */
+    case 0x25: mark_vreg_var(rt); emit_memory_read(2, rt, rs, imm, 0); break;      /* LHU */
 
     /* Store instructions */
     case 0x28: emit_memory_write(1, rt, rs, imm); break; /* SB */
@@ -615,8 +700,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         else
             emit_load_psx_reg(REG_A1, rt);
         emit_call_c((uint32_t)Helper_LWL);
-        if (!dynarec_load_defer)
+        if (!dynarec_load_defer) {
+            mark_vreg_var(rt);
             emit_store_psx_reg(rt, REG_V0);
+        }
         break;
     }
     case 0x26: /* LWR */

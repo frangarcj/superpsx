@@ -31,11 +31,82 @@
  *   nop
  * @done:
  */
-void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset)
+void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_signed)
 {
+    uint32_t const_addr = 0;
+    int is_const = 0;
+
+    if (is_vreg_const(rs_psx))
+    {
+        const_addr = get_vreg_const(rs_psx) + offset;
+        is_const = 1;
+    }
+
+    if (is_const)
+    {
+        uint32_t phys = const_addr & 0x1FFFFFFF;
+        /* Aligned RAM access? */
+        if ((phys < PSX_RAM_SIZE) && (phys % size == 0))
+        {
+            /* Use T1 as scratch for large address */
+            emit_load_imm32(REG_T1, (uint32_t)psx_ram + phys);
+            if (size == 4)
+                EMIT_LW(REG_V0, 0, REG_T1);
+            else if (size == 2)
+            {
+                if (is_signed)
+                    emit(MK_I(0x21, REG_T1, REG_V0, 0)); /* LH */
+                else
+                    EMIT_LHU(REG_V0, 0, REG_T1);
+            }
+            else
+            {
+                if (is_signed)
+                    emit(MK_I(0x20, REG_T1, REG_V0, 0)); /* LB */
+                else
+                    EMIT_LBU(REG_V0, 0, REG_T1);
+            }
+
+            if (!dynarec_load_defer)
+                emit_store_psx_reg(rt_psx, REG_V0);
+            return;
+        }
+        /* Scratchpad access? */
+        if (phys >= 0x1F800000 && phys < 0x1F800400)
+        {
+            uint32_t sp_off = phys & 0x3FF;
+            if (sp_off % size == 0)
+            {
+                emit_load_imm32(REG_T1, (uint32_t)scratchpad_buf + sp_off);
+                if (size == 4)
+                    EMIT_LW(REG_V0, 0, REG_T1);
+                else if (size == 2)
+                {
+                    if (is_signed)
+                        emit(MK_I(0x21, REG_T1, REG_V0, 0)); /* LH */
+                    else
+                        EMIT_LHU(REG_V0, 0, REG_T1);
+                }
+                else
+                {
+                    if (is_signed)
+                        emit(MK_I(0x20, REG_T1, REG_V0, 0)); /* LB */
+                    else
+                        EMIT_LBU(REG_V0, 0, REG_T1);
+                }
+
+                if (!dynarec_load_defer)
+                    emit_store_psx_reg(rt_psx, REG_V0);
+                return;
+            }
+        }
+    }
+
+    /* Fallback to generic emitter if address is not constant or not in RAM/SP */
     /* Compute effective address into REG_T0 */
     emit_load_psx_reg(REG_T0, rs_psx);
     EMIT_ADDIU(REG_T0, REG_T0, offset);
+    /* ... generic emitter logic follows (same as before) ... */
 
     uint32_t *align_branch = NULL;
     if (size > 1)
@@ -107,10 +178,18 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset)
 
 void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t offset)
 {
-    emit_memory_read(size, rt_psx, rs_psx, offset);
-    /* Sign extend for LB/LH */
+    emit_memory_read(size, rt_psx, rs_psx, offset, 1);
+    /* Sign extend for LB/LH (fallback for non-const path only) */
     if (rt_psx == 0)
         return;
+
+    uint32_t cp = 0;
+    if (is_vreg_const(rs_psx))
+    {
+        /* If it was constant, emit_memory_read already handled sign extension and returned */
+        return;
+    }
+
     if (dynarec_load_defer)
     {
         /* Sign extend REG_V0 directly (value not stored to PSX reg yet) */
@@ -147,6 +226,50 @@ void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t offset)
 
 void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
 {
+    uint32_t const_addr = 0;
+    int is_const = 0;
+
+    if (is_vreg_const(rs_psx))
+    {
+        const_addr = get_vreg_const(rs_psx) + offset;
+        is_const = 1;
+    }
+
+    if (is_const)
+    {
+        uint32_t phys = const_addr & 0x1FFFFFFF;
+        /* Aligned RAM access? */
+        if ((phys < PSX_RAM_SIZE) && (phys % size == 0))
+        {
+            emit_load_psx_reg(REG_T2, rt_psx);
+            emit_load_imm32(REG_T1, (uint32_t)psx_ram + phys);
+            if (size == 4)
+                EMIT_SW(REG_T2, 0, REG_T1);
+            else if (size == 2)
+                EMIT_SH(REG_T2, 0, REG_T1);
+            else
+                EMIT_SB(REG_T2, 0, REG_T1);
+            return;
+        }
+        /* Scratchpad access? */
+        if (phys >= 0x1F800000 && phys < 0x1F800400)
+        {
+            uint32_t sp_off = phys & 0x3FF;
+            if (sp_off % size == 0)
+            {
+                emit_load_psx_reg(REG_T2, rt_psx);
+                emit_load_imm32(REG_T1, (uint32_t)scratchpad_buf + sp_off);
+                if (size == 4)
+                    EMIT_SW(REG_T2, 0, REG_T1);
+                else if (size == 2)
+                    EMIT_SH(REG_T2, 0, REG_T1);
+                else
+                    EMIT_SB(REG_T2, 0, REG_T1);
+                return;
+            }
+        }
+    }
+
     /* Compute effective address into REG_T0, data into REG_T2 */
     emit_load_psx_reg(REG_T0, rs_psx);
     EMIT_ADDIU(REG_T0, REG_T0, offset);

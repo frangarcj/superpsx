@@ -296,6 +296,7 @@ uint32_t *compile_block(uint32_t psx_pc)
         DLOG_RAW(" +12: %08" PRIX32 "\n", psx_code[3]);
     }
 
+    reset_vregs();
     emit_block_prologue();
 
     /* Inject BIOS HLE hooks natively so that DBL jumps do not bypass them */
@@ -414,6 +415,7 @@ uint32_t *compile_block(uint32_t psx_pc)
         {
             if (op == 0x03)
             {
+                mark_vreg_const(31, cur_pc + 8);
                 emit_load_imm32(REG_T0, cur_pc + 8);
                 emit_store_psx_reg(31, REG_T0);
             }
@@ -447,6 +449,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             EMIT_SW(REG_T0, CPU_PC, REG_S0);
             if (FUNC(opcode) == 0x09 && rd != 0)
             {
+                mark_vreg_const(rd, cur_pc + 8);
                 emit_load_imm32(REG_T1, cur_pc + 8);
                 emit_store_psx_reg(rd, REG_T1);
             }
