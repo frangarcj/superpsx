@@ -134,38 +134,56 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         switch (func)
         {
         case 0x00: /* SLL */
-            emit_load_psx_reg(REG_T0, rt);
-            emit(MK_R(0, 0, REG_T0, REG_T0, sa, 0x00));
-            emit_store_psx_reg(rd, REG_T0);
+        {
+            int s = emit_use_reg(rt, REG_T0);
+            int d = emit_dst_reg(rd, REG_T0);
+            emit(MK_R(0, 0, s, d, sa, 0x00));
+            emit_sync_reg(rd, d);
             break;
+        }
         case 0x02: /* SRL */
-            emit_load_psx_reg(REG_T0, rt);
-            emit(MK_R(0, 0, REG_T0, REG_T0, sa, 0x02));
-            emit_store_psx_reg(rd, REG_T0);
+        {
+            int s = emit_use_reg(rt, REG_T0);
+            int d = emit_dst_reg(rd, REG_T0);
+            emit(MK_R(0, 0, s, d, sa, 0x02));
+            emit_sync_reg(rd, d);
             break;
+        }
         case 0x03: /* SRA */
-            emit_load_psx_reg(REG_T0, rt);
-            emit(MK_R(0, 0, REG_T0, REG_T0, sa, 0x03));
-            emit_store_psx_reg(rd, REG_T0);
+        {
+            int s = emit_use_reg(rt, REG_T0);
+            int d = emit_dst_reg(rd, REG_T0);
+            emit(MK_R(0, 0, s, d, sa, 0x03));
+            emit_sync_reg(rd, d);
             break;
+        }
         case 0x04: /* SLLV */
-            emit_load_psx_reg(REG_T0, rt);
-            emit_load_psx_reg(REG_T1, rs);
-            emit(MK_R(0, REG_T1, REG_T0, REG_T0, 0, 0x04));
-            emit_store_psx_reg(rd, REG_T0);
+        {
+            int s1 = emit_use_reg(rt, REG_T0);
+            int s2 = emit_use_reg(rs, REG_T1);
+            int d = emit_dst_reg(rd, REG_T0);
+            emit(MK_R(0, s2, s1, d, 0, 0x04));
+            emit_sync_reg(rd, d);
             break;
+        }
         case 0x06: /* SRLV */
-            emit_load_psx_reg(REG_T0, rt);
-            emit_load_psx_reg(REG_T1, rs);
-            emit(MK_R(0, REG_T1, REG_T0, REG_T0, 0, 0x06));
-            emit_store_psx_reg(rd, REG_T0);
+        {
+            int s1 = emit_use_reg(rt, REG_T0);
+            int s2 = emit_use_reg(rs, REG_T1);
+            int d = emit_dst_reg(rd, REG_T0);
+            emit(MK_R(0, s2, s1, d, 0, 0x06));
+            emit_sync_reg(rd, d);
             break;
+        }
         case 0x07: /* SRAV */
-            emit_load_psx_reg(REG_T0, rt);
-            emit_load_psx_reg(REG_T1, rs);
-            emit(MK_R(0, REG_T1, REG_T0, REG_T0, 0, 0x07));
-            emit_store_psx_reg(rd, REG_T0);
+        {
+            int s1 = emit_use_reg(rt, REG_T0);
+            int s2 = emit_use_reg(rs, REG_T1);
+            int d = emit_dst_reg(rd, REG_T0);
+            emit(MK_R(0, s2, s1, d, 0, 0x07));
+            emit_sync_reg(rd, d);
             break;
+        }
         case 0x0C: /* SYSCALL */
             emit_load_imm32(REG_A0, psx_pc);
             emit_call_c((uint32_t)Helper_Syscall_Exception);
@@ -257,11 +275,14 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_abort_check();
             break;
         case 0x21: /* ADDU */
-            emit_load_psx_reg(REG_T0, rs);
-            emit_load_psx_reg(REG_T1, rt);
-            EMIT_ADDU(REG_T0, REG_T0, REG_T1);
-            emit_store_psx_reg(rd, REG_T0);
+        {
+            int s1 = emit_use_reg(rs, REG_T0);
+            int s2 = emit_use_reg(rt, REG_T1);
+            int d = emit_dst_reg(rd, REG_T0);
+            EMIT_ADDU(d, s1, s2);
+            emit_sync_reg(rd, d);
             break;
+        }
         case 0x22: /* SUB (with overflow check) */
             emit_load_psx_reg(REG_A0, rs);
             emit_load_psx_reg(REG_A1, rt);
@@ -271,47 +292,68 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_abort_check();
             break;
         case 0x23: /* SUBU */
-            emit_load_psx_reg(REG_T0, rs);
-            emit_load_psx_reg(REG_T1, rt);
-            emit(MK_R(0, REG_T0, REG_T1, REG_T0, 0, 0x23));
-            emit_store_psx_reg(rd, REG_T0);
+        {
+            int s1 = emit_use_reg(rs, REG_T0);
+            int s2 = emit_use_reg(rt, REG_T1);
+            int d = emit_dst_reg(rd, REG_T0);
+            emit(MK_R(0, s1, s2, d, 0, 0x23));
+            emit_sync_reg(rd, d);
             break;
+        }
         case 0x24: /* AND */
-            emit_load_psx_reg(REG_T0, rs);
-            emit_load_psx_reg(REG_T1, rt);
-            emit(MK_R(0, REG_T0, REG_T1, REG_T0, 0, 0x24));
-            emit_store_psx_reg(rd, REG_T0);
+        {
+            int s1 = emit_use_reg(rs, REG_T0);
+            int s2 = emit_use_reg(rt, REG_T1);
+            int d = emit_dst_reg(rd, REG_T0);
+            emit(MK_R(0, s1, s2, d, 0, 0x24));
+            emit_sync_reg(rd, d);
             break;
+        }
         case 0x25: /* OR */
-            emit_load_psx_reg(REG_T0, rs);
-            emit_load_psx_reg(REG_T1, rt);
-            EMIT_OR(REG_T0, REG_T0, REG_T1);
-            emit_store_psx_reg(rd, REG_T0);
+        {
+            int s1 = emit_use_reg(rs, REG_T0);
+            int s2 = emit_use_reg(rt, REG_T1);
+            int d = emit_dst_reg(rd, REG_T0);
+            EMIT_OR(d, s1, s2);
+            emit_sync_reg(rd, d);
             break;
+        }
         case 0x26: /* XOR */
-            emit_load_psx_reg(REG_T0, rs);
-            emit_load_psx_reg(REG_T1, rt);
-            emit(MK_R(0, REG_T0, REG_T1, REG_T0, 0, 0x26));
-            emit_store_psx_reg(rd, REG_T0);
+        {
+            int s1 = emit_use_reg(rs, REG_T0);
+            int s2 = emit_use_reg(rt, REG_T1);
+            int d = emit_dst_reg(rd, REG_T0);
+            emit(MK_R(0, s1, s2, d, 0, 0x26));
+            emit_sync_reg(rd, d);
             break;
+        }
         case 0x27: /* NOR */
-            emit_load_psx_reg(REG_T0, rs);
-            emit_load_psx_reg(REG_T1, rt);
-            emit(MK_R(0, REG_T0, REG_T1, REG_T0, 0, 0x27));
-            emit_store_psx_reg(rd, REG_T0);
+        {
+            int s1 = emit_use_reg(rs, REG_T0);
+            int s2 = emit_use_reg(rt, REG_T1);
+            int d = emit_dst_reg(rd, REG_T0);
+            emit(MK_R(0, s1, s2, d, 0, 0x27));
+            emit_sync_reg(rd, d);
             break;
+        }
         case 0x2A: /* SLT */
-            emit_load_psx_reg(REG_T0, rs);
-            emit_load_psx_reg(REG_T1, rt);
-            emit(MK_R(0, REG_T0, REG_T1, REG_T0, 0, 0x2A));
-            emit_store_psx_reg(rd, REG_T0);
+        {
+            int s1 = emit_use_reg(rs, REG_T0);
+            int s2 = emit_use_reg(rt, REG_T1);
+            int d = emit_dst_reg(rd, REG_T0);
+            emit(MK_R(0, s1, s2, d, 0, 0x2A));
+            emit_sync_reg(rd, d);
             break;
+        }
         case 0x2B: /* SLTU */
-            emit_load_psx_reg(REG_T0, rs);
-            emit_load_psx_reg(REG_T1, rt);
-            emit(MK_R(0, REG_T0, REG_T1, REG_T0, 0, 0x2B));
-            emit_store_psx_reg(rd, REG_T0);
+        {
+            int s1 = emit_use_reg(rs, REG_T0);
+            int s2 = emit_use_reg(rt, REG_T1);
+            int d = emit_dst_reg(rd, REG_T0);
+            emit(MK_R(0, s1, s2, d, 0, 0x2B));
+            emit_sync_reg(rd, d);
             break;
+        }
         default:
             if (total_instructions < 50)
                 DLOG("Unknown SPECIAL func=0x%02X at PC=0x%08X\n", func, (unsigned)psx_pc);
@@ -331,39 +373,60 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         break;
     }
     case 0x09: /* ADDIU */
-        emit_load_psx_reg(REG_T0, rs);
-        EMIT_ADDIU(REG_T0, REG_T0, imm);
-        emit_store_psx_reg(rt, REG_T0);
+    {
+        int s = emit_use_reg(rs, REG_T0);
+        int d = emit_dst_reg(rt, REG_T0);
+        EMIT_ADDIU(d, s, imm);
+        emit_sync_reg(rt, d);
         break;
+    }
     case 0x0A: /* SLTI */
-        emit_load_psx_reg(REG_T0, rs);
-        emit(MK_I(0x0A, REG_T0, REG_T0, imm));
-        emit_store_psx_reg(rt, REG_T0);
+    {
+        int s = emit_use_reg(rs, REG_T0);
+        int d = emit_dst_reg(rt, REG_T0);
+        emit(MK_I(0x0A, s, d, imm));
+        emit_sync_reg(rt, d);
         break;
+    }
     case 0x0B: /* SLTIU */
-        emit_load_psx_reg(REG_T0, rs);
-        emit(MK_I(0x0B, REG_T0, REG_T0, imm));
-        emit_store_psx_reg(rt, REG_T0);
+    {
+        int s = emit_use_reg(rs, REG_T0);
+        int d = emit_dst_reg(rt, REG_T0);
+        emit(MK_I(0x0B, s, d, imm));
+        emit_sync_reg(rt, d);
         break;
+    }
     case 0x0C: /* ANDI */
-        emit_load_psx_reg(REG_T0, rs);
-        emit(MK_I(0x0C, REG_T0, REG_T0, uimm));
-        emit_store_psx_reg(rt, REG_T0);
+    {
+        int s = emit_use_reg(rs, REG_T0);
+        int d = emit_dst_reg(rt, REG_T0);
+        emit(MK_I(0x0C, s, d, uimm));
+        emit_sync_reg(rt, d);
         break;
+    }
     case 0x0D: /* ORI */
-        emit_load_psx_reg(REG_T0, rs);
-        EMIT_ORI(REG_T0, REG_T0, uimm);
-        emit_store_psx_reg(rt, REG_T0);
+    {
+        int s = emit_use_reg(rs, REG_T0);
+        int d = emit_dst_reg(rt, REG_T0);
+        EMIT_ORI(d, s, uimm);
+        emit_sync_reg(rt, d);
         break;
+    }
     case 0x0E: /* XORI */
-        emit_load_psx_reg(REG_T0, rs);
-        emit(MK_I(0x0E, REG_T0, REG_T0, uimm));
-        emit_store_psx_reg(rt, REG_T0);
+    {
+        int s = emit_use_reg(rs, REG_T0);
+        int d = emit_dst_reg(rt, REG_T0);
+        emit(MK_I(0x0E, s, d, uimm));
+        emit_sync_reg(rt, d);
         break;
+    }
     case 0x0F: /* LUI */
-        emit_load_imm32(REG_T0, (uint32_t)uimm << 16);
-        emit_store_psx_reg(rt, REG_T0);
+    {
+        int d = emit_dst_reg(rt, REG_T0);
+        emit_load_imm32(d, (uint32_t)uimm << 16);
+        emit_sync_reg(rt, d);
         break;
+    }
 
     /* COP0 */
     case 0x10:

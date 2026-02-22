@@ -40,6 +40,20 @@ void emit_load_psx_reg(int hwreg, int r)
     }
 }
 
+int emit_use_reg(int r, int scratch)
+{
+    if (r == 0) return REG_ZERO;
+    if (psx_pinned_reg[r]) return psx_pinned_reg[r];
+    EMIT_LW(scratch, CPU_REG(r), REG_S0);
+    return scratch;
+}
+
+int emit_dst_reg(int r, int scratch)
+{
+    if (r == 0) return REG_T2; /* Junk register if writing to $0 */
+    return psx_pinned_reg[r] ? psx_pinned_reg[r] : scratch;
+}
+
 /* Store hw reg 'hwreg' to PSX register 'r' in cpu struct */
 void emit_store_psx_reg(int r, int hwreg)
 {
@@ -51,6 +65,12 @@ void emit_store_psx_reg(int r, int hwreg)
         return;
     }
     EMIT_SW(hwreg, CPU_REG(r), REG_S0);
+}
+
+void emit_sync_reg(int r, int host_reg)
+{
+    if (r == 0 || psx_pinned_reg[r]) return;
+    EMIT_SW(host_reg, CPU_REG(r), REG_S0);
 }
 
 /* Flush pinned PSX registers to cpu struct before JAL to C helpers.

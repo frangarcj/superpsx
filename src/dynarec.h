@@ -221,6 +221,9 @@ extern const int psx_pinned_reg[32];
 
 void emit_load_psx_reg(int hwreg, int r);
 void emit_store_psx_reg(int r, int hwreg);
+int emit_use_reg(int r, int scratch);
+int emit_dst_reg(int r, int scratch);
+void emit_sync_reg(int r, int host_reg);
 void emit_flush_pinned(void);
 void emit_reload_pinned(void);
 void emit_call_c(uint32_t func_addr);
