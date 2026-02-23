@@ -106,7 +106,24 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     /* Compute effective address into REG_T0 */
     emit_load_psx_reg(REG_T0, rs_psx);
     EMIT_ADDIU(REG_T0, REG_T0, offset);
-    /* ... generic emitter logic follows (same as before) ... */
+
+    /*
+     * LUT-based fast path (64KB virtual pages):
+     *   [alignment check if size > 1]
+     *   srl    t1, t0, 16         # page index
+     *   sll    t1, t1, 2          # byte offset into LUT
+     *   addu   t1, t1, s3         # &lut[page]
+     *   lw     t1, 0(t1)          # host page base (or NULL)
+     *   andi   t2, t0, 0xFFFF     # offset within 64KB page
+     *   beq    t1, zero, @slow
+     *   nop
+     *   addu   t1, t1, t2         # host address
+     *   lw/lhu/lbu v0, 0(t1)
+     *   b      @done
+     *   nop
+     * @slow: <call C helper>
+     * @done:
+     */
 
     uint32_t *align_branch = NULL;
     if (size > 1)
@@ -118,20 +135,18 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         EMIT_NOP();
     }
 
-    /* Physical address mask */
-    EMIT_LUI(REG_T1, 0x1FFF);
-    EMIT_ORI(REG_T1, REG_T1, 0xFFFF);               /* t1 = 0x1FFFFFFF */
-    emit(MK_R(0, REG_T0, REG_T1, REG_T1, 0, 0x24)); /* and t1, t0, t1   t1=phys */
+    /* LUT lookup (64KB pages, virtual address based, S3 = mem_lut) */
+    emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* srl  t1, t0, 16       (page index)   */
+    emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00));  /* sll  t1, t1, 2        (byte offset)  */
+    EMIT_ADDU(REG_T1, REG_T1, REG_S3);          /* addu t1, t1, s3       (&lut[page])   */
+    EMIT_LW(REG_T1, 0, REG_T1);                 /* lw   t1, 0(t1)        (host base)    */
+    emit(MK_I(0x0C, REG_T0, REG_T2, 0xFFFF));   /* andi t2, t0, 0xFFFF   (page offset)  */
+    uint32_t *lut_branch = code_ptr;
+    emit(MK_I(0x04, REG_T1, REG_ZERO, 0)); /* beq  t1, zero, @slow                 */
+    EMIT_NOP();
 
-    /* RAM range check: phys < 2MB  (use srl+sltiu, no fancy delay slot tricks) */
-    emit(MK_R(0, 0, REG_T1, REG_T2, 12, 0x02)); /* srl  t2, t1, 12 */
-    emit(MK_I(0x0B, REG_T2, REG_T2, 0x0200));   /* sltiu t2, t2, 0x200 (1=RAM) */
-    uint32_t *range_branch = code_ptr;
-    emit(MK_I(0x04, REG_T2, REG_ZERO, 0)); /* beq  t2, zero, @slow */
-    EMIT_NOP();                            /* delay slot: NOP (safe) */
-
-    /* Fast path: t1 = phys (already masked), add psx_ram base here */
-    EMIT_ADDU(REG_T1, REG_T1, REG_S1); /* t1 = psx_ram + phys */
+    /* Fast path: direct access via LUT */
+    EMIT_ADDU(REG_T1, REG_T1, REG_T2); /* addu t1, t1, t2       (host addr)    */
     if (size == 4)
         EMIT_LW(REG_V0, 0, REG_T1);
     else if (size == 2)
@@ -149,13 +164,13 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         int32_t soff1 = (int32_t)(code_ptr - align_branch - 1);
         *align_branch = (*align_branch & 0xFFFF0000) | ((uint32_t)soff1 & 0xFFFF);
     }
-    int32_t soff2 = (int32_t)(code_ptr - range_branch - 1);
-    *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff2 & 0xFFFF);
+    int32_t soff2 = (int32_t)(code_ptr - lut_branch - 1);
+    *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff2 & 0xFFFF);
 
     emit_load_imm32(REG_T2, emit_current_psx_pc);
     EMIT_SW(REG_T2, CPU_CURRENT_PC, REG_S0);
     EMIT_MOVE(REG_A0, REG_T0);
-    
+
     uint32_t func_addr;
     if (size == 4)
         func_addr = (uint32_t)ReadWord;
@@ -277,7 +292,8 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
 
     /* Cache Isolation check: if SR.IsC (bit 16) is set, writes to KUSEG/KSEG0
      * must be ignored (it's a cache invalidation, not a real RAM write).
-     * Read SR, shift bit 16 to bit 0, test it; if set go to slow-path. */
+     * Read SR, shift bit 16 to bit 0, test it; if set go to slow-path
+     * (WriteWord handles kseg1 exception internally). */
     EMIT_LW(REG_A0, CPU_COP0(12), REG_S0);      /* a0 = SR */
     emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02)); /* srl  a0, a0, 16 */
     emit(MK_I(0x0C, REG_A0, REG_A0, 1));        /* andi a0, a0, 1 */
@@ -295,19 +311,18 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         EMIT_NOP();
     }
 
-    /* Physical address mask */
-    EMIT_LUI(REG_T1, 0x1FFF);
-    EMIT_ORI(REG_T1, REG_T1, 0xFFFF);               /* t1 = 0x1FFFFFFF */
-    emit(MK_R(0, REG_T0, REG_T1, REG_T1, 0, 0x24)); /* and t1, t0, t1 */
-
-    /* RAM range check */
-    emit(MK_R(0, 0, REG_T1, REG_A0, 12, 0x02)); /* srl  a0, t1, 12 (use a0 as tmp) */
-    emit(MK_I(0x0B, REG_A0, REG_A0, 0x0200));   /* sltiu a0, a0, 0x200 */
+    /* LUT lookup (64KB virtual pages, S3 = mem_lut base) */
+    emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* srl  t1, t0, 16       (page index)   */
+    emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00));  /* sll  t1, t1, 2        (byte offset)  */
+    EMIT_ADDU(REG_T1, REG_T1, REG_S3);          /* addu t1, t1, s3       (&lut[page])   */
+    EMIT_LW(REG_T1, 0, REG_T1);                 /* lw   t1, 0(t1)        (host base)    */
+    emit(MK_I(0x0C, REG_T0, REG_A0, 0xFFFF));   /* andi a0, t0, 0xFFFF   (page offset)  */
     uint32_t *range_branch = code_ptr;
-    emit(MK_I(0x04, REG_A0, REG_ZERO, 0)); /* beq  a0, zero, @slow */
-    EMIT_ADDU(REG_T1, REG_T1, REG_S1);     /* (delay slot) t1 = psx_ram+phys */
+    emit(MK_I(0x04, REG_T1, REG_ZERO, 0)); /* beq  t1, zero, @slow                 */
+    EMIT_NOP();
 
-    /* Fast path: store to RAM */
+    /* Fast path: direct store via LUT */
+    EMIT_ADDU(REG_T1, REG_T1, REG_A0); /* addu t1, t1, a0       (host addr)    */
     if (size == 4)
         EMIT_SW(REG_T2, 0, REG_T1);
     else if (size == 2)

@@ -23,11 +23,11 @@
  *  Constants and Result Codes
  * ================================================================ */
 #define HBLANK_BATCH_SIZE 32
-#define ENABLE_PERF_REPORT  /* Enabled by default for visible feedback */
+#define ENABLE_PERF_REPORT /* Enabled by default for visible feedback */
 
 /* Execution results for the JIT engine */
-#define RUN_RES_NORMAL   0
-#define RUN_RES_BREAK    1
+#define RUN_RES_NORMAL 0
+#define RUN_RES_BREAK 1
 #define RUN_RES_CONTINUE 2
 
 /* ================================================================
@@ -218,7 +218,7 @@ void Init_Dynarec(void)
 
     code_ptr = code_buffer + 128;
 
-    printf("  Code buffer at %p (%u KB)\n", code_buffer, CODE_BUFFER_SIZE/1024);
+    printf("  Code buffer at %p (%u KB)\n", code_buffer, CODE_BUFFER_SIZE / 1024);
     printf("  Page Table (L1) initialized: %u + %u entries\n", JIT_L1_RAM_PAGES, JIT_L1_BIOS_PAGES);
     FlushCache(0);
     FlushCache(2);
@@ -295,7 +295,7 @@ static inline void handle_performance_report(void)
             uint32_t emu_fps = (uint32_t)((perf_frame_count > 60 ? 60U : (uint32_t)perf_frame_count) * 1000U / elapsed_ms);
 
             printf("[EMU] Speed: %lu%% | %.1f MHz | ~%lu eFPS | %llu cycles in %lu ms\n",
-                   speed_pct, (double)cycles_per_sec / 1000000.0, emu_fps, 
+                   speed_pct, (double)cycles_per_sec / 1000000.0, emu_fps,
                    (unsigned long long)elapsed_cycles, elapsed_ms);
         }
 
@@ -353,7 +353,8 @@ static inline bool handle_bios_boot_hook(uint32_t pc)
             host_log_file = fopen("output.log", "w");
 #endif
             binary_loaded = 1;
-            FlushCache(0); FlushCache(2);
+            FlushCache(0);
+            FlushCache(2);
             return true;
         }
         else
@@ -421,27 +422,41 @@ static inline int run_jit_chain(uint64_t deadline)
     if (!block)
     {
         block = compile_block(pc);
-        if (!block) { DLOG("IBE at %08X\n", (unsigned)pc); cpu.pc = pc; PSX_Exception(6); return RUN_RES_NORMAL; }
-        be = lookup_block(pc); 
+        if (!block)
+        {
+            DLOG("IBE at %08X\n", (unsigned)pc);
+            cpu.pc = pc;
+            PSX_Exception(6);
+            return RUN_RES_NORMAL;
+        }
+        be = lookup_block(pc);
         apply_pending_patches(pc, block);
-        FlushCache(0); FlushCache(2);
+        FlushCache(0);
+        FlushCache(2);
     }
 
     /* Execute block / chain */
     int32_t cycles_left = (int32_t)(deadline - global_cycles);
-    if (cycles_left < 0) cycles_left = 0;
+    if (cycles_left < 0)
+        cycles_left = 0;
 
     psx_block_exception = 1;
     int32_t remaining = ((block_func_t)block)(&cpu, psx_ram, psx_bios, cycles_left);
     psx_block_exception = 0;
 
-    if (__builtin_expect(cpu.block_aborted, 0)) { cpu.pc = psx_abort_pc; cpu.block_aborted = 0; }
+    if (__builtin_expect(cpu.block_aborted, 0))
+    {
+        cpu.pc = psx_abort_pc;
+        cpu.block_aborted = 0;
+    }
 
     uint32_t cycles_taken = (uint32_t)(cycles_left - remaining);
-    if (cycles_taken == 0) cycles_taken = 8;
+    if (cycles_taken == 0)
+        cycles_taken = 8;
     global_cycles += cycles_taken;
 
-    if (be) update_dynarec_stats(be, cycles_taken);
+    if (be)
+        update_dynarec_stats(be, cycles_taken);
     run_iterations++;
     check_stuck_detection(pc);
     handle_vram_dump(run_iterations);
@@ -449,14 +464,23 @@ static inline int run_jit_chain(uint64_t deadline)
     /* Idle skip logic (integrated execution control) */
     if (__builtin_expect(be && be->is_idle && cpu.pc == pc, 0))
     {
-        if (pc != idle_skip_pc) { idle_skip_pc = pc; idle_skip_count = 0; }
+        if (pc != idle_skip_pc)
+        {
+            idle_skip_pc = pc;
+            idle_skip_count = 0;
+        }
         uint32_t threshold = (be->is_idle == 1) ? 1 : ((pc >= 0xBFC00000) ? 2048 : 0x7FFFFFFF);
-        if (++idle_skip_count >= threshold) { 
-            if (deadline > global_cycles) global_cycles = deadline; 
-            return RUN_RES_BREAK; 
+        if (++idle_skip_count >= threshold)
+        {
+            if (deadline > global_cycles)
+                global_cycles = deadline;
+            return RUN_RES_BREAK;
         }
     }
-    else { idle_skip_count = 0; }
+    else
+    {
+        idle_skip_count = 0;
+    }
 
     return RUN_RES_NORMAL;
 }
@@ -479,14 +503,14 @@ void Run_CPU(void)
         uint32_t cycles_per_frame = psx_config.region_pal ? CYCLES_PER_FRAME_PAL : CYCLES_PER_FRAME_NTSC;
         Scheduler_ScheduleEvent(SCHED_EVENT_VBLANK, global_cycles + cycles_per_frame, Sched_VBlank_Callback);
     }
-    
+
     hblank_scanline = 0;
     perf_frame_count = 0;
     perf_last_report_cycle = 0;
     perf_last_report_tick = get_wall_ms();
     hblank_ideal_deadline = global_cycles + HBLANK_BATCH_SIZE * CYCLES_PER_HBLANK;
     Scheduler_ScheduleEvent(SCHED_EVENT_HBLANK, hblank_ideal_deadline, Sched_HBlank_Callback);
-    
+
     Timer_ScheduleAll();
     binary_loaded = 0;
 
@@ -495,17 +519,20 @@ void Run_CPU(void)
     while (!binary_loaded)
     {
         uint64_t deadline = Scheduler_NextDeadlineFast();
-        if (deadline == UINT64_MAX) deadline = global_cycles + 1024;
+        if (deadline == UINT64_MAX)
+            deadline = global_cycles + 1024;
 
         while (global_cycles < deadline)
         {
-            if (handle_bios_boot_hook(cpu.pc)) break;
-            if (run_jit_chain(deadline) == RUN_RES_BREAK) break;
+            if (handle_bios_boot_hook(cpu.pc))
+                break;
+            if (run_jit_chain(deadline) == RUN_RES_BREAK)
+                break;
         }
 
         if (global_cycles >= scheduler_cached_earliest)
             Scheduler_DispatchEvents(global_cycles);
-        
+
         sync_hardware_and_interrupts();
     }
 
@@ -514,11 +541,13 @@ void Run_CPU(void)
     while (true)
     {
         uint64_t deadline = Scheduler_NextDeadlineFast();
-        if (deadline == UINT64_MAX) deadline = global_cycles + 1024;
+        if (deadline == UINT64_MAX)
+            deadline = global_cycles + 1024;
 
         while (global_cycles < deadline)
         {
-            if (run_jit_chain(deadline) == RUN_RES_BREAK) break;
+            if (run_jit_chain(deadline) == RUN_RES_BREAK)
+                break;
         }
 
         if (global_cycles >= scheduler_cached_earliest)

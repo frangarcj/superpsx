@@ -34,26 +34,43 @@ uint32_t r3000a_cycle_cost(uint32_t opcode)
     case 0x00: /* SPECIAL */
         switch (func)
         {
-        case 0x18: return 6;  /* MULT  */
-        case 0x19: return 6;  /* MULTU */
-        case 0x1A: return 36; /* DIV   */
-        case 0x1B: return 36; /* DIVU  */
-        default:   return 1;
+        case 0x18:
+            return 6; /* MULT  */
+        case 0x19:
+            return 6; /* MULTU */
+        case 0x1A:
+            return 36; /* DIV   */
+        case 0x1B:
+            return 36; /* DIVU  */
+        default:
+            return 1;
         }
     /* Loads: 2 cycles (includes load delay) */
-    case 0x20: return 2; /* LB  */
-    case 0x21: return 2; /* LH  */
-    case 0x22: return 2; /* LWL */
-    case 0x23: return 2; /* LW  */
-    case 0x24: return 2; /* LBU */
-    case 0x25: return 2; /* LHU */
-    case 0x26: return 2; /* LWR */
+    case 0x20:
+        return 2; /* LB  */
+    case 0x21:
+        return 2; /* LH  */
+    case 0x22:
+        return 2; /* LWL */
+    case 0x23:
+        return 2; /* LW  */
+    case 0x24:
+        return 2; /* LBU */
+    case 0x25:
+        return 2; /* LHU */
+    case 0x26:
+        return 2; /* LWR */
     /* Stores: 1 cycle */
-    case 0x28: return 1; /* SB  */
-    case 0x29: return 1; /* SH  */
-    case 0x2B: return 1; /* SW  */
-    case 0x2A: return 1; /* SWL */
-    case 0x2E: return 1; /* SWR */
+    case 0x28:
+        return 1; /* SB  */
+    case 0x29:
+        return 1; /* SH  */
+    case 0x2B:
+        return 1; /* SW  */
+    case 0x2A:
+        return 1; /* SWL */
+    case 0x2E:
+        return 1; /* SWR */
     /* COP2 (GTE) commands */
     case 0x12: /* COP2 */
         if (opcode & 0x02000000)
@@ -61,48 +78,84 @@ uint32_t r3000a_cycle_cost(uint32_t opcode)
             uint32_t gte_op = opcode & 0x3F;
             switch (gte_op)
             {
-            case 0x01: return 15; /* RTPS  */
-            case 0x06: return 8;  /* NCLIP */
-            case 0x0C: return 6;  /* OP    */
-            case 0x10: return 8;  /* DPCS  */
-            case 0x11: return 8;  /* INTPL */
-            case 0x12: return 8;  /* MVMVA */
-            case 0x13: return 19; /* NCDS  */
-            case 0x14: return 13; /* CDP   */
-            case 0x16: return 44; /* NCDT  */
-            case 0x1B: return 17; /* NCCS  */
-            case 0x1C: return 11; /* CC    */
-            case 0x1E: return 14; /* NCS   */
-            case 0x20: return 30; /* NCT   */
-            case 0x28: return 5;  /* SQR   */
-            case 0x29: return 8;  /* DCPL  */
-            case 0x2A: return 17; /* DPCT  */
-            case 0x2D: return 5;  /* AVSZ3 */
-            case 0x2E: return 6;  /* AVSZ4 */
-            case 0x30: return 23; /* RTPT  */
-            case 0x3D: return 5;  /* GPF   */
-            case 0x3E: return 5;  /* GPL   */
-            case 0x3F: return 39; /* NCCT  */
-            default:   return 8;  /* Unknown GTE */
+            case 0x01:
+                return 15; /* RTPS  */
+            case 0x06:
+                return 8; /* NCLIP */
+            case 0x0C:
+                return 6; /* OP    */
+            case 0x10:
+                return 8; /* DPCS  */
+            case 0x11:
+                return 8; /* INTPL */
+            case 0x12:
+                return 8; /* MVMVA */
+            case 0x13:
+                return 19; /* NCDS  */
+            case 0x14:
+                return 13; /* CDP   */
+            case 0x16:
+                return 44; /* NCDT  */
+            case 0x1B:
+                return 17; /* NCCS  */
+            case 0x1C:
+                return 11; /* CC    */
+            case 0x1E:
+                return 14; /* NCS   */
+            case 0x20:
+                return 30; /* NCT   */
+            case 0x28:
+                return 5; /* SQR   */
+            case 0x29:
+                return 8; /* DCPL  */
+            case 0x2A:
+                return 17; /* DPCT  */
+            case 0x2D:
+                return 5; /* AVSZ3 */
+            case 0x2E:
+                return 6; /* AVSZ4 */
+            case 0x30:
+                return 23; /* RTPT  */
+            case 0x3D:
+                return 5; /* GPF   */
+            case 0x3E:
+                return 5; /* GPL   */
+            case 0x3F:
+                return 39; /* NCCT  */
+            default:
+                return 8; /* Unknown GTE */
             }
         }
         return 1; /* MFC2/MTC2/CFC2/CTC2 */
     /* Branches/Jumps */
-    case 0x02: return 1; /* J    */
-    case 0x03: return 1; /* JAL  */
-    case 0x04: return 1; /* BEQ  */
-    case 0x05: return 1; /* BNE  */
-    case 0x06: return 1; /* BLEZ */
-    case 0x07: return 1; /* BGTZ */
-    case 0x01: return 1; /* REGIMM */
+    case 0x02:
+        return 1; /* J    */
+    case 0x03:
+        return 1; /* JAL  */
+    case 0x04:
+        return 1; /* BEQ  */
+    case 0x05:
+        return 1; /* BNE  */
+    case 0x06:
+        return 1; /* BLEZ */
+    case 0x07:
+        return 1; /* BGTZ */
+    case 0x01:
+        return 1; /* REGIMM */
     /* COP0/COP1/COP3 */
-    case 0x10: return 1; /* COP0 */
-    case 0x11: return 1; /* COP1 */
-    case 0x13: return 1; /* COP3 */
+    case 0x10:
+        return 1; /* COP0 */
+    case 0x11:
+        return 1; /* COP1 */
+    case 0x13:
+        return 1; /* COP3 */
     /* LWC2/SWC2 */
-    case 0x32: return 2; /* LWC2 */
-    case 0x3A: return 1; /* SWC2 */
-    default:   return 1;
+    case 0x32:
+        return 2; /* LWC2 */
+    case 0x3A:
+        return 1; /* SWC2 */
+    default:
+        return 1;
     }
 }
 
@@ -191,7 +244,7 @@ int instruction_writes_gpr(uint32_t opcode, int reg)
     return 0;
 }
 
-/* ---- Block prologue: save callee-saved regs, set up $s0-$s2, load pinned ---- */
+/* ---- Block prologue: save callee-saved regs, set up $s0-$s3, load pinned ---- */
 void emit_block_prologue(void)
 {
     EMIT_ADDIU(REG_SP, REG_SP, -80);
@@ -204,9 +257,15 @@ void emit_block_prologue(void)
     EMIT_SW(REG_S5, 52, REG_SP);
     EMIT_SW(REG_S6, 56, REG_SP);
     EMIT_SW(REG_S7, 60, REG_SP);
-    EMIT_MOVE(REG_S0, REG_A0);
-    EMIT_MOVE(REG_S1, REG_A1);
-    EMIT_MOVE(REG_S2, REG_A3); /* $s2 = cycles_left */
+    EMIT_MOVE(REG_S0, REG_A0); /* S0 = &cpu           */
+    EMIT_MOVE(REG_S1, REG_A1); /* S1 = psx_ram        */
+    EMIT_MOVE(REG_S2, REG_A3); /* S2 = cycles_left    */
+    /* Load mem_lut address directly into S3 (always 2 words: LUI+ORI) */
+    {
+        uint32_t lut_addr = (uint32_t)mem_lut;
+        EMIT_LUI(REG_S3, lut_addr >> 16);
+        EMIT_ORI(REG_S3, REG_S3, lut_addr & 0xFFFF);
+    }
     emit_reload_pinned();
 }
 
@@ -234,14 +293,14 @@ void emit_branch_epilogue(uint32_t target_pc)
 {
     /* Calculate remaining cycles after this block */
     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
-    
+
     /* Update cpu.pc IMMEDIATELY, before any potential abort check */
     emit_load_imm32(REG_T0, target_pc);
     EMIT_SW(REG_T0, CPU_PC, REG_S0);
 
     /* If remaining cycles <= 0, abort to C scheduler */
     emit(MK_I(0x07, REG_S2, REG_ZERO, 2)); /* BGTZ s2, +2 */
-    EMIT_NOP(); /* Delay slot */
+    EMIT_NOP();                            /* Delay slot */
     EMIT_J_ABS((uint32_t)abort_trampoline_addr);
     EMIT_NOP(); /* Delay slot */
 
@@ -385,25 +444,26 @@ uint32_t *compile_block(uint32_t psx_pc)
             }
             else if (branch_type == 4)
             {
-                /* Deferred Conditional Branch (calculated in S3) */
+                /* Deferred Conditional Branch (saved in cpu.branch_cond) */
+                EMIT_LW(REG_T2, CPU_BRANCH_COND, REG_S0);
                 uint32_t *bp = code_ptr;
-                emit(MK_I(0x05, REG_S3, REG_ZERO, 0)); /* BNE s3, zero, 0 */
+                emit(MK_I(0x05, REG_T2, REG_ZERO, 0)); /* BNE t2, zero, 0 */
                 EMIT_NOP();
 
                 branch_opcode = (uint32_t)bp;
 
                 /* Not taken: fall through PC */
                 emit_branch_epilogue(cur_pc);
-                
+
                 /* Taken path target */
                 uint32_t *taken_addr = code_ptr;
                 int32_t offset = (int32_t)(taken_addr - bp - 1);
                 *bp = (*bp & 0xFFFF0000) | (offset & 0xFFFF);
                 emit_branch_epilogue(branch_target);
             }
-                /* Register jump (JR/JALR): Abort to C for lookup through Page Table */
-                EMIT_J_ABS((uint32_t)abort_trampoline_addr);
-                EMIT_NOP();
+            /* Register jump (JR/JALR): Abort to C for lookup through Page Table */
+            EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+            EMIT_NOP();
             block_ended = 1;
             break;
         }
@@ -485,20 +545,21 @@ uint32_t *compile_block(uint32_t psx_pc)
             if (op == 0x04 || op == 0x05)
             {
                 emit_load_psx_reg(REG_T1, rt);
-                emit(MK_R(0, REG_T0, REG_T1, REG_S3, 0, 0x26)); /* XOR s3, t0, t1 */
+                emit(MK_R(0, REG_T0, REG_T1, REG_T2, 0, 0x26)); /* XOR t2, t0, t1 */
                 if (op == 0x04)
                 {
-                    emit(MK_I(0x0B, REG_S3, REG_S3, 1)); /* SLTIU s3, s3, 1 */
+                    emit(MK_I(0x0B, REG_T2, REG_T2, 1)); /* SLTIU t2, t2, 1 */
                 }
             }
             else if (op == 0x06)
             {
-                emit(MK_I(0x0A, REG_T0, REG_S3, 1)); /* SLTI s3, t0, 1 */
+                emit(MK_I(0x0A, REG_T0, REG_T2, 1)); /* SLTI t2, t0, 1 */
             }
             else if (op == 0x07)
             {
-                emit(MK_R(0, REG_ZERO, REG_T0, REG_S3, 0, 0x2A)); /* SLT s3, zero, t0 */
+                emit(MK_R(0, REG_ZERO, REG_T0, REG_T2, 0, 0x2A)); /* SLT t2, zero, t0 */
             }
+            EMIT_SW(REG_T2, CPU_BRANCH_COND, REG_S0); /* save cond across delay slot */
 
             branch_type = 4;
             in_delay_slot = 1;
@@ -538,13 +599,14 @@ uint32_t *compile_block(uint32_t psx_pc)
 
             if ((rt & 1) == 0)
             {
-                emit(MK_R(0, REG_T0, REG_ZERO, REG_S3, 0, 0x2A)); /* SLT s3, t0, zero */
+                emit(MK_R(0, REG_T0, REG_ZERO, REG_T2, 0, 0x2A)); /* SLT t2, t0, zero */
             }
             else
             {
-                emit(MK_R(0, REG_T0, REG_ZERO, REG_S3, 0, 0x2A));
-                emit(MK_I(0x0E, REG_S3, REG_S3, 1)); /* XORI s3, s3, 1 */
+                emit(MK_R(0, REG_T0, REG_ZERO, REG_T2, 0, 0x2A));
+                emit(MK_I(0x0E, REG_T2, REG_T2, 1)); /* XORI t2, t2, 1 */
             }
+            EMIT_SW(REG_T2, CPU_BRANCH_COND, REG_S0); /* save cond across delay slot */
 
             branch_type = 4;
             in_delay_slot = 1;

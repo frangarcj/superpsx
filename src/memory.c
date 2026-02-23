@@ -23,6 +23,72 @@ uint8_t *psx_ram;
 uint8_t *psx_bios;
 uint8_t scratchpad_buf[1024] __attribute__((aligned(128)));
 
+/*
+ * Memory LUT: 64KB virtual address pages.
+ * 65536 entries × 4 bytes = 256KB.
+ * Each entry is a host pointer to the start of the mapped 64KB region,
+ * or NULL for IO/unmapped pages that require the slow C helper path.
+ * Indexed by (virtual_address >> 16).
+ * Dynamically allocated to avoid BSS mapping issues on PS2.
+ */
+uint8_t **mem_lut;
+
+void Init_MemoryLUT(void)
+{
+    int page;
+    mem_lut = (uint8_t **)memalign(128, MEM_LUT_SIZE * sizeof(uint8_t *));
+    if (!mem_lut)
+    {
+        printf("  ERROR: Failed to allocate mem_lut!\n");
+        return;
+    }
+    memset(mem_lut, 0, MEM_LUT_SIZE * sizeof(uint8_t *));
+
+    /* RAM pages: 32 × 64KB = 2MB */
+    for (page = 0; page < 0x20; page++)
+    {
+        uint8_t *base = psx_ram + page * 0x10000;
+        /* kuseg: 0x00000000-0x001FFFFF */
+        mem_lut[0x0000 + page] = base;
+        /* kseg0: 0x80000000-0x801FFFFF */
+        mem_lut[0x8000 + page] = base;
+        /* kseg1: 0xA0000000-0xA01FFFFF */
+        mem_lut[0xA000 + page] = base;
+        /* kuseg RAM mirrors (2-8MB) */
+        mem_lut[0x0020 + page] = base;
+        mem_lut[0x0040 + page] = base;
+        mem_lut[0x0060 + page] = base;
+        /* kseg0 RAM mirrors */
+        mem_lut[0x8020 + page] = base;
+        mem_lut[0x8040 + page] = base;
+        mem_lut[0x8060 + page] = base;
+        /* kseg1 RAM mirrors */
+        mem_lut[0xA020 + page] = base;
+        mem_lut[0xA040 + page] = base;
+        mem_lut[0xA060 + page] = base;
+    }
+
+    /* BIOS pages: 8 × 64KB = 512KB */
+    for (page = 0; page < 8; page++)
+    {
+        uint8_t *base = psx_bios + page * 0x10000;
+        /* kuseg: 0x1FC00000-0x1FC7FFFF */
+        mem_lut[0x1FC0 + page] = base;
+        /* kseg0: 0x9FC00000-0x9FC7FFFF */
+        mem_lut[0x9FC0 + page] = base;
+        /* kseg1: 0xBFC00000-0xBFC7FFFF */
+        mem_lut[0xBFC0 + page] = base;
+    }
+
+    /* Note: scratchpad (0x1F800000) and IO regs (0x1F801000) share
+     * the same 64KB page, so it stays NULL → slow path via C helpers. */
+
+    printf("  Memory LUT at %p (65536 entries, %u KB)\n",
+           (void *)mem_lut, (unsigned)(MEM_LUT_SIZE * sizeof(uint8_t *) / 1024));
+    printf("  LUT[0x8000]=%p LUT[0xBFC0]=%p\n",
+           (void *)mem_lut[0x8000], (void *)mem_lut[0xBFC0]);
+}
+
 /* Memory control regs the BIOS writes during init */
 static uint32_t mem_ctrl[16];
 static uint32_t ram_size_reg = 0x00000B88;
@@ -49,6 +115,8 @@ void Init_Memory(void)
 
     printf("  RAM:  %p (2MB)\n", psx_ram);
     printf("  BIOS: %p (512KB)\n", psx_bios);
+
+    Init_MemoryLUT();
 }
 
 #include <dirent.h>

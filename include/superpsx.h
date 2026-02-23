@@ -37,6 +37,7 @@ typedef struct
     uint32_t i_stat;         /* Interrupt Status Register */
     uint32_t i_mask;         /* Interrupt Mask Register */
     uint32_t block_aborted;  /* Set by PSX_Exception mid-block; checked by JIT */
+    uint32_t branch_cond;    /* Scratch: branch condition saved across delay slot */
 } R3000CPU;
 
 /* Struct offsets for asm code generation */
@@ -53,6 +54,7 @@ typedef struct
 #define CPU_I_STAT (CPU_LOAD_DELAY_VAL + 4)
 #define CPU_I_MASK (CPU_I_STAT + 4)
 #define CPU_BLOCK_ABORTED (CPU_I_MASK + 4)
+#define CPU_BRANCH_COND (CPU_BLOCK_ABORTED + 4)
 
 /* COP0 register indices */
 #define PSX_COP0_SR 12
@@ -70,8 +72,12 @@ extern R3000CPU cpu;
 extern uint8_t *psx_ram;
 extern uint8_t *psx_bios;
 extern uint8_t scratchpad_buf[];
+extern uint8_t **mem_lut;
+
+#define MEM_LUT_SIZE 65536
 
 void Init_Memory(void);
+void Init_MemoryLUT(void);
 int Load_BIOS(const char *filename);
 uint32_t ReadWord(uint32_t addr);
 uint16_t ReadHalf(uint32_t addr);

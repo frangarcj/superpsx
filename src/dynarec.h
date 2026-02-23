@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <malloc.h>
-#include <kernel.h>  /* FlushCache */
+#include <kernel.h> /* FlushCache */
 #include "superpsx.h"
 #include "scheduler.h"
 
@@ -45,7 +45,7 @@ typedef struct BlockEntry
 
 typedef struct
 {
-    uint32_t *site_word;    /* Address of the J instruction to overwrite */
+    uint32_t *site_word; /* Address of the J instruction to overwrite */
     uint32_t target_psx_pc;
 } PatchSite;
 
@@ -61,56 +61,56 @@ typedef int32_t (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios, int3
 /* ================================================================
  *  Opcode field extraction macros
  * ================================================================ */
-#define OP(x)     (((x) >> 26) & 0x3F)
-#define RS(x)     (((x) >> 21) & 0x1F)
-#define RT(x)     (((x) >> 16) & 0x1F)
-#define RD(x)     (((x) >> 11) & 0x1F)
-#define SA(x)     (((x) >> 6) & 0x1F)
-#define FUNC(x)   ((x) & 0x3F)
-#define IMM16(x)  ((x) & 0xFFFF)
+#define OP(x) (((x) >> 26) & 0x3F)
+#define RS(x) (((x) >> 21) & 0x1F)
+#define RT(x) (((x) >> 16) & 0x1F)
+#define RD(x) (((x) >> 11) & 0x1F)
+#define SA(x) (((x) >> 6) & 0x1F)
+#define FUNC(x) ((x) & 0x3F)
+#define IMM16(x) ((x) & 0xFFFF)
 #define SIMM16(x) ((int16_t)((x) & 0xFFFF))
 #define TARGET(x) ((x) & 0x03FFFFFF)
 
 /* ================================================================
  *  Hardware register IDs used in generated code
  * ================================================================ */
-#define REG_S0   16
-#define REG_S1   17
-#define REG_S2   18
-#define REG_S3   19
-#define REG_S4   20  /* Pinned: PSX $sp (29) */
-#define REG_S5   21  /* Pinned: PSX $ra (31) */
-#define REG_S6   22  /* Pinned: PSX $v0 (2)  */
-#define REG_S7   23  /* Pinned: PSX $s8 (30) */
-#define REG_T0   8
-#define REG_T1   9
-#define REG_T2   10
-#define REG_T3   11
-#define REG_T4   12
-#define REG_T5   13
-#define REG_T6   14
-#define REG_T7   15
-#define REG_T8   24
-#define REG_T9   25
-#define REG_A0   4
-#define REG_A1   5
-#define REG_A2   6
-#define REG_A3   7
-#define REG_V0   2
-#define REG_V1   3
-#define REG_RA   31
-#define REG_SP   29
+#define REG_S0 16
+#define REG_S1 17
+#define REG_S2 18
+#define REG_S3 19 /* Pinned: mem_lut base pointer */
+#define REG_S4 20 /* Pinned: PSX $sp (29) */
+#define REG_S5 21 /* Pinned: PSX $ra (31) */
+#define REG_S6 22 /* Pinned: PSX $v0 (2)  */
+#define REG_S7 23 /* Pinned: PSX $s8 (30) */
+#define REG_T0 8
+#define REG_T1 9
+#define REG_T2 10
+#define REG_T3 11
+#define REG_T4 12
+#define REG_T5 13
+#define REG_T6 14
+#define REG_T7 15
+#define REG_T8 24
+#define REG_T9 25
+#define REG_A0 4
+#define REG_A1 5
+#define REG_A2 6
+#define REG_A3 7
+#define REG_V0 2
+#define REG_V1 3
+#define REG_RA 31
+#define REG_SP 29
 #define REG_ZERO 0
 
-#define DYNAREC_PROLOGUE_WORDS 25
+#define DYNAREC_PROLOGUE_WORDS 27
 
 /* ================================================================
  *  MIPS instruction builders
  * ================================================================ */
-#define MK_R(op, rs, rt, rd, sa, fn) \
+#define MK_R(op, rs, rt, rd, sa, fn)                                                  \
     ((((uint32_t)(op)) << 26) | (((uint32_t)(rs)) << 21) | (((uint32_t)(rt)) << 16) | \
      (((uint32_t)(rd)) << 11) | (((uint32_t)(sa)) << 6) | ((uint32_t)(fn)))
-#define MK_I(op, rs, rt, imm) \
+#define MK_I(op, rs, rt, imm)                                                         \
     ((((uint32_t)(op)) << 26) | (((uint32_t)(rs)) << 21) | (((uint32_t)(rt)) << 16) | \
      ((uint32_t)((imm) & 0xFFFF)))
 #define MK_J(op, tgt) \
@@ -127,11 +127,11 @@ extern uint32_t *call_c_trampoline_addr;
 /* ================================================================
  *  Shared state — Page Table (Lookup)
  * ================================================================ */
-#define JIT_L1_RAM_PAGES   512  /* 2MB / 4KB */
-#define JIT_L1_BIOS_PAGES  128  /* 512KB / 4KB */
-#define JIT_L2_ENTRIES     1024 /* 4KB / 4 bytes */
+#define JIT_L1_RAM_PAGES 512  /* 2MB / 4KB */
+#define JIT_L1_BIOS_PAGES 128 /* 512KB / 4KB */
+#define JIT_L2_ENTRIES 1024   /* 4KB / 4 bytes */
 
-typedef BlockEntry* (*jit_l2_t)[JIT_L2_ENTRIES];
+typedef BlockEntry *(*jit_l2_t)[JIT_L2_ENTRIES];
 
 extern jit_l2_t jit_l1_ram[JIT_L1_RAM_PAGES];
 extern jit_l2_t jit_l1_bios[JIT_L1_BIOS_PAGES];
@@ -187,40 +187,40 @@ static inline void emit(uint32_t inst)
 /* ================================================================
  *  Common instruction emitters
  * ================================================================ */
-#define EMIT_NOP()              emit(0)
-#define EMIT_LW(rt, off, base)  emit(MK_I(0x23, (base), (rt), (off)))
-#define EMIT_SW(rt, off, base)  emit(MK_I(0x2B, (base), (rt), (off)))
-#define EMIT_LH(rt, off, base)  emit(MK_I(0x21, (base), (rt), (off)))
+#define EMIT_NOP() emit(0)
+#define EMIT_LW(rt, off, base) emit(MK_I(0x23, (base), (rt), (off)))
+#define EMIT_SW(rt, off, base) emit(MK_I(0x2B, (base), (rt), (off)))
+#define EMIT_LH(rt, off, base) emit(MK_I(0x21, (base), (rt), (off)))
 #define EMIT_LHU(rt, off, base) emit(MK_I(0x25, (base), (rt), (off)))
-#define EMIT_LB(rt, off, base)  emit(MK_I(0x20, (base), (rt), (off)))
+#define EMIT_LB(rt, off, base) emit(MK_I(0x20, (base), (rt), (off)))
 #define EMIT_LBU(rt, off, base) emit(MK_I(0x24, (base), (rt), (off)))
-#define EMIT_SH(rt, off, base)  emit(MK_I(0x29, (base), (rt), (off)))
-#define EMIT_SB(rt, off, base)  emit(MK_I(0x28, (base), (rt), (off)))
+#define EMIT_SH(rt, off, base) emit(MK_I(0x29, (base), (rt), (off)))
+#define EMIT_SB(rt, off, base) emit(MK_I(0x28, (base), (rt), (off)))
 #define EMIT_ADDIU(rt, rs, imm) emit(MK_I(0x09, (rs), (rt), (imm)))
-#define EMIT_ADDU(rd, rs, rt)   emit(MK_R(0, (rs), (rt), (rd), 0, 0x21))
-#define EMIT_OR(rd, rs, rt)     emit(MK_R(0, (rs), (rt), (rd), 0, 0x25))
-#define EMIT_LUI(rt, imm)       emit(MK_I(0x0F, 0, (rt), (imm)))
-#define EMIT_ORI(rt, rs, imm)   emit(MK_I(0x0D, (rs), (rt), (imm)))
-#define EMIT_MOVE(rd, rs)       EMIT_ADDU(rd, rs, 0)
-#define EMIT_JR(rs)             emit(MK_R(0, (rs), 0, 0, 0, 0x08))
-#define EMIT_JAL_ABS(addr)      emit(MK_J(3, (uint32_t)(addr) >> 2))
-#define EMIT_J_ABS(addr)        emit(MK_J(2, (uint32_t)(addr) >> 2))
-#define EMIT_BEQ(rs, rt, off)   emit(MK_I(4, (rs), (rt), (off)))
-#define EMIT_BNE(rs, rt, off)   emit(MK_I(5, (rs), (rt), (off)))
+#define EMIT_ADDU(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x21))
+#define EMIT_OR(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x25))
+#define EMIT_LUI(rt, imm) emit(MK_I(0x0F, 0, (rt), (imm)))
+#define EMIT_ORI(rt, rs, imm) emit(MK_I(0x0D, (rs), (rt), (imm)))
+#define EMIT_MOVE(rd, rs) EMIT_ADDU(rd, rs, 0)
+#define EMIT_JR(rs) emit(MK_R(0, (rs), 0, 0, 0, 0x08))
+#define EMIT_JAL_ABS(addr) emit(MK_J(3, (uint32_t)(addr) >> 2))
+#define EMIT_J_ABS(addr) emit(MK_J(2, (uint32_t)(addr) >> 2))
+#define EMIT_BEQ(rs, rt, off) emit(MK_I(4, (rs), (rt), (off)))
+#define EMIT_BNE(rs, rt, off) emit(MK_I(5, (rs), (rt), (off)))
 
 /* R5900 specialized emitters */
-#define EMIT_MOVZ(rd, rs, rt)  emit(MK_R(0, (rs), (rt), (rd), 0, 0x0A))
-#define EMIT_MOVN(rd, rs, rt)  emit(MK_R(0, (rs), (rt), (rd), 0, 0x0B))
-#define EMIT_MADD(rs, rt)      emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x00))
-#define EMIT_MADDU(rs, rt)     emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x01))
-#define EMIT_MULT1(rs, rt)     emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x18))
-#define EMIT_MULTU1(rs, rt)    emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x19))
-#define EMIT_DIV1(rs, rt)      emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x1A))
-#define EMIT_DIVU1(rs, rt)     emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x1B))
-#define EMIT_MFLO1(rd)         emit(MK_R(0x1C, 0, 0, (rd), 0, 0x12))
-#define EMIT_MFHI1(rd)         emit(MK_R(0x1C, 0, 0, (rd), 0, 0x10))
-#define EMIT_MTLO1(rs)         emit(MK_R(0x1C, (rs), 0, 0, 0, 0x13))
-#define EMIT_MTHI1(rs)         emit(MK_R(0x1C, (rs), 0, 0, 0, 0x11))
+#define EMIT_MOVZ(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x0A))
+#define EMIT_MOVN(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x0B))
+#define EMIT_MADD(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x00))
+#define EMIT_MADDU(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x01))
+#define EMIT_MULT1(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x18))
+#define EMIT_MULTU1(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x19))
+#define EMIT_DIV1(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x1A))
+#define EMIT_DIVU1(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x1B))
+#define EMIT_MFLO1(rd) emit(MK_R(0x1C, 0, 0, (rd), 0, 0x12))
+#define EMIT_MFHI1(rd) emit(MK_R(0x1C, 0, 0, (rd), 0, 0x10))
+#define EMIT_MTLO1(rs) emit(MK_R(0x1C, (rs), 0, 0, 0, 0x13))
+#define EMIT_MTHI1(rs) emit(MK_R(0x1C, (rs), 0, 0, 0, 0x11))
 
 /* ================================================================
  *  Function prototypes — dynarec_emit.c
@@ -276,8 +276,10 @@ static inline BlockEntry *lookup_block(uint32_t psx_pc)
     }
 
 #ifdef ENABLE_DYNAREC_STATS
-    if (be) stat_cache_hits++;
-    else stat_cache_misses++;
+    if (be)
+        stat_cache_hits++;
+    else
+        stat_cache_misses++;
 #endif
 
     return be;
