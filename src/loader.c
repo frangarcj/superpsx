@@ -106,6 +106,56 @@ int Load_PSX_EXE(const char *filename, R3000CPU *cpu)
     return 0;
 }
 
+void PSX_SetArgs(const char **args, int argLen)
+{
+    /* scratchpad base physical: 0x1F800000
+     * layout used by many PSX apps:
+     * 0x1F800000: argc (u32)
+     * 0x1F800004..: pointers (u32) to strings located at 0x1F800044+
+     * 0x1F800044: string storage start (NUL-terminated strings)
+     */
+    const uint32_t base = 0x1F800000;
+    const uint32_t table_off = 0x4; /* words start at base+4 */
+    const uint32_t str_off = 0x44;  /* where strings begin */
+
+    if (!args || argLen <= 0)
+    {
+        /* clear argc */
+        *(uint32_t *)(scratchpad_buf + 0) = 0;
+        return;
+    }
+
+    int len = 0;
+    int i;
+    /* ensure we don't overflow the 1KB scratchpad */
+    const int max_str_space = (int)PSX_SCRATCHPAD_SIZE - (int)str_off;
+
+    for (i = 0; i < argLen; i++)
+    {
+        const char *s = args[i];
+        if (!s)
+            s = "";
+
+        int n = (int)strlen(s) + 1; /* include NUL */
+        if (len + n > max_str_space)
+        {
+            /* stop adding further strings if overflow would occur */
+            break;
+        }
+
+        /* write pointer (physical address) into pointer table */
+        uint32_t ptr_val = base + str_off + (uint32_t)len;
+        *(uint32_t *)(scratchpad_buf + table_off + i * 4) = ptr_val;
+
+        /* copy string bytes into scratchpad string area */
+        memcpy(scratchpad_buf + str_off + len, s, n);
+        len += n;
+    }
+
+    /* write final argc (number of pointers written) */
+    *(uint32_t *)(scratchpad_buf + 0) = (uint32_t)i;
+}
+
 int Load_PSX_EXE_FromISO(R3000CPU *cpu)
 {
     char boot_path[256];

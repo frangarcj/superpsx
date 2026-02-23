@@ -68,6 +68,8 @@ extern R3000CPU cpu;
 /*=== Memory ===*/
 #define PSX_RAM_SIZE 0x200000 /* 2MB */
 #define PSX_BIOS_SIZE 0x80000 /* 512KB */
+/* Scratchpad (1KB) */
+#define PSX_SCRATCHPAD_SIZE 1024
 
 extern uint8_t *psx_ram;
 extern uint8_t *psx_bios;
@@ -171,6 +173,12 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr);
 
 /*=== Main ===*/
 void Init_SuperPSX(void);
+
+/* Write argc/argv for the PS-X EXE into the PSX scratchpad so the
+ * loaded executable can read them from 0x1F800000 (argc) and the
+ * pointer table starting at 0x1F800004, with strings at 0x1F800044.
+ * args: array of C strings, argLen: number of strings. */
+void PSX_SetArgs(const char **args, int argLen);
 
 /* Filename of PS-X EXE to load (defaults to "test.exe").
  * Can be overridden from `main` using command-line arguments. */

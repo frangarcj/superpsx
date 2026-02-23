@@ -17,7 +17,6 @@
 #include "iso_image.h"
 #include "iso_fs.h"
 
-
 #include <string.h>
 #include <limits.h>
 
@@ -29,6 +28,11 @@
 char psx_exe_filename_buf[PSX_EXE_PATH_MAX] = "";
 const char *psx_exe_filename = psx_exe_filename_buf;
 int psx_boot_mode = BOOT_MODE_EXE;
+
+/* Host-provided PSX argv that will be written into the PSX scratchpad.
+ * These are populated from `main` and consumed in `Init_SuperPSX`. */
+static const char **psx_host_args = NULL;
+static int psx_host_argc = 0;
 
 /* Check if a filename has a disc image extension */
 static int has_disc_extension(const char *filename)
@@ -115,6 +119,14 @@ int main(int argc, char *argv[])
         psx_exe_filename = psx_exe_filename_buf;
         psx_config.boot_bios_only = 0;
         printf("Using PSX exe from argv: %s (cwd set to %s)\n", psx_exe_filename, argv[0]);
+
+        /* Capture any remaining command-line args (after the exe filename)
+         * and expose them to the PSX executable via scratchpad. */
+        if (argc > 2)
+        {
+            psx_host_argc = argc - 2;
+            psx_host_args = (const char **)&argv[2];
+        }
     }
 
     init_scr();
@@ -177,6 +189,13 @@ void Init_SuperPSX(void)
     Init_Memory();
     Init_Interrupts();
     CDROM_Init();
+
+    /* If host provided PSX arguments, write them into scratchpad now. */
+    if (psx_host_argc > 0 && psx_host_args)
+    {
+        PSX_SetArgs(psx_host_args, psx_host_argc);
+        printf("Wrote %d PSX args into scratchpad.\n", psx_host_argc);
+    }
 
     if (!psx_config.boot_bios_only)
     {
