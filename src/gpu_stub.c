@@ -65,6 +65,7 @@ int tex_flip_y = 0;
 
 int mask_set_bit   = 0;
 int mask_check_bit = 0;
+uint64_t cached_base_test = 0;
 
 int gp1_allow_2mb = 0;
 

@@ -643,6 +643,7 @@ void GPU_WriteGP0(uint32_t data)
     case 0xE6: // Mask Bit Setting
         mask_set_bit = data & 1;
         mask_check_bit = (data >> 1) & 1;
+        cached_base_test = mask_check_bit ? ((uint64_t)1 << 14) : 0;
         gpu_stat = (gpu_stat & ~0x1800) | (mask_set_bit << 11) | (mask_check_bit << 12);
         // GS: FBA_1 forces bit 15 on all written pixels (mask_set_bit)
         // GS: DATE+DATM in TEST_1 prevents writing to pixels with bit 15 set (mask_check_bit)
@@ -711,6 +712,7 @@ void GPU_WriteGP1(uint32_t data)
         dither_enabled = 0;
         mask_set_bit = 0;
         mask_check_bit = 0;
+        cached_base_test = 0;
 
         // Clear GS VRAM to black (PSX GPU reset clears VRAM)
         {

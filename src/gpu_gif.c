@@ -9,14 +9,14 @@
 
 /* ── TEST register helpers ───────────────────────────────────────── */
 
-// Get base TEST register value reflecting mask_check_bit state
-// When mask_check_bit is set, DATE=1 DATM=0 prevents overwriting pixels with bit15=1
+/* Precomputed TEST value — updated only when mask_check_bit changes
+ * (GP0 E6h or GPU reset).  Eliminates per-primitive function call. */
+uint64_t cached_base_test = 0;
+
+// Return precomputed base TEST register value
 uint64_t Get_Base_TEST(void)
 {
-    uint64_t test = 0;
-    if (mask_check_bit)
-        test |= ((uint64_t)1 << 14) | ((uint64_t)0 << 15); // DATE=1, DATM=0
-    return test;
+    return cached_base_test;
 }
 
 /* ── Alpha blending register helpers ─────────────────────────────── */

@@ -147,6 +147,7 @@ extern int tex_flip_y;
 /* Mask bit state from GP0(E6) */
 extern int mask_set_bit;
 extern int mask_check_bit;
+extern uint64_t cached_base_test;  /* precomputed Get_Base_TEST() value */
 
 /* GP1(09h) - Allow 2MB VRAM */
 extern int gp1_allow_2mb;
