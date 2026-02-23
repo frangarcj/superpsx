@@ -7,6 +7,17 @@
  */
 #include "dynarec.h"
 
+/* Only need gpu_state.h for GPU_ReadStatus inline — silence LOG_TAG redef */
+#undef LOG_TAG
+#include "gpu_state.h"
+#undef LOG_TAG
+#define LOG_TAG "DYNAREC"
+
+/* GPU busy-until timestamp — when non-zero, GPU_ReadStatus needs to
+ * fast-forward global_cycles.  JIT inline checks this for zero to
+ * skip the expensive C call on the common "GPU idle" path. */
+extern uint64_t gpu_busy_until;
+
 /*
  * emit_memory_read: Emit native code for LW/LH/LHU/LB/LBU.
  *
@@ -118,6 +129,51 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
             EMIT_LW(REG_V0, CPU_I_MASK, REG_S0);
             if (!dynarec_load_defer)
                 emit_store_psx_reg(rt_psx, REG_V0);
+            return;
+        }
+
+        /*
+         * GPU_ReadStatus fast-path (0x1F801814):
+         * The hot path (GPU idle) is just  return gpu_stat | 0x14002000.
+         * Only fall to the full C call when GPU is busy (gpu_busy_until != 0),
+         * which triggers scheduler fast-forward logic.
+         */
+        if (phys == 0x1F801814 && size == 4)
+        {
+            /* Check gpu_busy_until == 0 (both halves) */
+            emit_load_imm32(REG_T2, (uint32_t)&gpu_busy_until);
+            EMIT_LW(REG_T1, 0, REG_T2);         /* t1 = low 32 bits  */
+            EMIT_LW(REG_T2, 4, REG_T2);         /* t2 = high 32 bits */
+            EMIT_OR(REG_T1, REG_T1, REG_T2);    /* t1 = low | high   */
+            uint32_t *gbu_slow = code_ptr;
+            EMIT_BNE(REG_T1, REG_ZERO, 0);      /* bne t1, $0, @slow */
+            EMIT_NOP();
+
+            /* Fast path: v0 = gpu_stat | 0x14002000 */
+            emit_load_imm32(REG_T2, (uint32_t)&gpu_stat);
+            EMIT_LW(REG_V0, 0, REG_T2);
+            EMIT_LUI(REG_T2, 0x1400);
+            EMIT_ORI(REG_T2, REG_T2, 0x2000);
+            EMIT_OR(REG_V0, REG_V0, REG_T2);
+
+            if (!dynarec_load_defer)
+                emit_store_psx_reg(rt_psx, REG_V0);
+            uint32_t *fast_skip = code_ptr;
+            emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @after */
+            EMIT_NOP();
+
+            /* Slow path: full C call with trampoline */
+            int32_t soff_gbu = (int32_t)(code_ptr - gbu_slow - 1);
+            *gbu_slow = (*gbu_slow & 0xFFFF0000) | ((uint32_t)soff_gbu & 0xFFFF);
+
+            emit_call_c((uint32_t)GPU_ReadStatus);
+
+            if (!dynarec_load_defer)
+                emit_store_psx_reg(rt_psx, REG_V0);
+
+            /* Patch fast-path branch */
+            int32_t soff_fast = (int32_t)(code_ptr - fast_skip - 1);
+            *fast_skip = (*fast_skip & 0xFFFF0000) | ((uint32_t)soff_fast & 0xFFFF);
             return;
         }
     }
