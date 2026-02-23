@@ -6,6 +6,7 @@
 #include <ps2_joystick_driver.h>
 
 #include "joystick.h"
+#include "gpu_state.h"
 
 #define PS2_MAX_PORT 2 /* each ps2 has 2 ports */
 #define PS2_MAX_SLOT 4 /* maximum - 4 slots in one multitap */
@@ -39,6 +40,11 @@ struct JoyInfo
 struct JoyInfo joyInfo[MAX_CONTROLLERS];
 
 static uint8_t enabled_pads;
+
+/* Cached multitap connection status per port — avoids expensive
+ * mtapGetConnection() SDK/IOP RPC call on every controller poll.
+ * Updated once at init; status doesn't change during gameplay. */
+static int multitap_cached[PS2_MAX_PORT] = {0, 0};
 
 /* ---- Internal helpers ---- */
 
@@ -119,6 +125,13 @@ void Joystick_Init(void)
             }
         }
     }
+
+    /* Cache multitap connection status once — avoids expensive
+     * IOP RPC on every subsequent controller poll. */
+    for (port = 0; port < PS2_MAX_PORT; port++)
+    {
+        multitap_cached[port] = (mtapGetConnection(port) == 1) ? 1 : 0;
+    }
 }
 
 void Joystick_Shutdown(void)
@@ -139,9 +152,11 @@ void Joystick_Shutdown(void)
 
 int Joystick_HasMultitap(int port)
 {
-    /* Use the PS2 SDK multitap detection — only returns true
-     * when a multitap adapter is actually connected/emulated */
-    return mtapGetConnection(port) == 1;
+    /* Return cached result — updated at init time only.
+     * This eliminates an expensive IOP RPC per controller poll. */
+    if (port >= 0 && port < PS2_MAX_PORT)
+        return multitap_cached[port];
+    return 0;
 }
 
 int Joystick_IsConnected(int port, int slot)
