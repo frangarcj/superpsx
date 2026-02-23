@@ -46,6 +46,12 @@ jobs:
             debug_log: "OFF"
             stuck_detection: "OFF"
             profiling: "ON"
+          - name: "Headless"
+            vram_dump: "OFF"
+            host_log: "OFF"
+            debug_log: "OFF"
+            stuck_detection: "OFF"
+            headless: "ON"
           - name: "Release"
             vram_dump: "OFF"
             host_log: "OFF"
@@ -71,7 +77,8 @@ jobs:
           -DENABLE_DEBUG_LOG=${{ matrix.debug_log }} \
           -DENABLE_STUCK_DETECTION=${{ matrix.stuck_detection }} \
           -DENABLE_PROFILING=${{ matrix.profiling || 'OFF' }} \
-          -DENABLE_LTO=${{ matrix.lto || 'OFF' }}
+          -DENABLE_LTO=${{ matrix.lto || 'OFF' }} \
+          -DHEADLESS=${{ matrix.headless || 'OFF' }}
 
     - name: Build project with CMake
       run: |
