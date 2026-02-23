@@ -693,46 +693,22 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* LWL/LWR/SWL/SWR */
     case 0x22: /* LWL */
     {
-        emit_load_psx_reg(REG_A0, rs);
-        EMIT_ADDIU(REG_A0, REG_A0, imm);
-        if (dynarec_lwx_pending)
-            EMIT_LW(REG_A1, CPU_LOAD_DELAY_VAL, REG_S0);
-        else
-            emit_load_psx_reg(REG_A1, rt);
-        emit_call_c((uint32_t)Helper_LWL);
-        if (!dynarec_load_defer) {
-            mark_vreg_var(rt);
-            emit_store_psx_reg(rt, REG_V0);
-        }
+        emit_memory_lwx(1, rt, rs, imm, dynarec_lwx_pending);
         break;
     }
     case 0x26: /* LWR */
     {
-        emit_load_psx_reg(REG_A0, rs);
-        EMIT_ADDIU(REG_A0, REG_A0, imm);
-        if (dynarec_lwx_pending)
-            EMIT_LW(REG_A1, CPU_LOAD_DELAY_VAL, REG_S0);
-        else
-            emit_load_psx_reg(REG_A1, rt);
-        emit_call_c((uint32_t)Helper_LWR);
-        if (!dynarec_load_defer)
-            emit_store_psx_reg(rt, REG_V0);
+        emit_memory_lwx(0, rt, rs, imm, dynarec_lwx_pending);
         break;
     }
     case 0x2A: /* SWL */
     {
-        emit_load_psx_reg(REG_A0, rs);
-        EMIT_ADDIU(REG_A0, REG_A0, imm);
-        emit_load_psx_reg(REG_A1, rt);
-        emit_call_c((uint32_t)Helper_SWL);
+        emit_memory_swx(1, rt, rs, imm);
         break;
     }
     case 0x2E: /* SWR */
     {
-        emit_load_psx_reg(REG_A0, rs);
-        EMIT_ADDIU(REG_A0, REG_A0, imm);
-        emit_load_psx_reg(REG_A1, rt);
-        emit_call_c((uint32_t)Helper_SWR);
+        emit_memory_swx(0, rt, rs, imm);
         break;
     }
 
@@ -766,9 +742,13 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         emit_call_c((uint32_t)Helper_CU_Exception);
         *skip_lwc2 = (*skip_lwc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc2 - 1) & 0xFFFF);
 
-        emit_load_psx_reg(REG_A0, rs);
-        EMIT_ADDIU(REG_A0, REG_A0, imm);
-        emit_call_c((uint32_t)ReadWord);
+        /* Memory read via LUT fast path (result in V0), then GTE write */
+        {
+            int saved_defer = dynarec_load_defer;
+            dynarec_load_defer = 1;
+            emit_memory_read(4, 0, rs, imm, 0); /* V0 = word from [rs+imm] */
+            dynarec_load_defer = saved_defer;
+        }
         EMIT_MOVE(REG_A0, REG_S0);
         emit_load_imm32(REG_A1, rt);
         EMIT_MOVE(6, REG_V0);
@@ -821,13 +801,66 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         emit_call_c((uint32_t)Helper_CU_Exception);
         *skip_swc2 = (*skip_swc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc2 - 1) & 0xFFFF);
 
+        /* GTE read → V0 (data to store) */
         EMIT_MOVE(REG_A0, REG_S0);
         emit_load_imm32(REG_A1, rt);
         emit_call_c((uint32_t)GTE_ReadData);
-        emit_load_psx_reg(REG_A0, rs);
-        EMIT_ADDIU(REG_A0, REG_A0, imm);
-        EMIT_MOVE(REG_A1, REG_V0);
+
+        /* Memory write via LUT fast path (data in V0 → T2, addr in T0) */
+        EMIT_MOVE(REG_T2, REG_V0);           /* T2 = GTE data */
+        emit_load_psx_reg(REG_T0, rs);
+        EMIT_ADDIU(REG_T0, REG_T0, imm);     /* T0 = effective addr */
+
+        /* Cache Isolation check */
+        EMIT_LW(REG_A0, CPU_COP0(12), REG_S0);
+        emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02)); /* srl  a0, a0, 16 */
+        emit(MK_I(0x0C, REG_A0, REG_A0, 1));        /* andi a0, a0, 1 */
+        uint32_t *isc_swc2 = code_ptr;
+        emit(MK_I(0x05, REG_A0, REG_ZERO, 0));      /* bne → slow */
+        EMIT_NOP();
+
+        /* Alignment check */
+        emit(MK_I(0x0C, REG_T0, REG_T1, 3));        /* andi t1, t0, 3 */
+        uint32_t *align_swc2 = code_ptr;
+        emit(MK_I(0x05, REG_T1, REG_ZERO, 0));      /* bne → slow */
+        EMIT_NOP();
+
+        /* LUT lookup */
+        emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* srl  t1, t0, 16 */
+        emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00));  /* sll  t1, t1, 2 */
+        EMIT_ADDU(REG_T1, REG_T1, REG_S3);
+        EMIT_LW(REG_T1, 0, REG_T1);
+        emit(MK_I(0x0C, REG_T0, REG_A0, 0xFFFF));   /* andi a0, t0, 0xFFFF */
+        uint32_t *lut_swc2 = code_ptr;
+        emit(MK_I(0x04, REG_T1, REG_ZERO, 0));      /* beq → slow */
+        EMIT_NOP();
+
+        /* Fast path: direct store */
+        EMIT_ADDU(REG_T1, REG_T1, REG_A0);
+        EMIT_SW(REG_T2, 0, REG_T1);
+
+        uint32_t *done_swc2 = code_ptr;
+        emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0));    /* b @done */
+        EMIT_NOP();
+
+        /* Slow path */
+        {
+            int32_t s0 = (int32_t)(code_ptr - isc_swc2 - 1);
+            *isc_swc2 = (*isc_swc2 & 0xFFFF0000) | ((uint32_t)s0 & 0xFFFF);
+            int32_t s1 = (int32_t)(code_ptr - align_swc2 - 1);
+            *align_swc2 = (*align_swc2 & 0xFFFF0000) | ((uint32_t)s1 & 0xFFFF);
+            int32_t s2 = (int32_t)(code_ptr - lut_swc2 - 1);
+            *lut_swc2 = (*lut_swc2 & 0xFFFF0000) | ((uint32_t)s2 & 0xFFFF);
+        }
+        EMIT_MOVE(REG_A0, REG_T0);
+        EMIT_MOVE(REG_A1, REG_T2);
         emit_call_c((uint32_t)WriteWord);
+
+        /* @done */
+        {
+            int32_t d0 = (int32_t)(code_ptr - done_swc2 - 1);
+            *done_swc2 = (*done_swc2 & 0xFFFF0000) | ((uint32_t)d0 & 0xFFFF);
+        }
     }
     break;
 

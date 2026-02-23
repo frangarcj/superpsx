@@ -150,9 +150,19 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     if (size == 4)
         EMIT_LW(REG_V0, 0, REG_T1);
     else if (size == 2)
-        EMIT_LHU(REG_V0, 0, REG_T1);
+    {
+        if (is_signed)
+            EMIT_LH(REG_V0, 0, REG_T1);   /* native signed halfword load */
+        else
+            EMIT_LHU(REG_V0, 0, REG_T1);
+    }
     else
-        EMIT_LBU(REG_V0, 0, REG_T1);
+    {
+        if (is_signed)
+            EMIT_LB(REG_V0, 0, REG_T1);   /* native signed byte load */
+        else
+            EMIT_LBU(REG_V0, 0, REG_T1);
+    }
 
     uint32_t *fast_done = code_ptr;
     emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
@@ -183,6 +193,14 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     if (size >= 2)
         emit_abort_check(); /* AdEL on misaligned addr */
 
+    /* Sign-extend slow-path result (C helpers return unsigned) */
+    if (is_signed && size < 4)
+    {
+        int shift = (size == 1) ? 24 : 16;
+        emit(MK_R(0, 0, REG_V0, REG_V0, shift, 0x00)); /* SLL */
+        emit(MK_R(0, 0, REG_V0, REG_V0, shift, 0x03)); /* SRA */
+    }
+
     /* @done */
     int32_t doff = (int32_t)(code_ptr - fast_done - 1);
     *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
@@ -193,50 +211,10 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
 
 void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t offset)
 {
+    /* emit_memory_read with is_signed=1 handles signed loads natively on the
+     * LUT fast path (lb/lh) and adds SLL/SRA sign extension on the slow path.
+     * Both const-address and LUT paths are fully handled internally. */
     emit_memory_read(size, rt_psx, rs_psx, offset, 1);
-    /* Sign extend for LB/LH (fallback for non-const path only) */
-    if (rt_psx == 0)
-        return;
-
-    uint32_t cp = 0;
-    if (is_vreg_const(rs_psx))
-    {
-        /* If it was constant, emit_memory_read already handled sign extension and returned */
-        return;
-    }
-
-    if (dynarec_load_defer)
-    {
-        /* Sign extend REG_V0 directly (value not stored to PSX reg yet) */
-        if (size == 1)
-        {
-            emit(MK_R(0, 0, REG_V0, REG_V0, 24, 0x00)); /* SLL $v0, $v0, 24 */
-            emit(MK_R(0, 0, REG_V0, REG_V0, 24, 0x03)); /* SRA $v0, $v0, 24 */
-        }
-        else if (size == 2)
-        {
-            emit(MK_R(0, 0, REG_V0, REG_V0, 16, 0x00)); /* SLL $v0, $v0, 16 */
-            emit(MK_R(0, 0, REG_V0, REG_V0, 16, 0x03)); /* SRA $v0, $v0, 16 */
-        }
-    }
-    else
-    {
-        if (size == 1)
-        {
-            /* Sign extend byte: sll 24, sra 24 */
-            emit_load_psx_reg(REG_T0, rt_psx);
-            emit(MK_R(0, 0, REG_T0, REG_T0, 24, 0x00)); /* SLL $t0, $t0, 24 */
-            emit(MK_R(0, 0, REG_T0, REG_T0, 24, 0x03)); /* SRA $t0, $t0, 24 */
-            emit_store_psx_reg(rt_psx, REG_T0);
-        }
-        else if (size == 2)
-        {
-            emit_load_psx_reg(REG_T0, rt_psx);
-            emit(MK_R(0, 0, REG_T0, REG_T0, 16, 0x00)); /* SLL $t0, $t0, 16 */
-            emit(MK_R(0, 0, REG_T0, REG_T0, 16, 0x03)); /* SRA $t0, $t0, 16 */
-            emit_store_psx_reg(rt_psx, REG_T0);
-        }
-    }
 }
 
 void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
@@ -365,4 +343,125 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     /* @done */
     int32_t doff = (int32_t)(code_ptr - fast_done - 1);
     *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
+}
+
+/*
+ * emit_memory_lwx: Emit LWL/LWR with LUT fast path.
+ *
+ * The R5900 (EE) has native lwl/lwr instructions identical to R3000A.
+ * Fast path: LUT lookup → native lwl/lwr on host pointer.
+ * Slow path: C helper (Helper_LWL / Helper_LWR).
+ *
+ * is_left: 1 = LWL, 0 = LWR
+ */
+void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int use_load_delay)
+{
+    /* Load current rt value (merge target) */
+    if (use_load_delay)
+        EMIT_LW(REG_V0, CPU_LOAD_DELAY_VAL, REG_S0);
+    else
+        emit_load_psx_reg(REG_V0, rt_psx);
+
+    /* Compute effective address */
+    emit_load_psx_reg(REG_T0, rs_psx);
+    EMIT_ADDIU(REG_T0, REG_T0, offset);
+
+    /* LUT lookup (64KB virtual pages, S3 = mem_lut) */
+    emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* srl  t1, t0, 16       */
+    emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00));  /* sll  t1, t1, 2        */
+    EMIT_ADDU(REG_T1, REG_T1, REG_S3);          /* addu t1, t1, s3       */
+    EMIT_LW(REG_T1, 0, REG_T1);                 /* lw   t1, 0(t1)        */
+    emit(MK_I(0x0C, REG_T0, REG_T2, 0xFFFF));   /* andi t2, t0, 0xFFFF   */
+    uint32_t *lut_branch = code_ptr;
+    emit(MK_I(0x04, REG_T1, REG_ZERO, 0));      /* beq  t1, zero, @slow  */
+    EMIT_NOP();
+
+    /* Fast path: native lwl/lwr on host address */
+    EMIT_ADDU(REG_T1, REG_T1, REG_T2);
+    if (is_left)
+        EMIT_LWL(REG_V0, 0, REG_T1);
+    else
+        EMIT_LWR(REG_V0, 0, REG_T1);
+
+    uint32_t *fast_done = code_ptr;
+    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
+    EMIT_NOP();
+
+    /* Slow path: call C helper */
+    int32_t soff = (int32_t)(code_ptr - lut_branch - 1);
+    *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff & 0xFFFF);
+
+    EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
+    EMIT_MOVE(REG_A1, REG_V0); /* a1 = cur_rt */
+    emit_call_c(is_left ? (uint32_t)Helper_LWL : (uint32_t)Helper_LWR);
+
+    /* @done */
+    int32_t doff2 = (int32_t)(code_ptr - fast_done - 1);
+    *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff2 & 0xFFFF);
+
+    if (!dynarec_load_defer)
+    {
+        if (is_left)
+            mark_vreg_var(rt_psx);
+        emit_store_psx_reg(rt_psx, REG_V0);
+    }
+}
+
+/*
+ * emit_memory_swx: Emit SWL/SWR with LUT fast path.
+ *
+ * Fast path: cache-isolation check → LUT lookup → native swl/swr.
+ * Slow path: C helper (Helper_SWL / Helper_SWR).
+ *
+ * is_left: 1 = SWL, 0 = SWR
+ */
+void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
+{
+    /* Compute effective address into T0, data into T2 */
+    emit_load_psx_reg(REG_T0, rs_psx);
+    EMIT_ADDIU(REG_T0, REG_T0, offset);
+    emit_load_psx_reg(REG_T2, rt_psx);
+
+    /* Cache Isolation check */
+    EMIT_LW(REG_A0, CPU_COP0(12), REG_S0);
+    emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02)); /* srl  a0, a0, 16 */
+    emit(MK_I(0x0C, REG_A0, REG_A0, 1));        /* andi a0, a0, 1 */
+    uint32_t *isc_branch = code_ptr;
+    emit(MK_I(0x05, REG_A0, REG_ZERO, 0));      /* bne  a0, zero, @slow */
+    EMIT_NOP();
+
+    /* LUT lookup */
+    emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* srl  t1, t0, 16       */
+    emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00));  /* sll  t1, t1, 2        */
+    EMIT_ADDU(REG_T1, REG_T1, REG_S3);          /* addu t1, t1, s3       */
+    EMIT_LW(REG_T1, 0, REG_T1);                 /* lw   t1, 0(t1)        */
+    emit(MK_I(0x0C, REG_T0, REG_A0, 0xFFFF));   /* andi a0, t0, 0xFFFF   */
+    uint32_t *lut_branch = code_ptr;
+    emit(MK_I(0x04, REG_T1, REG_ZERO, 0));      /* beq  t1, zero, @slow  */
+    EMIT_NOP();
+
+    /* Fast path: native swl/swr on host address */
+    EMIT_ADDU(REG_T1, REG_T1, REG_A0);
+    if (is_left)
+        EMIT_SWL(REG_T2, 0, REG_T1);
+    else
+        EMIT_SWR(REG_T2, 0, REG_T1);
+
+    uint32_t *fast_done = code_ptr;
+    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
+    EMIT_NOP();
+
+    /* Slow path */
+    int32_t soff0 = (int32_t)(code_ptr - isc_branch - 1);
+    *isc_branch = (*isc_branch & 0xFFFF0000) | ((uint32_t)soff0 & 0xFFFF);
+    int32_t soff1 = (int32_t)(code_ptr - lut_branch - 1);
+    *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff1 & 0xFFFF);
+
+    EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
+    EMIT_MOVE(REG_A1, REG_T2); /* a1 = rt_val */
+    emit_call_c(is_left ? (uint32_t)Helper_SWL : (uint32_t)Helper_SWR);
+
+    /* @done */
+    int32_t doff2 = (int32_t)(code_ptr - fast_done - 1);
+    *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff2 & 0xFFFF);
 }

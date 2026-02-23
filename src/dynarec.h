@@ -197,6 +197,10 @@ static inline void emit(uint32_t inst)
 #define EMIT_LBU(rt, off, base) emit(MK_I(0x24, (base), (rt), (off)))
 #define EMIT_SH(rt, off, base) emit(MK_I(0x29, (base), (rt), (off)))
 #define EMIT_SB(rt, off, base) emit(MK_I(0x28, (base), (rt), (off)))
+#define EMIT_LWL(rt, off, base) emit(MK_I(0x22, (base), (rt), (off)))
+#define EMIT_LWR(rt, off, base) emit(MK_I(0x26, (base), (rt), (off)))
+#define EMIT_SWL(rt, off, base) emit(MK_I(0x2A, (base), (rt), (off)))
+#define EMIT_SWR(rt, off, base) emit(MK_I(0x2E, (base), (rt), (off)))
 #define EMIT_ADDIU(rt, rs, imm) emit(MK_I(0x09, (rs), (rt), (imm)))
 #define EMIT_ADDU(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x21))
 #define EMIT_OR(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x25))
@@ -304,6 +308,8 @@ void Free_PageTable(void);
 void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_signed);
 void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t offset);
 void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset);
+void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int use_load_delay);
+void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset);
 
 /* ================================================================
  *  Function prototypes — dynarec_compile.c
