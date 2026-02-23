@@ -507,6 +507,9 @@ uint32_t *compile_block(uint32_t psx_pc)
             int rd = (FUNC(opcode) == 0x09) ? RD(opcode) : 0;
             emit_load_psx_reg(REG_T0, rs);
             EMIT_SW(REG_T0, CPU_PC, REG_S0);
+            /* Save current_pc so AdEL exception can set EPC = JR/JALR instr */
+            emit_load_imm32(REG_T1, cur_pc);
+            EMIT_SW(REG_T1, CPU_CURRENT_PC, REG_S0);
             if (FUNC(opcode) == 0x09 && rd != 0)
             {
                 mark_vreg_const(rd, cur_pc + 8);

@@ -415,6 +415,16 @@ static inline int run_jit_chain(uint64_t deadline)
 {
     uint32_t pc = cpu.pc;
 
+    /* Address Error on misaligned PC (AdEL — instruction fetch from bad addr).
+     * cpu.current_pc holds the JR/JALR source instruction address. */
+    if (__builtin_expect(pc & 3, 0))
+    {
+        cpu.cop0[PSX_COP0_BADVADDR] = pc;
+        cpu.pc = cpu.current_pc; /* EPC = instruction that set the bad PC */
+        PSX_Exception(4);        /* AdEL */
+        return RUN_RES_NORMAL;
+    }
+
     /* Block Lookup - SOTA Page Table */
     BlockEntry *be = lookup_block(pc);
     uint32_t *block = be ? be->native : NULL;
