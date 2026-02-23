@@ -182,6 +182,7 @@ void Init_Dynarec(void)
     call_c_trampoline_addr = &code_buffer[32];
     {
         uint32_t *p = call_c_trampoline_addr;
+        /* Flush ALL 12 pinned regs to cpu struct (exception safety) */
         *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(2));
         *p++ = MK_I(0x2B, REG_S0, REG_V1, CPU_REG(3));
         *p++ = MK_I(0x2B, REG_S0, REG_T3, CPU_REG(4));
@@ -194,12 +195,15 @@ void Init_Dynarec(void)
         *p++ = MK_I(0x2B, REG_S0, REG_S4, CPU_REG(29));
         *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(30));
         *p++ = MK_I(0x2B, REG_S0, REG_S5, CPU_REG(31));
+        /* Call target function */
         *p++ = MK_I(0x09, REG_SP, REG_SP, (uint32_t)(int32_t)-32);
         *p++ = MK_I(0x2B, REG_SP, REG_RA, 28);
         *p++ = MK_R(0, REG_T0, 0, REG_RA, 0, 0x09); /* jalr t0 */
         *p++ = 0;
         *p++ = MK_I(0x23, REG_SP, REG_RA, 28);
         *p++ = MK_I(0x09, REG_SP, REG_SP, 32);
+        /* Reload ALL 12 pinned regs: C helpers may write to cpu.regs[]
+         * for any register (e.g., Helper_ADD writes to cpu.regs[rd]). */
         *p++ = MK_I(0x23, REG_S0, REG_S6, CPU_REG(2));
         *p++ = MK_I(0x23, REG_S0, REG_V1, CPU_REG(3));
         *p++ = MK_I(0x23, REG_S0, REG_T3, CPU_REG(4));

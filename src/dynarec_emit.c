@@ -34,7 +34,8 @@ void emit_load_psx_reg(int hwreg, int r)
     }
     else if (psx_pinned_reg[r])
     {
-        EMIT_MOVE(hwreg, psx_pinned_reg[r]); /* pinned register */
+        if (hwreg != psx_pinned_reg[r]) /* avoid self-move */
+            EMIT_MOVE(hwreg, psx_pinned_reg[r]);
     }
     else
     {
@@ -63,7 +64,8 @@ void emit_store_psx_reg(int r, int hwreg)
         return; /* never write to $0 */
     if (psx_pinned_reg[r])
     {
-        EMIT_MOVE(psx_pinned_reg[r], hwreg); /* pinned register */
+        if (psx_pinned_reg[r] != hwreg) /* avoid self-move */
+            EMIT_MOVE(psx_pinned_reg[r], hwreg);
         return;
     }
     EMIT_SW(hwreg, CPU_REG(r), REG_S0);
