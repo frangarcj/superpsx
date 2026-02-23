@@ -120,6 +120,8 @@ void SPU_Shutdown(void)
 }
 
 /* ---- Decode one 16-byte ADPCM block into 28 samples ---- */
+/* Two-phase approach: (1) extract all nibbles branch-free, (2) tight IIR filter.
+ * Filter-0 fast path: f0=f1=0 means no prediction → direct copy.             */
 static void decode_adpcm_block(SPU_Voice *v, uint32_t addr)
 {
     uint8_t *block = &spu_ram[addr & (SPU_RAM_SIZE - 1)];
@@ -130,32 +132,49 @@ static void decode_adpcm_block(SPU_Voice *v, uint32_t addr)
     int filter = (shift_filter >> 4) & 0x07;
 
     if (filter > 4) filter = 4;
-    int32_t f0 = adpcm_filter[filter][0];
-    int32_t f1 = adpcm_filter[filter][1];
 
-    int16_t s_1 = v->prev[0];
-    int16_t s_2 = v->prev[1];
-
+    /* ---- Pass 1: Extract all 28 nibbles and pre-shift (branch-free) ---- */
+    int16_t shifted[28];
     int i;
-    for (i = 0; i < 28; i++) {
-        /* Extract 4-bit nibble */
-        uint8_t byte = block[2 + (i / 2)];
-        int32_t nibble;
-        if (i & 1)
-            nibble = (int32_t)(int8_t)(byte & 0xF0) >> 4; /* high nibble */
-        else
-            nibble = (int32_t)(int8_t)((byte & 0x0F) << 4) >> 4; /* low nibble */
+    for (i = 0; i < 14; i++) {
+        uint8_t byte = block[2 + i];
+        /* Low nibble (even sample): sign-extend 4-bit */
+        int32_t lo = (int32_t)(int8_t)((byte & 0x0F) << 4) >> 4;
+        /* High nibble (odd sample): sign-extend 4-bit */
+        int32_t hi = (int32_t)(int8_t)(byte & 0xF0) >> 4;
+        shifted[i * 2]     = (int16_t)((lo << 12) >> shift);
+        shifted[i * 2 + 1] = (int16_t)((hi << 12) >> shift);
+    }
 
-        /* Decode: shift + filter prediction */
-        int32_t sample = ((nibble << 12) >> shift) + ((s_1 * f0 + s_2 * f1 + 32) >> 6);
+    int16_t s_1, s_2;
 
-        /* Clamp to 16-bit */
-        if (sample > 32767) sample = 32767;
-        if (sample < -32768) sample = -32768;
+    if (filter == 0) {
+        /* ---- Fast path: no prediction (f0=f1=0) ---- */
+        /* (s_1*0 + s_2*0 + 32) >> 6 == 0, so sample = shifted[i].
+         * Pre-shifted values fit in int16_t (nibble −8..7, <<12 >>shift). */
+        memcpy(v->decoded, shifted, sizeof(shifted));
+        s_1 = shifted[27];
+        s_2 = shifted[26];
+    } else {
+        /* ---- Pass 2: IIR filter with serial dependency ---- */
+        int32_t f0 = adpcm_filter[filter][0];
+        int32_t f1 = adpcm_filter[filter][1];
 
-        v->decoded[i] = (int16_t)sample;
-        s_2 = s_1;
-        s_1 = (int16_t)sample;
+        s_1 = v->prev[0];
+        s_2 = v->prev[1];
+
+        for (i = 0; i < 28; i++) {
+            int32_t sample = (int32_t)shifted[i]
+                           + ((s_1 * f0 + s_2 * f1 + 32) >> 6);
+
+            /* Clamp to 16-bit (overflow is rare → hint branch predictor) */
+            if (__builtin_expect(sample > 32767, 0))  sample = 32767;
+            if (__builtin_expect(sample < -32768, 0))  sample = -32768;
+
+            v->decoded[i] = (int16_t)sample;
+            s_2 = s_1;
+            s_1 = (int16_t)sample;
+        }
     }
 
     v->prev[0] = s_1;
