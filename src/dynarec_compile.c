@@ -6,11 +6,13 @@
  * cycle cost estimation, and load delay slot analysis.
  */
 #include "dynarec.h"
+#include "scheduler.h"
 
 /* ---- Compile-time state ---- */
 uint32_t blocks_compiled = 0;
 uint32_t total_instructions = 0;
 uint32_t block_cycle_count = 0;
+uint32_t emit_cycle_offset = 0;
 uint32_t emit_current_psx_pc = 0;
 int dynarec_load_defer = 0;
 int dynarec_lwx_pending = 0;
@@ -73,60 +75,11 @@ uint32_t r3000a_cycle_cost(uint32_t opcode)
         return 1; /* SWR */
     /* COP2 (GTE) commands */
     case 0x12: /* COP2 */
-        if (opcode & 0x02000000)
-        {
-            uint32_t gte_op = opcode & 0x3F;
-            switch (gte_op)
-            {
-            case 0x01:
-                return 15; /* RTPS  */
-            case 0x06:
-                return 8; /* NCLIP */
-            case 0x0C:
-                return 6; /* OP    */
-            case 0x10:
-                return 8; /* DPCS  */
-            case 0x11:
-                return 8; /* INTPL */
-            case 0x12:
-                return 8; /* MVMVA */
-            case 0x13:
-                return 19; /* NCDS  */
-            case 0x14:
-                return 13; /* CDP   */
-            case 0x16:
-                return 44; /* NCDT  */
-            case 0x1B:
-                return 17; /* NCCS  */
-            case 0x1C:
-                return 11; /* CC    */
-            case 0x1E:
-                return 14; /* NCS   */
-            case 0x20:
-                return 30; /* NCT   */
-            case 0x28:
-                return 5; /* SQR   */
-            case 0x29:
-                return 8; /* DCPL  */
-            case 0x2A:
-                return 17; /* DPCT  */
-            case 0x2D:
-                return 5; /* AVSZ3 */
-            case 0x2E:
-                return 6; /* AVSZ4 */
-            case 0x30:
-                return 23; /* RTPT  */
-            case 0x3D:
-                return 5; /* GPF   */
-            case 0x3E:
-                return 5; /* GPL   */
-            case 0x3F:
-                return 39; /* NCCT  */
-            default:
-                return 8; /* Unknown GTE */
-            }
-        }
-        return 1; /* MFC2/MTC2/CFC2/CTC2 */
+        /* GTE compute commands (bit 25 set) cost 1 CPU cycle to issue;
+         * the GTE executes in parallel.  Stall is applied when reading
+         * results (MFC2/CFC2) — see gte_stall_remaining tracking in
+         * the compile loop. */
+        return 1; /* Both compute and transfer instructions: 1 CPU cycle */
     /* Branches/Jumps */
     case 0x02:
         return 1; /* J    */
@@ -156,6 +109,42 @@ uint32_t r3000a_cycle_cost(uint32_t opcode)
         return 1; /* SWC2 */
     default:
         return 1;
+    }
+}
+
+/* GTE pipeline cycle count for COP2 compute commands.
+ * Returns how many cycles the GTE hardware needs to produce results.
+ * Used for stall tracking: if the CPU reads GTE results (MFC2/CFC2/LWC2)
+ * before this many cycles have elapsed since the COP2 issue, the CPU
+ * stalls for the remaining time. */
+static uint32_t gte_pipeline_cycles(uint32_t opcode)
+{
+    uint32_t gte_op = opcode & 0x3F;
+    switch (gte_op)
+    {
+    case 0x01: return 15; /* RTPS  */
+    case 0x06: return 8;  /* NCLIP */
+    case 0x0C: return 6;  /* OP    */
+    case 0x10: return 8;  /* DPCS  */
+    case 0x11: return 8;  /* INTPL */
+    case 0x12: return 8;  /* MVMVA */
+    case 0x13: return 19; /* NCDS  */
+    case 0x14: return 13; /* CDP   */
+    case 0x16: return 44; /* NCDT  */
+    case 0x1B: return 17; /* NCCS  */
+    case 0x1C: return 11; /* CC    */
+    case 0x1E: return 14; /* NCS   */
+    case 0x20: return 30; /* NCT   */
+    case 0x28: return 5;  /* SQR   */
+    case 0x29: return 8;  /* DCPL  */
+    case 0x2A: return 17; /* DPCT  */
+    case 0x2D: return 5;  /* AVSZ3 */
+    case 0x2E: return 6;  /* AVSZ4 */
+    case 0x30: return 23; /* RTPT  */
+    case 0x3D: return 5;  /* GPF   */
+    case 0x3E: return 5;  /* GPL   */
+    case 0x3F: return 39; /* NCCT  */
+    default:   return 8;  /* Unknown GTE */
     }
 }
 
@@ -294,6 +283,24 @@ void emit_branch_epilogue(uint32_t target_pc)
     /* Calculate remaining cycles after this block */
     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
 
+    /*
+     * Accumulate this block's cycle cost into chain_cycles_acc so that
+     * timer reads/writes during subsequent chained blocks see correct
+     * elapsed time.  Without this, global_cycles stays stale across the
+     * entire direct-link chain and timers undercount.
+     *
+     * Uses %hi/%lo split to handle sign-extension of the 16-bit offset.
+     */
+    {
+        uint32_t cca = (uint32_t)&chain_cycles_acc;
+        uint16_t cca_lo = cca & 0xFFFF;
+        uint16_t cca_hi = (cca + 0x8000) >> 16;
+        EMIT_LUI(REG_AT, cca_hi);
+        EMIT_LW(REG_T1, (int16_t)cca_lo, REG_AT);
+        EMIT_ADDIU(REG_T1, REG_T1, (int16_t)block_cycle_count);
+        EMIT_SW(REG_T1, (int16_t)cca_lo, REG_AT);
+    }
+
     /* Update cpu.pc IMMEDIATELY, before any potential abort check */
     emit_load_imm32(REG_T0, target_pc);
     EMIT_SW(REG_T0, CPU_PC, REG_S0);
@@ -338,6 +345,7 @@ uint32_t *compile_block(uint32_t psx_pc)
     uint32_t *block_start = code_ptr;
     uint32_t cur_pc = psx_pc;
     block_cycle_count = 0;
+    emit_cycle_offset = 0;
 
     if (blocks_compiled < 20)
     {
@@ -398,11 +406,68 @@ uint32_t *compile_block(uint32_t psx_pc)
     int pending_load_reg = 0;
     int pending_load_apply_now = 0;
     int block_mult_count = 0;
+    int gte_stall_remaining = 0; /* GTE pipeline stall tracker */
 
     while (!block_ended)
     {
         uint32_t opcode = *psx_code++;
+
+        /* GTE stall model (PSX R3000A COP2 interlock):
+         *
+         * COP2 compute issues in 1 CPU cycle; the GTE pipeline runs in
+         * parallel.  If a subsequent instruction reads GTE results
+         * (MFC2/CFC2/LWC2) before the pipeline completes, the CPU
+         * interlocks (stalls).
+         *
+         * Stall formula (derived from psxtest_gte expected values):
+         *   gte_stall_remaining = GTE_cost  (set at cop2 compute)
+         *   Each instruction (including cop2 itself) decrements by 1.
+         *   At a read instruction: if remaining > 0, add (remaining + 1)
+         *   to block_cycle_count.  The "+1" models the minimum 2-cycle
+         *   hardware interlock penalty when any stall occurs.
+         */
+        uint32_t op_for_stall = OP(opcode);
+        if (op_for_stall == 0x12 && (opcode & 0x02000000))
+        {
+            /* COP2 compute: if GTE is still busy from a previous COP2
+             * compute, the CPU interlocks until it completes. */
+            if (gte_stall_remaining > 0)
+            {
+                block_cycle_count += (uint32_t)(gte_stall_remaining + 1);
+                gte_stall_remaining = 0;
+            }
+            /* Start new GTE pipeline countdown */
+            gte_stall_remaining = (int)gte_pipeline_cycles(opcode);
+        }
+        else if (op_for_stall == 0x12 && !(opcode & 0x02000000))
+        {
+            /* COP2 data transfer: any GTE register access (MFC2/CFC2/
+             * MTC2/CTC2) while GTE is busy causes an interlock stall. */
+            uint32_t rs = RS(opcode);
+            if ((rs == 0x00 || rs == 0x02 || rs == 0x04 || rs == 0x06)
+                && gte_stall_remaining > 0)
+            {
+                block_cycle_count += (uint32_t)(gte_stall_remaining + 1);
+                gte_stall_remaining = 0;
+            }
+        }
+        else if (op_for_stall == 0x32) /* LWC2: loads GTE data reg */
+        {
+            if (gte_stall_remaining > 0)
+            {
+                block_cycle_count += (uint32_t)(gte_stall_remaining + 1);
+                gte_stall_remaining = 0;
+            }
+        }
+
         block_cycle_count += r3000a_cycle_cost(opcode);
+        emit_cycle_offset = block_cycle_count;
+
+        /* Decrement GTE pipeline countdown after EVERY instruction,
+         * including the COP2 compute instruction itself (the cop2 issue
+         * cycle counts as 1 GTE pipeline cycle). */
+        if (gte_stall_remaining > 0)
+            gte_stall_remaining--;
 
         if (in_delay_slot)
         {
@@ -741,7 +806,6 @@ uint32_t *compile_block(uint32_t psx_pc)
         if (num_words > 32)
             DLOG_RAW("  ... (%d more)\n", num_words - 32);
     }
-    uint32_t block_instr_count = (cur_pc - psx_pc) / 4;
 
     FlushCache(0);
     FlushCache(2);
@@ -795,6 +859,14 @@ uint32_t *compile_block(uint32_t psx_pc)
             be->native_count = (uint32_t)(code_ptr - block_start);
             be->cycle_count = block_cycle_count > 0 ? block_cycle_count : block_instr_count;
             be->is_idle = is_idle;
+            /* Hash all PSX opcodes for self-modifying code detection */
+            uint32_t *opcodes = get_psx_code_ptr(psx_pc);
+            uint32_t hash = 0;
+            if (opcodes) {
+                for (uint32_t i = 0; i < block_instr_count; i++)
+                    hash = (hash << 5) + hash + opcodes[i]; /* djb2 */
+            }
+            be->code_hash = hash;
         }
     }
 

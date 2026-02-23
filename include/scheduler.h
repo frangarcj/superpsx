@@ -68,6 +68,8 @@ typedef struct
 /* ---- Shared state (defined in scheduler.c) ---- */
 extern SchedEvent sched_events[SCHED_EVENT_COUNT];
 extern uint64_t global_cycles;
+extern uint32_t partial_block_cycles;
+extern volatile uint32_t chain_cycles_acc;
 extern int scheduler_unlimited_speed;
 extern uint64_t scheduler_cached_earliest;
 extern int scheduler_earliest_id;

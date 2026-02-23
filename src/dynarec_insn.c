@@ -878,6 +878,15 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         }
         EMIT_MOVE(REG_A0, REG_T0);
         EMIT_MOVE(REG_A1, REG_T2);
+        /* Flush partial cycle offset for accurate timer reads in WriteHardware */
+        {
+            uint32_t pbc_addr = (uint32_t)&partial_block_cycles;
+            uint16_t pbc_lo = pbc_addr & 0xFFFF;
+            uint16_t pbc_hi = (pbc_addr + 0x8000) >> 16;
+            EMIT_LUI(REG_AT, pbc_hi);
+            EMIT_ADDIU(REG_T1, REG_ZERO, (int16_t)emit_cycle_offset);
+            EMIT_SW(REG_T1, (int16_t)pbc_lo, REG_AT);
+        }
         emit_call_c_lite((uint32_t)WriteWord);
 
         /* @done: patch forward branches */

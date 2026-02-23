@@ -472,6 +472,26 @@ static inline int run_jit_chain(uint64_t deadline)
     BlockEntry *be = lookup_block(pc);
     uint32_t *block = be ? be->native : NULL;
 
+    /* Self-modifying code check: if the block's PSX opcodes changed since
+     * compilation, discard the stale block and force recompilation.
+     * Uses an XOR hash of all block opcodes for cheap comparison. */
+    if (block && be)
+    {
+        uint32_t *opcodes = get_psx_code_ptr(pc);
+        if (opcodes)
+        {
+            uint32_t hash = 0;
+            for (uint32_t i = 0; i < be->instr_count; i++)
+                hash = (hash << 5) + hash + opcodes[i]; /* djb2-style */
+            if (hash != be->code_hash)
+            {
+                be->native = NULL;
+                block = NULL;
+                be = NULL;
+            }
+        }
+    }
+
     if (!block)
     {
         block = compile_block(pc);
@@ -507,6 +527,8 @@ static inline int run_jit_chain(uint64_t deadline)
     if (cycles_taken == 0)
         cycles_taken = 8;
     global_cycles += cycles_taken;
+    partial_block_cycles = 0; /* Reset mid-block cycle offset */
+    chain_cycles_acc = 0;     /* Reset chain accumulator */
 
     if (be)
         update_dynarec_stats(be, cycles_taken);

@@ -35,7 +35,27 @@ void emit_direct_link(uint32_t target_psx_pc)
     BlockEntry *be = lookup_block(target_psx_pc);
     if (be && be->native != NULL)
     {
-        /* Block already exists. Link immediately! */
+        /* SMC check: if the target block's code changed since compilation,
+         * invalidate it so we don't chain to stale native code.  This is
+         * critical when self-modifying code modifies a loop body and control
+         * flows from a setup block that was recompiled via SMC detection —
+         * without this, the inner loop block still runs old compiled code. */
+        uint32_t *opcodes = get_psx_code_ptr(target_psx_pc);
+        if (opcodes)
+        {
+            uint32_t hash = 0;
+            for (uint32_t i = 0; i < be->instr_count; i++)
+                hash = (hash << 5) + hash + opcodes[i]; /* djb2 */
+            if (hash != be->code_hash)
+            {
+                be->native = NULL;
+                be = NULL;
+            }
+        }
+    }
+    if (be && be->native != NULL)
+    {
+        /* Block already exists and is valid. Link immediately! */
         uint32_t native_addr = (uint32_t)(be->native + DYNAREC_PROLOGUE_WORDS);
         EMIT_J_ABS(native_addr);
         EMIT_NOP();

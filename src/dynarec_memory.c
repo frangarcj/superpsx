@@ -6,6 +6,7 @@
  * for IO/BIOS/misaligned access.
  */
 #include "dynarec.h"
+#include "scheduler.h"
 
 /* Only need gpu_state.h for GPU_ReadStatus inline — silence LOG_TAG redef */
 #undef LOG_TAG
@@ -17,6 +18,30 @@
  * fast-forward global_cycles.  JIT inline checks this for zero to
  * skip the expensive C call on the common "GPU idle" path. */
 extern uint64_t gpu_busy_until;
+
+/*
+ * emit_flush_partial_cycles: Emit code to store the compile-time cycle
+ * offset (emit_cycle_offset) into the partial_block_cycles global.
+ * This allows timer reads/writes during C helper calls to see accurate
+ * cycle counts instead of stale global_cycles.
+ *
+ * Uses REG_AT and REG_T1 (assembler temp, not pinned) as scratch.
+ * Cost: 3 native instructions on the slow path.
+ *
+ * Note: LUI loads the upper half; SW/LW sign-extend the 16-bit offset.
+ * We use the standard %hi/%lo split: hi = (addr + 0x8000) >> 16 to
+ * compensate for sign extension of the lower half.
+ */
+static void emit_flush_partial_cycles(void)
+{
+    uint32_t addr = (uint32_t)&partial_block_cycles;
+    uint16_t lo = addr & 0xFFFF;
+    uint16_t hi = (addr + 0x8000) >> 16;
+    uint32_t val  = emit_cycle_offset;
+    EMIT_LUI(REG_AT, hi);
+    EMIT_ADDIU(REG_T1, REG_ZERO, (int16_t)val);
+    EMIT_SW(REG_T1, (int16_t)lo, REG_AT);
+}
 
 /*
  * emit_memory_read: Emit native code for LW/LH/LHU/LB/LBU.
@@ -166,6 +191,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
             int32_t soff_gbu = (int32_t)(code_ptr - gbu_slow - 1);
             *gbu_slow = (*gbu_slow & 0xFFFF0000) | ((uint32_t)soff_gbu & 0xFFFF);
 
+            emit_flush_partial_cycles();
             emit_call_c_lite((uint32_t)GPU_ReadStatus);
 
             if (!dynarec_load_defer)
@@ -311,6 +337,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         func_addr = (uint32_t)ReadHalf;
     else
         func_addr = (uint32_t)ReadByte;
+    emit_flush_partial_cycles();
     emit_call_c_lite(func_addr);
 
     if (size >= 2)
@@ -511,6 +538,7 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         func_addr = (uint32_t)WriteHalf;
     else
         func_addr = (uint32_t)WriteByte;
+    emit_flush_partial_cycles();
     emit_call_c_lite(func_addr);
 
     if (size >= 2)
@@ -597,6 +625,7 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
 
     EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
     EMIT_MOVE(REG_A1, REG_V0); /* a1 = cur_rt */
+    emit_flush_partial_cycles();
     emit_call_c_lite(is_left ? (uint32_t)Helper_LWL : (uint32_t)Helper_LWR);
 
     /* @done: patch forward branches */
@@ -692,6 +721,7 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
 
     EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
     EMIT_MOVE(REG_A1, REG_T2); /* a1 = rt_val */
+    emit_flush_partial_cycles();
     emit_call_c_lite(is_left ? (uint32_t)Helper_SWL : (uint32_t)Helper_SWR);
 
     /* @done: patch forward branches */

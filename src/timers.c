@@ -10,6 +10,12 @@
 #endif
 #define LOG_TAG "TMR"
 
+/* Effective cycle count: global_cycles + in-progress block cycles.
+ * During JIT block execution, partial_block_cycles holds the compile-time
+ * cycle offset for the current instruction, allowing mid-block timer reads
+ * to see accurate elapsed time instead of stale global_cycles. */
+#define EFFECTIVE_CYCLES  (global_cycles + chain_cycles_acc + partial_block_cycles)
+
 typedef struct
 {
     uint32_t value;
@@ -63,9 +69,10 @@ static void timer_update_stopped_cache(int t)
 static void Timer_SyncValue(int t)
 {
     if (t < 0 || t > 2) return;
-    if (timer_stopped_cache[t]) { timers[t].last_sync_cycle = global_cycles; return; }
+    uint64_t now = EFFECTIVE_CYCLES;
+    if (timer_stopped_cache[t]) { timers[t].last_sync_cycle = now; return; }
     uint32_t divider = timer_divider_cache[t];
-    uint64_t elapsed = global_cycles - timers[t].last_sync_cycle;
+    uint64_t elapsed = now - timers[t].last_sync_cycle;
     uint32_t ticks = (uint32_t)(elapsed / divider);
     timers[t].last_sync_cycle += (uint64_t)ticks * divider;
     if (ticks == 0) return;
@@ -119,7 +126,7 @@ static void Timer_ScheduleOne(int t)
         }
     }
     if (ticks_to_event == 0) ticks_to_event = 1;
-    Scheduler_ScheduleEvent(SCHED_EVENT_TIMER0 + t, global_cycles + (uint64_t)ticks_to_event * divider, timer_callbacks[t]);
+    Scheduler_ScheduleEvent(SCHED_EVENT_TIMER0 + t, EFFECTIVE_CYCLES + (uint64_t)ticks_to_event * divider, timer_callbacks[t]);
 }
 
 static void Timer_FireEvent(int t)
@@ -159,7 +166,9 @@ uint32_t Timers_Read(uint32_t addr)
     int reg = ((phys - 0x1F801100) % 0x10) / 4;
     if (t < 0 || t > 2) return 0;
     switch (reg) {
-        case 0: Timer_SyncValue(t); return timers[t].value & 0xFFFF;
+        case 0:
+            Timer_SyncValue(t);
+            return timers[t].value & 0xFFFF;
         case 1: { uint32_t mode = timers[t].mode; timers[t].mode &= ~((1 << 11) | (1 << 12)); return mode; }
         case 2: return timers[t].target;
     }
@@ -172,9 +181,10 @@ void Timers_Write(uint32_t addr, uint32_t data)
     int t = (phys - 0x1F801100) / 0x10;
     int reg = ((phys - 0x1F801100) % 0x10) / 4;
     if (t < 0 || t > 2) return;
+    uint64_t now = EFFECTIVE_CYCLES;
     switch (reg) {
-        case 0: timers[t].value = data; timers[t].last_sync_cycle = global_cycles; break;
-        case 1: timers[t].value = 0; timers[t].mode = data; timers[t].last_sync_cycle = global_cycles;
+        case 0: timers[t].value = data; timers[t].last_sync_cycle = now; break;
+        case 1: timers[t].value = 0; timers[t].mode = data; timers[t].last_sync_cycle = now;
                 timer_update_stopped_cache(t); timer_update_divider_cache(t); break;
         case 2: timers[t].target = data; break;
     }

@@ -40,7 +40,7 @@ typedef struct BlockEntry
     uint32_t cycle_count;    /* Weighted R3000A cycle count for this block */
     uint32_t is_idle;        /* 1 = idle loop (self-jump, no side effects) */
     struct BlockEntry *next; /* Collision chain pointer */
-    uint32_t padding;        /* Ensure struct is exactly 32 bytes */
+    uint32_t code_hash;        /* XOR hash of PSX block opcodes (SMC detect) */
 } BlockEntry;
 
 typedef struct
@@ -74,6 +74,7 @@ typedef int32_t (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios, int3
 /* ================================================================
  *  Hardware register IDs used in generated code
  * ================================================================ */
+#define REG_AT 1  /* Assembler temporary */
 #define REG_S0 16
 #define REG_S1 17
 #define REG_S2 18
@@ -156,6 +157,7 @@ extern uint64_t stat_dbl_patches;
 extern uint32_t blocks_compiled;
 extern uint32_t total_instructions;
 extern uint32_t block_cycle_count;
+extern uint32_t emit_cycle_offset;
 extern uint32_t emit_current_psx_pc;
 extern int dynarec_load_defer;
 extern int dynarec_lwx_pending;
