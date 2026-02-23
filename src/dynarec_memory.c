@@ -100,6 +100,26 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
                 return;
             }
         }
+
+        /*
+         * Const-address I/O whitelist (à la pcsx-redux pointerRead):
+         * For known "passive" I/O registers whose values live in the cpu
+         * struct, emit a direct load from S0+offset instead of a C call.
+         */
+        if (phys == 0x1F801070 && size == 4) /* I_STAT */
+        {
+            EMIT_LW(REG_V0, CPU_I_STAT, REG_S0);
+            if (!dynarec_load_defer)
+                emit_store_psx_reg(rt_psx, REG_V0);
+            return;
+        }
+        if (phys == 0x1F801074 && size == 4) /* I_MASK */
+        {
+            EMIT_LW(REG_V0, CPU_I_MASK, REG_S0);
+            if (!dynarec_load_defer)
+                emit_store_psx_reg(rt_psx, REG_V0);
+            return;
+        }
     }
 
     /* Fallback to generic emitter if address is not constant or not in RAM/SP */
@@ -168,14 +188,61 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
     EMIT_NOP();
 
-    /* Slow path: store current_pc (needed by AdEL exception handler) */
+    /*
+     * Scratchpad inline check (LUT miss path):
+     * When mem_lut[page] is NULL, check if this is a scratchpad access
+     * (physical 0x1F800000-0x1F8003FF) before falling through to the
+     * expensive C helper call.  Scratchpad shares the 0x1F80 64KB page
+     * with I/O registers, so the LUT cannot map it directly.
+     */
+    /* @sp_check: lut_branch lands here */
+    int32_t soff_lut = (int32_t)(code_ptr - lut_branch - 1);
+    *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff_lut & 0xFFFF);
+
+    /* phys = vaddr & 0x1FFFFFFF */
+    emit(MK_I(0x0F, 0, REG_T1, 0x1FFF));         /* lui  t1, 0x1FFF          */
+    emit(MK_I(0x0D, REG_T1, REG_T1, 0xFFFF));    /* ori  t1, t1, 0xFFFF      */
+    emit(MK_R(0, REG_T0, REG_T1, REG_T1, 0, 0x24)); /* and  t1, t0, t1  (phys) */
+    emit(MK_I(0x0F, 0, REG_T2, 0xE080));         /* lui  t2, 0xE080 (-0x1F800000) */
+    EMIT_ADDU(REG_T1, REG_T1, REG_T2);           /* addu t1, t1, t2 (phys - 0x1F800000) */
+    emit(MK_I(0x0B, REG_T1, REG_T1, 0x400));     /* sltiu t1, t1, 0x400      */
+    uint32_t *sp_miss = code_ptr;
+    emit(MK_I(0x04, REG_T1, REG_ZERO, 0));       /* beq  t1, zero, @slow     */
+    EMIT_NOP();
+
+    /* Scratchpad fast path: load from scratchpad_buf + (addr & 0x3FF) */
+    emit_load_imm32(REG_T1, (uint32_t)scratchpad_buf);
+    emit(MK_I(0x0C, REG_T0, REG_T2, 0x3FF));    /* andi t2, t0, 0x3FF       */
+    EMIT_ADDU(REG_T1, REG_T1, REG_T2);
+    if (size == 4)
+        EMIT_LW(REG_V0, 0, REG_T1);
+    else if (size == 2)
+    {
+        if (is_signed)
+            EMIT_LH(REG_V0, 0, REG_T1);
+        else
+            EMIT_LHU(REG_V0, 0, REG_T1);
+    }
+    else
+    {
+        if (is_signed)
+            EMIT_LB(REG_V0, 0, REG_T1);
+        else
+            EMIT_LBU(REG_V0, 0, REG_T1);
+    }
+    uint32_t *sp_done = code_ptr;
+    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0));     /* b @done */
+    EMIT_NOP();
+
+    /* Slow path: C helper call (I/O, unmapped, etc.) */
+    /* @slow: alignment branch and sp_miss land here */
     if (align_branch)
     {
         int32_t soff1 = (int32_t)(code_ptr - align_branch - 1);
         *align_branch = (*align_branch & 0xFFFF0000) | ((uint32_t)soff1 & 0xFFFF);
     }
-    int32_t soff2 = (int32_t)(code_ptr - lut_branch - 1);
-    *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff2 & 0xFFFF);
+    int32_t soff_sp = (int32_t)(code_ptr - sp_miss - 1);
+    *sp_miss = (*sp_miss & 0xFFFF0000) | ((uint32_t)soff_sp & 0xFFFF);
 
     emit_load_imm32(REG_T2, emit_current_psx_pc);
     EMIT_SW(REG_T2, CPU_CURRENT_PC, REG_S0);
@@ -201,9 +268,11 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         emit(MK_R(0, 0, REG_V0, REG_V0, shift, 0x03)); /* SRA */
     }
 
-    /* @done */
+    /* @done: patch all forward branches */
     int32_t doff = (int32_t)(code_ptr - fast_done - 1);
     *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
+    int32_t doff_sp = (int32_t)(code_ptr - sp_done - 1);
+    *sp_done = (*sp_done & 0xFFFF0000) | ((uint32_t)doff_sp & 0xFFFF);
 
     if (!dynarec_load_defer)
         emit_store_psx_reg(rt_psx, REG_V0);
@@ -261,6 +330,21 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
                 return;
             }
         }
+
+        /*
+         * Const-address I/O write whitelist:
+         * I_MASK (0x1F801074): cpu.i_mask = data & 0xFFFF07FF
+         * Note: I_STAT (0x1F801070) has SIO_CheckIRQ side effect so it
+         * stays on the C path.
+         */
+        if (phys == 0x1F801074 && size == 4) /* I_MASK */
+        {
+            emit_load_psx_reg(REG_T2, rt_psx);
+            emit_load_imm32(REG_T1, 0xFFFF07FF);
+            emit(MK_R(0, REG_T2, REG_T1, REG_T2, 0, 0x24)); /* and t2, t2, t1 */
+            EMIT_SW(REG_T2, CPU_I_MASK, REG_S0);
+            return;
+        }
     }
 
     /* Compute effective address into REG_T0, data into REG_T2 */
@@ -312,7 +396,43 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b    @done */
     EMIT_NOP();
 
-    /* Slow path: store current_pc (needed by AdES exception handler) */
+    /*
+     * Scratchpad inline check (LUT miss on write path):
+     * Same logic as read path — check if physical address is in
+     * scratchpad range before falling through to expensive C helper.
+     * Registers: t0 = vaddr, t2 = data, t1 = 0 (LUT null), a0 = page offset
+     */
+    /* @sp_check: range_branch lands here */
+    int32_t soff_range = (int32_t)(code_ptr - range_branch - 1);
+    *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff_range & 0xFFFF);
+
+    /* phys = vaddr & 0x1FFFFFFF */
+    emit(MK_I(0x0F, 0, REG_T1, 0x1FFF));         /* lui  t1, 0x1FFF          */
+    emit(MK_I(0x0D, REG_T1, REG_T1, 0xFFFF));    /* ori  t1, t1, 0xFFFF      */
+    emit(MK_R(0, REG_T0, REG_T1, REG_T1, 0, 0x24)); /* and  t1, t0, t1  (phys) */
+    emit(MK_I(0x0F, 0, REG_A0, 0xE080));         /* lui  a0, 0xE080 (-0x1F800000) */
+    EMIT_ADDU(REG_T1, REG_T1, REG_A0);           /* addu t1, t1, a0 (phys - 0x1F800000) */
+    emit(MK_I(0x0B, REG_T1, REG_T1, 0x400));     /* sltiu t1, t1, 0x400      */
+    uint32_t *sp_miss = code_ptr;
+    emit(MK_I(0x04, REG_T1, REG_ZERO, 0));       /* beq  t1, zero, @slow     */
+    EMIT_NOP();
+
+    /* Scratchpad fast path: store to scratchpad_buf + (addr & 0x3FF) */
+    emit_load_imm32(REG_T1, (uint32_t)scratchpad_buf);
+    emit(MK_I(0x0C, REG_T0, REG_A0, 0x3FF));    /* andi a0, t0, 0x3FF       */
+    EMIT_ADDU(REG_T1, REG_T1, REG_A0);
+    if (size == 4)
+        EMIT_SW(REG_T2, 0, REG_T1);
+    else if (size == 2)
+        EMIT_SH(REG_T2, 0, REG_T1);
+    else
+        EMIT_SB(REG_T2, 0, REG_T1);
+    uint32_t *sp_done = code_ptr;
+    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0));     /* b @done */
+    EMIT_NOP();
+
+    /* Slow path: C helper call (I/O, cache ctrl, etc.) */
+    /* @slow: isc_branch, align_branch, and sp_miss land here */
     int32_t soff0 = (int32_t)(code_ptr - isc_branch - 1);
     *isc_branch = (*isc_branch & 0xFFFF0000) | ((uint32_t)soff0 & 0xFFFF);
     if (align_branch)
@@ -320,8 +440,8 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         int32_t soff1 = (int32_t)(code_ptr - align_branch - 1);
         *align_branch = (*align_branch & 0xFFFF0000) | ((uint32_t)soff1 & 0xFFFF);
     }
-    int32_t soff2 = (int32_t)(code_ptr - range_branch - 1);
-    *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff2 & 0xFFFF);
+    int32_t soff_sp = (int32_t)(code_ptr - sp_miss - 1);
+    *sp_miss = (*sp_miss & 0xFFFF0000) | ((uint32_t)soff_sp & 0xFFFF);
 
     emit_load_imm32(REG_A1, emit_current_psx_pc); /* reuse a1 temp */
     EMIT_SW(REG_A1, CPU_CURRENT_PC, REG_S0);
@@ -340,9 +460,11 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     if (size >= 2)
         emit_abort_check(); /* AdES on misaligned addr */
 
-    /* @done */
+    /* @done: patch all forward branches */
     int32_t doff = (int32_t)(code_ptr - fast_done - 1);
     *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
+    int32_t doff_sp = (int32_t)(code_ptr - sp_done - 1);
+    *sp_done = (*sp_done & 0xFFFF0000) | ((uint32_t)doff_sp & 0xFFFF);
 }
 
 /*
@@ -387,17 +509,45 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
     emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
     EMIT_NOP();
 
+    /* Scratchpad inline check for LWL/LWR */
+    int32_t soff_lut = (int32_t)(code_ptr - lut_branch - 1);
+    *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff_lut & 0xFFFF);
+
+    emit(MK_I(0x0F, 0, REG_T1, 0x1FFF));             /* lui  t1, 0x1FFF          */
+    emit(MK_I(0x0D, REG_T1, REG_T1, 0xFFFF));        /* ori  t1, t1, 0xFFFF      */
+    emit(MK_R(0, REG_T0, REG_T1, REG_T1, 0, 0x24)); /* and  t1, t0, t1  (phys)  */
+    emit(MK_I(0x0F, 0, REG_T2, 0xE080));             /* lui  t2, 0xE080          */
+    EMIT_ADDU(REG_T1, REG_T1, REG_T2);               /* addu t1, phys-0x1F800000 */
+    emit(MK_I(0x0B, REG_T1, REG_T1, 0x400));         /* sltiu t1, t1, 0x400      */
+    uint32_t *sp_miss = code_ptr;
+    emit(MK_I(0x04, REG_T1, REG_ZERO, 0));           /* beq  t1, zero, @slow     */
+    EMIT_NOP();
+
+    /* Scratchpad fast path */
+    emit_load_imm32(REG_T1, (uint32_t)scratchpad_buf);
+    emit(MK_I(0x0C, REG_T0, REG_T2, 0x3FF));        /* andi t2, t0, 0x3FF       */
+    EMIT_ADDU(REG_T1, REG_T1, REG_T2);
+    if (is_left)
+        EMIT_LWL(REG_V0, 0, REG_T1);
+    else
+        EMIT_LWR(REG_V0, 0, REG_T1);
+    uint32_t *sp_done = code_ptr;
+    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0));         /* b @done */
+    EMIT_NOP();
+
     /* Slow path: call C helper */
-    int32_t soff = (int32_t)(code_ptr - lut_branch - 1);
-    *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff & 0xFFFF);
+    int32_t soff_sp = (int32_t)(code_ptr - sp_miss - 1);
+    *sp_miss = (*sp_miss & 0xFFFF0000) | ((uint32_t)soff_sp & 0xFFFF);
 
     EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
     EMIT_MOVE(REG_A1, REG_V0); /* a1 = cur_rt */
     emit_call_c(is_left ? (uint32_t)Helper_LWL : (uint32_t)Helper_LWR);
 
-    /* @done */
+    /* @done: patch forward branches */
     int32_t doff2 = (int32_t)(code_ptr - fast_done - 1);
     *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff2 & 0xFFFF);
+    int32_t doff_sp = (int32_t)(code_ptr - sp_done - 1);
+    *sp_done = (*sp_done & 0xFFFF0000) | ((uint32_t)doff_sp & 0xFFFF);
 
     if (!dynarec_load_defer)
     {
@@ -451,17 +601,46 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
     EMIT_NOP();
 
+    /* Scratchpad inline check for SWL/SWR */
+    int32_t soff_lut = (int32_t)(code_ptr - lut_branch - 1);
+    *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff_lut & 0xFFFF);
+
+    /* phys = vaddr & 0x1FFFFFFF; check (phys - 0x1F800000) < 0x400 */
+    emit(MK_I(0x0F, 0, REG_T1, 0x1FFF));             /* lui  t1, 0x1FFF          */
+    emit(MK_I(0x0D, REG_T1, REG_T1, 0xFFFF));        /* ori  t1, t1, 0xFFFF      */
+    emit(MK_R(0, REG_T0, REG_T1, REG_T1, 0, 0x24)); /* and  t1, t0, t1  (phys)  */
+    emit(MK_I(0x0F, 0, REG_A0, 0xE080));             /* lui  a0, 0xE080          */
+    EMIT_ADDU(REG_T1, REG_T1, REG_A0);               /* addu t1, phys-0x1F800000 */
+    emit(MK_I(0x0B, REG_T1, REG_T1, 0x400));         /* sltiu t1, t1, 0x400      */
+    uint32_t *sp_miss = code_ptr;
+    emit(MK_I(0x04, REG_T1, REG_ZERO, 0));           /* beq  t1, zero, @slow     */
+    EMIT_NOP();
+
+    /* Scratchpad fast path */
+    emit_load_imm32(REG_T1, (uint32_t)scratchpad_buf);
+    emit(MK_I(0x0C, REG_T0, REG_A0, 0x3FF));        /* andi a0, t0, 0x3FF       */
+    EMIT_ADDU(REG_T1, REG_T1, REG_A0);
+    if (is_left)
+        EMIT_SWL(REG_T2, 0, REG_T1);
+    else
+        EMIT_SWR(REG_T2, 0, REG_T1);
+    uint32_t *sp_done = code_ptr;
+    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0));         /* b @done */
+    EMIT_NOP();
+
     /* Slow path */
     int32_t soff0 = (int32_t)(code_ptr - isc_branch - 1);
     *isc_branch = (*isc_branch & 0xFFFF0000) | ((uint32_t)soff0 & 0xFFFF);
-    int32_t soff1 = (int32_t)(code_ptr - lut_branch - 1);
-    *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff1 & 0xFFFF);
+    int32_t soff_sp = (int32_t)(code_ptr - sp_miss - 1);
+    *sp_miss = (*sp_miss & 0xFFFF0000) | ((uint32_t)soff_sp & 0xFFFF);
 
     EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
     EMIT_MOVE(REG_A1, REG_T2); /* a1 = rt_val */
     emit_call_c(is_left ? (uint32_t)Helper_SWL : (uint32_t)Helper_SWR);
 
-    /* @done */
+    /* @done: patch forward branches */
     int32_t doff2 = (int32_t)(code_ptr - fast_done - 1);
     *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff2 & 0xFFFF);
+    int32_t doff_sp = (int32_t)(code_ptr - sp_done - 1);
+    *sp_done = (*sp_done & 0xFFFF0000) | ((uint32_t)doff_sp & 0xFFFF);
 }

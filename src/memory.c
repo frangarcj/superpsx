@@ -216,7 +216,7 @@ uint8_t ReadByte(uint32_t addr)
     if (phys >= 0x1F800000 && phys < 0x1F800400)
         return scratchpad_buf[phys - 0x1F800000];
     if (phys >= 0x1F801000 && phys < 0x1F803000)
-        return (uint8_t)ReadHardware(addr);
+        return (uint8_t)ReadHardware(phys);
     return 0;
 }
 
@@ -239,7 +239,7 @@ uint16_t ReadHalf(uint32_t addr)
     if (phys >= 0x1F800000 && phys < 0x1F800400)
         return *(uint16_t *)(scratchpad_buf + (phys - 0x1F800000));
     if (phys >= 0x1F801000 && phys < 0x1F803000)
-        return (uint16_t)ReadHardware(addr);
+        return (uint16_t)ReadHardware(phys);
     return 0;
 }
 
@@ -262,14 +262,9 @@ uint32_t ReadWord(uint32_t addr)
     if (phys >= 0x1F800000 && phys < 0x1F800400)
         return *(uint32_t *)(scratchpad_buf + (phys - 0x1F800000));
     if (phys >= 0x1F801000 && phys < 0x1F803000)
-        return ReadHardware(addr);
-    /* Memory control registers */
-    if (phys >= 0x1F801000 && phys < 0x1F801024)
-        return mem_ctrl[(phys - 0x1F801000) >> 2];
-    if (phys == 0x1F801060)
-        return ram_size_reg;
+        return ReadHardware(phys);
     /* Cache control register */
-    if (phys == 0x1FFE0130 || addr == 0xFFFE0130)
+    if (phys == 0x1FFE0130)
         return cache_ctrl;
     return 0;
 }
@@ -300,7 +295,7 @@ void WriteByte(uint32_t addr, uint8_t data)
     }
     if (phys >= 0x1F801000 && phys < 0x1F803000)
     {
-        WriteHardware(addr, data);
+        WriteHardware(phys, data);
         return;
     }
 }
@@ -338,7 +333,7 @@ void WriteHalf(uint32_t addr, uint16_t data)
     }
     if (phys >= 0x1F801000 && phys < 0x1F803000)
     {
-        WriteHardware(addr, data);
+        WriteHardware(phys, data);
         return;
     }
 }
@@ -376,22 +371,11 @@ void WriteWord(uint32_t addr, uint32_t data)
     }
     if (phys >= 0x1F801000 && phys < 0x1F803000)
     {
-        WriteHardware(addr, data);
-        return;
-    }
-    /* Memory control registers */
-    if (phys >= 0x1F801000 && phys < 0x1F801024)
-    {
-        mem_ctrl[(phys - 0x1F801000) >> 2] = data;
-        return;
-    }
-    if (phys == 0x1F801060)
-    {
-        ram_size_reg = data;
+        WriteHardware(phys, data);
         return;
     }
     /* Cache control */
-    if (phys == 0x1FFE0130 || addr == 0xFFFE0130)
+    if (phys == 0x1FFE0130)
     {
         cache_ctrl = data;
         return;
