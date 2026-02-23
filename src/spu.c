@@ -420,25 +420,23 @@ void SPU_DMA4(uint32_t madr, uint32_t bcr, uint32_t chcr)
     (void)chcr;
 }
 
-/* ---- Audio mixing and clamping (C Fallback) ---- */
-static void SPU_Mix_And_Clamp(int32_t *mix_buf_l, int32_t *mix_buf_r, int16_t *out_buf, int num_samples, int vol_l, int vol_r)
+/* ---- Audio mixing and clamping ---- */
+/* restrict: ml/mr/out never alias; branchless ternary clamp → conditional moves */
+static void SPU_Mix_And_Clamp(int32_t * __restrict__ ml, int32_t * __restrict__ mr,
+                              int16_t * __restrict__ out, int num_samples,
+                              int vol_l, int vol_r)
 {
     for (int i = 0; i < num_samples; i++)
     {
-        /* Apply master volume */
-        int32_t sl = (mix_buf_l[i] * vol_l) >> 14;
-        int32_t sr = (mix_buf_r[i] * vol_r) >> 14;
+        int32_t sl = (ml[i] * vol_l) >> 14;
+        int32_t sr = (mr[i] * vol_r) >> 14;
 
-        /* Clamping (Saturation) */
-        if (sl > 32767) sl = 32767;
-        else if (sl < -32768) sl = -32768;
+        /* Branchless clamp — compiler emits slt+movn/movz on MIPS */
+        sl = (sl >  32767) ?  32767 : (sl < -32768) ? -32768 : sl;
+        sr = (sr >  32767) ?  32767 : (sr < -32768) ? -32768 : sr;
 
-        if (sr > 32767) sr = 32767;
-        else if (sr < -32768) sr = -32768;
-
-        /* Write to final interleaved output buffer (Stereo) */
-        out_buf[i * 2]     = (int16_t)sl;
-        out_buf[i * 2 + 1] = (int16_t)sr;
+        out[i * 2]     = (int16_t)sl;
+        out[i * 2 + 1] = (int16_t)sr;
     }
 }
 
@@ -470,9 +468,15 @@ void SPU_GenerateSamples(void)
         if (!v->active)
             continue;
 
+        /* Hoist constant voice fields to locals (avoids alias-induced reloads
+         * — compiler may fear mix_buf writes alias the Voice struct).          */
+        int32_t v_vol_l = v->vol_l;
+        int32_t v_vol_r = v->vol_r;
+        uint32_t v_pitch = v->pitch;
+
         for (int s = 0; s < SAMPLES_PER_FRAME; s++) {
-            /* Decode block if needed */
-            if (!v->block_decoded) {
+            /* Decode block if needed (rare: only at block boundaries) */
+            if (__builtin_expect(!v->block_decoded, 0)) {
                 decode_adpcm_block(v, v->current_addr);
                 if (!v->active)
                     break; /* Voice stopped by loop-end with no repeat */
@@ -483,20 +487,20 @@ void SPU_GenerateSamples(void)
             int16_t pcm = v->decoded[sample_idx];
 
             /* Apply voice volume (0x3FFF = max, 14-bit range) and accumulate */
-            mix_buf_l[s] += ((int32_t)pcm * v->vol_l) >> 14;
-            mix_buf_r[s] += ((int32_t)pcm * v->vol_r) >> 14;
+            mix_buf_l[s] += ((int32_t)pcm * v_vol_l) >> 14;
+            mix_buf_r[s] += ((int32_t)pcm * v_vol_r) >> 14;
 
             /* Advance sample position by pitch */
-            v->sample_pos += v->pitch;
+            v->sample_pos += v_pitch;
 
-            /* Check if we've crossed into the next 28-sample block */
-            if ((v->sample_pos >> 12) >= 28) {
-                while ((v->sample_pos >> 12) >= 28) {
+            /* Check if we've crossed into the next 28-sample block (rare) */
+            if (__builtin_expect((v->sample_pos >> 12) >= 28, 0)) {
+                do {
                     v->sample_pos -= (28 << 12);
                     v->current_addr += 16; /* 16 bytes per ADPCM block */
                     v->current_addr &= (SPU_RAM_SIZE - 1);
-                    v->block_decoded = 0;
-                }
+                } while ((v->sample_pos >> 12) >= 28);
+                v->block_decoded = 0;
                 /* Decode next block immediately to handle flags and have valid samples */
                 decode_adpcm_block(v, v->current_addr);
                 if (!v->active)
