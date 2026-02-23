@@ -931,7 +931,6 @@ static void gte_ncds_core(R3000CPU *cpu, int v, int sf, int lm)
     int64_t m2 = ((int64_t)g * (int16_t)(int32_t)D(d_IR2)) << 4;
     int64_t m3 = ((int64_t)b * (int16_t)(int32_t)D(d_IR3)) << 4;
 
-    store_mac_ir(cpu, m1, m2, m3, sf, lm);
     interpolate_color_acc(cpu, m1, m2, m3, sf, lm);
     push_color(cpu);
 }
@@ -982,7 +981,6 @@ static void gte_cmd_cdp(R3000CPU *cpu, int sf, int lm)
     int64_t m2 = ((int64_t)g * (int16_t)(int32_t)D(d_IR2)) << 4;
     int64_t m3 = ((int64_t)b * (int16_t)(int32_t)D(d_IR3)) << 4;
 
-    store_mac_ir(cpu, m1, m2, m3, sf, lm);
     interpolate_color_acc(cpu, m1, m2, m3, sf, lm);
     push_color(cpu);
 }
@@ -1045,7 +1043,6 @@ static void gte_cmd_intpl(R3000CPU *cpu, int sf, int lm)
     int64_t m2 = (int64_t)(int16_t)(int32_t)D(d_IR2) << 12;
     int64_t m3 = (int64_t)(int16_t)(int32_t)D(d_IR3) << 12;
 
-    store_mac_ir(cpu, m1, m2, m3, sf, lm);
     interpolate_color_acc(cpu, m1, m2, m3, sf, lm);
     push_color(cpu);
 }
@@ -1063,7 +1060,6 @@ static void gte_cmd_dcpl(R3000CPU *cpu, int sf, int lm)
     int64_t m2 = ((int64_t)g * (int16_t)(int32_t)D(d_IR2)) << 4;
     int64_t m3 = ((int64_t)b * (int16_t)(int32_t)D(d_IR3)) << 4;
 
-    store_mac_ir(cpu, m1, m2, m3, sf, lm);
     interpolate_color_acc(cpu, m1, m2, m3, sf, lm);
     push_color(cpu);
 }
