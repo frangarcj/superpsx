@@ -124,6 +124,7 @@ extern uint32_t *code_buffer;
 extern uint32_t *code_ptr;
 extern uint32_t *abort_trampoline_addr;
 extern uint32_t *call_c_trampoline_addr;
+extern uint32_t *call_c_trampoline_lite_addr;
 
 /* ================================================================
  *  Shared state — Page Table (Lookup)
@@ -240,6 +241,7 @@ void emit_sync_reg(int r, int host_reg);
 void emit_flush_pinned(void);
 void emit_reload_pinned(void);
 void emit_call_c(uint32_t func_addr);
+void emit_call_c_lite(uint32_t func_addr);
 void emit_abort_check(void);
 void emit_load_imm32(int hwreg, uint32_t val);
 

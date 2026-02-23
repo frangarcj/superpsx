@@ -166,7 +166,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
             int32_t soff_gbu = (int32_t)(code_ptr - gbu_slow - 1);
             *gbu_slow = (*gbu_slow & 0xFFFF0000) | ((uint32_t)soff_gbu & 0xFFFF);
 
-            emit_call_c((uint32_t)GPU_ReadStatus);
+            emit_call_c_lite((uint32_t)GPU_ReadStatus);
 
             if (!dynarec_load_defer)
                 emit_store_psx_reg(rt_psx, REG_V0);
@@ -311,7 +311,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         func_addr = (uint32_t)ReadHalf;
     else
         func_addr = (uint32_t)ReadByte;
-    emit_call_c(func_addr);
+    emit_call_c_lite(func_addr);
 
     if (size >= 2)
         emit_abort_check(); /* AdEL on misaligned addr */
@@ -511,7 +511,7 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         func_addr = (uint32_t)WriteHalf;
     else
         func_addr = (uint32_t)WriteByte;
-    emit_call_c(func_addr);
+    emit_call_c_lite(func_addr);
 
     if (size >= 2)
         emit_abort_check(); /* AdES on misaligned addr */
@@ -597,7 +597,7 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
 
     EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
     EMIT_MOVE(REG_A1, REG_V0); /* a1 = cur_rt */
-    emit_call_c(is_left ? (uint32_t)Helper_LWL : (uint32_t)Helper_LWR);
+    emit_call_c_lite(is_left ? (uint32_t)Helper_LWL : (uint32_t)Helper_LWR);
 
     /* @done: patch forward branches */
     int32_t doff2 = (int32_t)(code_ptr - fast_done - 1);
@@ -692,7 +692,7 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
 
     EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
     EMIT_MOVE(REG_A1, REG_T2); /* a1 = rt_val */
-    emit_call_c(is_left ? (uint32_t)Helper_SWL : (uint32_t)Helper_SWR);
+    emit_call_c_lite(is_left ? (uint32_t)Helper_SWL : (uint32_t)Helper_SWR);
 
     /* @done: patch forward branches */
     int32_t doff2 = (int32_t)(code_ptr - fast_done - 1);

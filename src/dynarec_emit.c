@@ -125,6 +125,17 @@ void emit_call_c(uint32_t func_addr)
     EMIT_NOP();
 }
 
+void emit_call_c_lite(uint32_t func_addr)
+{
+    /* Lightweight trampoline for C helpers that do NOT read/write cpu.regs[].
+     * Only flushes/reloads caller-saved pinned regs (V1, T3-T9), saving 8
+     * instructions vs the full trampoline.  Safe for memory R/W, LWL/LWR,
+     * SWL/SWR helpers. */
+    emit_load_imm32(REG_T0, func_addr);
+    EMIT_JAL_ABS((uint32_t)call_c_trampoline_lite_addr);
+    EMIT_NOP();
+}
+
 /*
  * Emit a mid-block abort check after a C helper that may trigger a PSX
  * exception (ADD/SUB/ADDI overflow, LW/LH/SH/SW alignment, CpU, etc.).

@@ -878,7 +878,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         }
         EMIT_MOVE(REG_A0, REG_T0);
         EMIT_MOVE(REG_A1, REG_T2);
-        emit_call_c((uint32_t)WriteWord);
+        emit_call_c_lite((uint32_t)WriteWord);
 
         /* @done: patch forward branches */
         {
