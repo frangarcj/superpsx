@@ -85,6 +85,8 @@ int buf_image_ptr = 0;
 
 uint32_t vram_gen_counter = 0;
 
+uint64_t gpu_busy_until = 0;
+
 /* ── superpsx.h public GPU functions ────────────────────────────────── */
 
 void Init_Graphics(void) {}
