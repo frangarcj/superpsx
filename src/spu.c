@@ -45,9 +45,16 @@ typedef struct {
     int      block_decoded;  /* 1 = decoded[] is valid for current_addr */
 
     /* ADSR envelope state */
-    int32_t  adsr_vol;       /* Current ADSR envelope volume: 0..0x7FFF */
+    int32_t   adsr_vol;      /* Current ADSR envelope volume: 0..0x7FFF */
     AdsrPhase adsr_phase;    /* Current ADSR phase */
-    int32_t  adsr_counter;   /* Envelope step counter (incremented each sample) */
+    int32_t   adsr_counter;  /* Envelope step counter (incremented each sample) */
+
+    /* Cached ADSR tick parameters — precomputed on phase/register change, NOT per-sample */
+    int32_t   adsr_ci;       /* CounterIncrement for current phase (0..0x8000) */
+    int32_t   adsr_step;     /* Signed step per counter overflow (direction applied) */
+    int8_t    adsr_exp;      /* 1 = current phase is exponential */
+    int8_t    adsr_inc;      /* 1 = current phase increases volume (0 = decreases) */
+    int32_t   adsr_sl;       /* Sustain level threshold (from adsr_lo[3:0]) */
 } SPU_Voice;
 
 static SPU_Voice voices[SPU_NUM_VOICES];
@@ -117,155 +124,128 @@ static int spu_initialized = 0;
  *   Exponential increase (fake): when AdsrLevel > 0x6000, halve step (divide by 4 via sub-shift)
  */
 
-static inline int imax(int a, int b) { return a > b ? a : b; }
-
-/* Compute one ADSR envelope tick.  Called once per 44100Hz sample. */
-static void adsr_tick(SPU_Voice *v)
+/* Precompute adsr_ci / adsr_step / adsr_exp / adsr_inc / adsr_sl
+ * from the current phase and register values.
+ * Called ONCE per phase change — NOT per sample.                          */
+static void adsr_reload_params(SPU_Voice *v)
 {
-    int32_t vol = v->adsr_vol;
-
-    /* Decode register fields */
     uint16_t lo = v->adsr_lo;
     uint16_t hi = v->adsr_hi;
 
-    int ar_mode  = (lo >> 15) & 1;
-    int ar_shift = (lo >> 10) & 0x1F;
-    int ar_step  = (lo >> 8)  & 0x03;
-    int dr_shift = (lo >> 4)  & 0x0F;
-    int sl_level = (int32_t)(((lo & 0x0F) + 1) << 11); /* sustain threshold 0x800..0x8000 */
-
-    int sm_mode  = (hi >> 15) & 1;
-    int sd_dir   = (hi >> 14) & 1;  /* 0=increase, 1=decrease */
-    int sr_shift = (hi >> 8)  & 0x1F;
-    int sr_step  = (hi >> 6)  & 0x03;
-    int rm_mode  = (hi >> 5)  & 1;
-    int rr_shift = hi          & 0x1F;
+    /* Sustain level threshold: same for all phases (from adsr_lo bits 3-0) */
+    v->adsr_sl = (int32_t)(((lo & 0x0F) + 1) << 11);
 
     int shift, step_idx, is_exp, is_dec;
-    int32_t base_step, counter_inc, step;
 
     switch (v->adsr_phase) {
     case ADSR_ATTACK:
-        shift     = ar_shift;
-        step_idx  = ar_step;
-        is_exp    = ar_mode;
-        is_dec    = 0;
+        shift    = (lo >> 10) & 0x1F;
+        step_idx = (lo >>  8) & 0x03;
+        is_exp   = (lo >> 15) & 1;
+        is_dec   = 0;
         break;
     case ADSR_DECAY:
-        shift     = dr_shift << 2; /* DR is 4-bit; hardware uses (dr<<2)|3 effectively */
-        /* Actually: DR uses shift directly but limited to 4 bits.
-         * The hardware formula: shift_val = dr_shift * 4 + 3 (to map 4-bit to same range)
-         * However psx-spx says DR shift field is 4 bits = 0..15 used directly as shift.
-         * For decay the step is always the maximum (+7) which means step_idx=0. */
-        /* Re-read spec: Decay uses bits 7-4 as shift directly (already a 4-bit shift field).
-         * Decay is always exponential decrease, step=+7 (step_idx=0 with sign flip). */
-        shift     = dr_shift;
-        step_idx  = 0;
-        is_exp    = 1;
-        is_dec    = 1;
+        shift    = (lo >>  4) & 0x0F;
+        step_idx = 0;
+        is_exp   = 1;
+        is_dec   = 1;
         break;
     case ADSR_SUSTAIN:
-        shift     = sr_shift;
-        step_idx  = sr_step;
-        is_exp    = sm_mode;
-        is_dec    = sd_dir;
+        shift    = (hi >>  8) & 0x1F;
+        step_idx = (hi >>  6) & 0x03;
+        is_exp   = (hi >> 15) & 1;
+        is_dec   = (hi >> 14) & 1;
         break;
     case ADSR_RELEASE:
-        shift     = rr_shift;
-        step_idx  = 0;  /* Release step always = +7 base */
-        is_exp    = rm_mode;
-        is_dec    = 1;
+        shift    =  hi        & 0x1F;
+        step_idx = 0;
+        is_exp   = (hi >>  5) & 1;
+        is_dec   = 1;
         break;
-    case ADSR_OFF:
-    default:
+    default: /* ADSR_OFF */
+        v->adsr_ci = 0; v->adsr_step = 0; v->adsr_exp = 0; v->adsr_inc = 0;
         return;
     }
 
-    /* Compute base step: (7 - step_idx) << max(0, 11 - shift) */
-    {
-        int step_val = 7 - step_idx;
-        int shift_up = 11 - shift;
-        if (shift_up > 0)
-            base_step = (int32_t)step_val << shift_up;
-        else
-            base_step = step_val;  /* shift_up <= 0: step doesn't grow further */
-    }
+    /* CounterIncrement = 0x8000 >> max(0, shift-11) */
+    int ci_shift = shift - 11;
+    v->adsr_ci = (ci_shift > 0) ? (0x8000 >> ci_shift) : 0x8000;
 
-    /* Compute counter increment: 0x8000 >> max(0, shift - 11) */
-    {
-        int shift_down = shift - 11;
-        if (shift_down > 0)
-            counter_inc = (int32_t)0x8000 >> shift_down;
-        else
-            counter_inc = 0x8000;
-    }
+    /* BaseStep = (7-step_idx) << max(0, 11-shift); apply direction */
+    int su = 11 - shift;
+    int32_t base = (su > 0) ? ((7 - step_idx) << su) : (7 - step_idx);
+    v->adsr_step = is_dec ? -base : base;
+    v->adsr_exp  = (int8_t)is_exp;
+    v->adsr_inc  = (int8_t)(!is_dec);
+}
 
-    /* Apply direction sign to step */
-    if (is_dec)
-        step = -base_step;
-    else
-        step = base_step;
+/* Advance ADSR envelope by one 44100 Hz sample tick.
+ *
+ * Hot path (counter hasn't overflowed): load ci, add, compare, return — ~4 ops.
+ * Overflow path (rare): apply step, handle phase transitions.
+ * Phase transitions call adsr_reload_params() to refresh cached params.    */
+static inline void adsr_tick(SPU_Voice *v)
+{
+    /* Fake exponential increase: slow counter when volume is near max.
+     * Checked outside the overflow branch to avoid ci modification issues. */
+    int32_t ci = v->adsr_ci;
+    if (__builtin_expect(v->adsr_exp & v->adsr_inc & (v->adsr_vol > 0x6000), 0))
+        ci >>= 2;
 
-    /* Exponential adjustment */
-    if (is_exp) {
-        if (is_dec) {
-            /* Exponential decrease: scale step by current volume */
-            step = (int32_t)((int64_t)step * vol / 0x8000);
-        } else {
-            /* Exponential increase (fake): when vol > 0x6000, slow down by /4 */
-            if (vol > 0x6000) {
-                /* Divide counter_inc by 4 (same effect as slowing down) */
-                counter_inc >>= 2;
-            }
-        }
-    }
+    v->adsr_counter += ci;
 
-    /* Advance counter; only apply step when counter overflows 0x7FFF */
-    v->adsr_counter += counter_inc;
-    if (v->adsr_counter >= 0x8000) {
-        v->adsr_counter -= 0x8000;
-        vol += step;
-    }
+    /* ---- Common fast path: counter has not overflowed ---- */
+    if (__builtin_expect(v->adsr_counter < 0x8000, 1))
+        return;
 
-    /* Phase transitions and clamping */
+    /* ---- Overflow path (rare): apply envelope step ---- */
+    v->adsr_counter &= 0x7FFF;
+
+    int32_t vol  = v->adsr_vol;
+    int32_t step = v->adsr_step;
+
+    /* Exponential decrease: scale step by current volume (32-bit, no int64) */
+    if (__builtin_expect(v->adsr_exp & !v->adsr_inc, 0))
+        step = (step * vol) >> 15;
+
+    vol += step;
+
+    /* Phase-specific clamping and transitions */
     switch (v->adsr_phase) {
     case ADSR_ATTACK:
-        if (vol >= 0x7FFF || vol < 0) { /* overflow or wrapped */
+        if (vol >= 0x7FFF || vol < 0) {
             vol = 0x7FFF;
-            v->adsr_phase = ADSR_DECAY;
+            v->adsr_phase   = ADSR_DECAY;
             v->adsr_counter = 0;
+            adsr_reload_params(v);
         }
         break;
     case ADSR_DECAY:
         if (vol < 0) vol = 0;
-        if (vol <= sl_level) {
-            vol = sl_level;
-            v->adsr_phase = ADSR_SUSTAIN;
+        if (vol <= v->adsr_sl) {
+            vol             = v->adsr_sl;
+            v->adsr_phase   = ADSR_SUSTAIN;
             v->adsr_counter = 0;
+            adsr_reload_params(v);
         }
         break;
     case ADSR_SUSTAIN:
-        if (is_dec) {
-            if (vol < 0) vol = 0;
-        } else {
-            if (vol > 0x7FFF) vol = 0x7FFF;
-        }
+        if (v->adsr_inc) { if (vol > 0x7FFF) vol = 0x7FFF; }
+        else             { if (vol < 0)       vol = 0;       }
         break;
     case ADSR_RELEASE:
         if (vol < 0) vol = 0;
         if (vol == 0) {
             v->adsr_phase = ADSR_OFF;
-            v->active = 0;
+            v->active     = 0;
         }
         break;
-    case ADSR_OFF:
     default:
         break;
     }
 
-    v->adsr_vol = vol;
-    /* Mirror current envelope volume to the readable register (0..0x7FFF range) */
-    v->adsr_level = (uint16_t)(vol & 0x7FFF);
+    v->adsr_vol   = vol;
+    v->adsr_level = (uint16_t)((uint32_t)vol & 0x7FFF);
 }
 
 /* ---- Get effective voice volume (handle fixed vs sweep mode) ----
@@ -440,6 +420,7 @@ static void process_key_on(uint32_t kon)
             v->adsr_phase   = ADSR_ATTACK;
             v->adsr_counter = 0;
             v->adsr_level   = 0;
+            adsr_reload_params(v);  /* Cache ADSR tick params for Attack phase */
             endx &= ~(1 << i);     /* Clear ENDX bit on Key On */
             DLOG("Voice %d Key On: addr=0x%05" PRIX32 " pitch=0x%04X vol=%d/%d adsr_lo=0x%04X adsr_hi=0x%04X\n",
                  i, v->current_addr, v->pitch, v->vol_l, v->vol_r, v->adsr_lo, v->adsr_hi);
@@ -458,6 +439,7 @@ static void process_key_off(uint32_t koff)
                 /* Transition to Release phase (do not stop immediately) */
                 v->adsr_phase   = ADSR_RELEASE;
                 v->adsr_counter = 0;
+                adsr_reload_params(v);  /* Cache ADSR tick params for Release phase */
             }
         }
     }
@@ -478,8 +460,8 @@ void SPU_WriteReg(uint32_t offset, uint16_t value)
             case 1: v->vol_r = (int16_t)value; break;
             case 2: v->pitch = value; break;
             case 3: v->start_addr = value; break;
-            case 4: v->adsr_lo = value; break;
-            case 5: v->adsr_hi = value; break;
+            case 4: v->adsr_lo = value; if (v->active) adsr_reload_params(v); break;
+            case 5: v->adsr_hi = value; if (v->active) adsr_reload_params(v); break;
             case 6: v->adsr_level = value; break;
             case 7: v->repeat_addr = value; break;
             }
