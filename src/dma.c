@@ -86,8 +86,10 @@ uint32_t DMA_Read(uint32_t addr) {
       case 1:
         return dma_channels[ch].bcr;
       case 2:
-        return dma_channels[ch]
-            .chcr; /* Return live chcr (bit24 may still be set) */
+        /* DMA6/OTC: bit 1 hardwired to 1, only bits 24,28,30 exposed */
+        if (ch == 6)
+          return (dma_channels[ch].chcr & 0x51000000) | 0x00000002;
+        return dma_channels[ch].chcr;
       default:
         return 0;
       }
@@ -124,9 +126,27 @@ void DMA_Write(uint32_t addr, uint32_t data) {
         dma_channels[ch].bcr = data;
         break;
       case 2:
-        dma_channels[ch].chcr = data;
+        /* DMA6/OTC: only bits 24,28,30 are writable; bit 1 hardwired to 1. */
+        if (ch == 6)
+          dma_channels[ch].chcr = (data & 0x51000000) | 0x00000002;
+        else
+          dma_channels[ch].chcr = data;
+
         if (data & 0x01000000) {
-          /* Execute the actual data transfer immediately */
+          /* Check DPCR master enable for this channel */
+          if (!((dma_dpcr >> (ch * 4 + 3)) & 1)) {
+            dma_channels[ch].chcr &= ~0x01000000;
+            break;
+          }
+
+          /* SyncMode=0 channels (incl. DMA6) require bit28 (Start/Trigger) */
+          uint32_t sync_mode = (dma_channels[ch].chcr >> 9) & 3;
+          if (sync_mode == 0 && !(dma_channels[ch].chcr & 0x10000000)) {
+            dma_channels[ch].chcr &= ~0x01000000;
+            break;
+          }
+
+          /* Execute the actual data transfer */
           if (ch == 2)
             GPU_DMA2(dma_channels[ch].madr, dma_channels[ch].bcr,
                      dma_channels[ch].chcr);
@@ -139,9 +159,6 @@ void DMA_Write(uint32_t addr, uint32_t data) {
           else if (ch == 6)
             GPU_DMA6(dma_channels[ch].madr, dma_channels[ch].bcr,
                      dma_channels[ch].chcr);
-
-          /* Determine sync mode from chcr bits 10-9 */
-          uint32_t sync_mode = (data >> 9) & 0x3;
 
           if (ch == 4 && sync_mode == 1) {
             /* SPU DMA mode 1 (sync block): defer completion so that test
@@ -163,10 +180,18 @@ void DMA_Write(uint32_t addr, uint32_t data) {
             dma_pending_channel = ch;
             /* chcr bit24 stays set (busy) until the deferred event fires */
             uint64_t dma_deadline = global_cycles + delay_cycles;
-            Scheduler_ScheduleEvent(SCHED_EVENT_DMA, dma_deadline, DMA_FireCompletion);
+            Scheduler_ScheduleEvent(SCHED_EVENT_DMA, dma_deadline,
+                                    DMA_FireCompletion);
           } else {
-            /* All other channels / modes: complete immediately */
-            dma_complete_channel(ch);
+            /* All other channels / modes: clear bit24 and bit28 immediately */
+            dma_channels[ch].chcr &= ~0x11000000;
+            if (dma_dicr & (1 << (16 + ch))) {
+              dma_dicr |= (1 << (24 + ch));
+              if (dma_dicr & 0x00800000) {
+                dma_dicr |= 0x80000000;
+                SignalInterrupt(3);
+              }
+            }
           }
         }
         break;
