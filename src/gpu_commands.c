@@ -194,8 +194,8 @@ void GPU_WriteGP0(uint32_t data)
             // Flush_GIF(); <-- Removed: batching primitives
 
             // Flush GS texture cache after VRAM upload
-            Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), 0xE);
-            Push_GIF_Data(0, 0x3F); // TEXFLUSH
+            Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), GIF_REG_AD);
+            Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH); // TEXFLUSH
             Flush_GIF();            // Keep this one for VRAM-to-CPU sync
 
             if (vram_tx_x + vram_tx_w > 1024)
@@ -328,8 +328,6 @@ void GPU_WriteGP0(uint32_t data)
                     }
                 }
 
-                uint64_t bitblt = ((uint64_t)PSX_VRAM_FBW << 16) | ((uint64_t)GS_PSM_16S << 24) |
-                                  ((uint64_t)PSX_VRAM_FBW << 48) | ((uint64_t)GS_PSM_16S << 56);
 
                 int y_overlap_down = (dy > sy) && (dy < sy + h);
 
@@ -363,16 +361,16 @@ void GPU_WriteGP0(uint32_t data)
 
                         unsigned __int128 rb_packet[8] __attribute__((aligned(16)));
                         uint64_t *rp = (uint64_t *)rb_packet;
-                        rp[0] = 4 | ((uint64_t)1 << 15) | ((uint64_t)0 << 58) | ((uint64_t)1 << 60);
-                        rp[1] = 0xE;
-                        rp[2] = ((uint64_t)PSX_VRAM_FBW << 16) | ((uint64_t)GS_PSM_16S << 24);
-                        rp[3] = 0x50;
+                        rp[0] = GIF_TAG_LO(4, 1, 0, 0, 0, 1);
+                        rp[1] = GIF_REG_AD;
+                        rp[2] = GS_SET_BITBLTBUF(0, PSX_VRAM_FBW, GS_PSM_16S, 0, 0, 0); /* Local→Host: source fields only */
+                        rp[3] = GS_REG_BITBLTBUF;
                         rp[4] = (uint64_t)ux | ((uint64_t)uy << 16);
-                        rp[5] = 0x51;
-                        rp[6] = (uint64_t)uw_aligned | ((uint64_t)uh << 32);
-                        rp[7] = 0x52;
-                        rp[8] = 1;
-                        rp[9] = 0x53;
+                        rp[5] = GS_REG_TRXPOS;
+                        rp[6] = GS_SET_TRXREG(uw_aligned, uh);
+                        rp[7] = GS_REG_TRXREG;
+                        rp[8] = GS_SET_TRXDIR(1);
+                        rp[9] = GS_REG_TRXDIR;
 
                         dma_channel_send_normal(DMA_CHANNEL_GIF, rb_packet, 5, 0, 0);
                         dma_wait_fast();
@@ -406,11 +404,11 @@ void GPU_WriteGP0(uint32_t data)
                             }
                         }
 
-                        Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), 0xE);
-                        Push_GIF_Data(((uint64_t)GS_PSM_16S << 56) | ((uint64_t)PSX_VRAM_FBW << 48), 0x50);
-                        Push_GIF_Data(((uint64_t)dy << 48) | ((uint64_t)dx << 32), 0x51);
-                        Push_GIF_Data(((uint64_t)h << 32) | (uint64_t)w, 0x52);
-                        Push_GIF_Data(0, 0x53);
+                        Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
+                        Push_GIF_Data(GS_SET_BITBLTBUF(0,0,0, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF);
+                        Push_GIF_Data(GS_SET_TRXPOS(0,0,dx,dy,0), GS_REG_TRXPOS);
+                        Push_GIF_Data(GS_SET_TRXREG(w, h), GS_REG_TRXREG);
+                        Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR);
                         Flush_GIF();
 
                         buf_image_ptr = 0;
@@ -477,23 +475,21 @@ void GPU_WriteGP0(uint32_t data)
                     }
                     else
                     {
-                        Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), 0xE);
-                        Push_GIF_Data(bitblt, 0x50);
-                        uint64_t trxpos = (uint64_t)sx | ((uint64_t)sy << 16) | ((uint64_t)dx << 32) | ((uint64_t)dy << 48);
-                        Push_GIF_Data(trxpos, 0x51);
-                        Push_GIF_Data((uint64_t)w | ((uint64_t)h << 32), 0x52);
-                        Push_GIF_Data(2, 0x53);
+                        Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
+                        Push_GIF_Data(GS_SET_BITBLTBUF(0, PSX_VRAM_FBW, GS_PSM_16S, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF); /* Local→Local: both src and dst */
+                        Push_GIF_Data(GS_SET_TRXPOS(sx, sy, dx, dy, 0), GS_REG_TRXPOS);
+                        Push_GIF_Data(GS_SET_TRXREG(w, h), GS_REG_TRXREG);
+                        Push_GIF_Data(GS_SET_TRXDIR(2), GS_REG_TRXDIR);
                         Flush_GIF();
                     }
                 }
                 else
                 {
-                    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), 0xE);
-                    Push_GIF_Data(bitblt, 0x50);
-                    uint64_t trxpos = (uint64_t)sx | ((uint64_t)sy << 16) | ((uint64_t)dx << 32) | ((uint64_t)dy << 48);
-                    Push_GIF_Data(trxpos, 0x51);
-                    Push_GIF_Data((uint64_t)w | ((uint64_t)h << 32), 0x52);
-                    Push_GIF_Data(2, 0x53);
+                    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
+                    Push_GIF_Data(GS_SET_BITBLTBUF(0, PSX_VRAM_FBW, GS_PSM_16S, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF); /* Local→Local: both src and dst */
+                    Push_GIF_Data(GS_SET_TRXPOS(sx, sy, dx, dy, 0), GS_REG_TRXPOS);
+                    Push_GIF_Data(GS_SET_TRXREG(w, h), GS_REG_TRXREG);
+                    Push_GIF_Data(GS_SET_TRXDIR(2), GS_REG_TRXDIR);
                     Flush_GIF();
                 }
             }
@@ -572,26 +568,16 @@ void GPU_WriteGP0(uint32_t data)
             else
                 gpu_stat = (gpu_stat & ~0x87FF) | (data & 0x7FF);
 
-            Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), 0xE);
-            uint64_t tex0 = 0;
-            tex0 |= (uint64_t)PSX_VRAM_FBW << 14;
-            tex0 |= (uint64_t)GS_PSM_16S << 20;
-            tex0 |= (uint64_t)10 << 26;
-            tex0 |= (uint64_t)9 << 30;
-            tex0 |= (uint64_t)1 << 34;
-            tex0 |= (uint64_t)0 << 35;
-
-            Push_GIF_Data(tex0, 0x06);
-            Push_GIF_Data(0, 0x3F);
+            Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
+            /* Use SDK macro for TEX0 packing (small variant covers fields we need) */
+            Push_GIF_Data(GS_SET_TEX0_SMALL(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9, 1, 0), GS_REG_TEX0);
+            Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH);
 
             uint32_t dither_enable = (data >> 9) & 1;
             dither_enabled = dither_enable;
-            Push_GIF_Data(dither_enable, 0x45);
+            Push_GIF_Data(GS_SET_DTHE(dither_enable), GS_REG_DTHE);
 
-            {
-                uint64_t alpha_reg = Get_Alpha_Reg(trans_mode);
-                Push_GIF_Data(alpha_reg, 0x42);
-            }
+            Push_GIF_Data(Get_Alpha_Reg(trans_mode), GS_REG_ALPHA_1);
 
             // Flush_GIF(); <-- Removed: batching register changes
         }
@@ -606,14 +592,14 @@ void GPU_WriteGP0(uint32_t data)
             draw_clip_x1 = data & 0x3FF;
             draw_clip_y1 = (data >> 10) & 0x3FF;
             {
-                Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), 0xE);
+                Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), GIF_REG_AD);
                 uint64_t scax0 = draw_clip_x1;
                 // PSX E4 boundary is EXCLUSIVE: area is [X1,X2) x [Y1,Y2)
                 // GS SCISSOR is inclusive, so use X2-1 and Y2-1
                 uint64_t scax1 = (draw_clip_x2 > 0) ? (draw_clip_x2 - 1) : 0;
                 uint64_t scay0 = draw_clip_y1;
                 uint64_t scay1 = (draw_clip_y2 > 0) ? (draw_clip_y2 - 1) : 0;
-                Push_GIF_Data(scax0 | (scax1 << 16) | (scay0 << 32) | (scay1 << 48), 0x40);
+                Push_GIF_Data(GS_SET_SCISSOR(scax0, scax1, scay0, scay1), GS_REG_SCISSOR_1);
             }
         }
     }
@@ -627,14 +613,14 @@ void GPU_WriteGP0(uint32_t data)
             draw_clip_x2 = data & 0x3FF;
             draw_clip_y2 = (data >> 10) & 0x3FF;
             {
-                Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), 0xE);
+                Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), GIF_REG_AD);
                 uint64_t scax0 = draw_clip_x1;
                 // PSX E4 boundary is EXCLUSIVE: area is [X1,X2) x [Y1,Y2)
                 // GS SCISSOR is inclusive, so use X2-1 and Y2-1
                 uint64_t scax1 = (draw_clip_x2 > 0) ? (draw_clip_x2 - 1) : 0;
                 uint64_t scay0 = draw_clip_y1;
                 uint64_t scay1 = (draw_clip_y2 > 0) ? (draw_clip_y2 - 1) : 0;
-                Push_GIF_Data(scax0 | (scax1 << 16) | (scay0 << 32) | (scay1 << 48), 0x40);
+                Push_GIF_Data(GS_SET_SCISSOR(scax0, scax1, scay0, scay1), GS_REG_SCISSOR_1);
             }
         }
     }
@@ -668,11 +654,9 @@ void GPU_WriteGP0(uint32_t data)
         gpu_stat = (gpu_stat & ~0x1800) | (mask_set_bit << 11) | (mask_check_bit << 12);
         // GS: FBA_1 forces bit 15 on all written pixels (mask_set_bit)
         // GS: DATE+DATM in TEST_1 prevents writing to pixels with bit 15 set (mask_check_bit)
-        {
-            Push_GIF_Tag(GIF_TAG_LO(2, 1, 0, 0, 0, 1), 0xE);
-            Push_GIF_Data((uint64_t)mask_set_bit, 0x4A); // FBA_1
-            Push_GIF_Data(Get_Base_TEST(), 0x47);        // TEST_1
-        }
+        Push_GIF_Tag(GIF_TAG_LO(2, 1, 0, 0, 0, 1), GIF_REG_AD);
+        Push_GIF_Data(GS_SET_FBA(mask_set_bit), GS_REG_FBA_1); // FBA_1 via SDK macro
+        Push_GIF_Data(Get_Base_TEST(), GS_REG_TEST_1);        // TEST_1 (now composed via GS_SET_TEST)
         break;
     case 0x1F: // GPU IRQ Request (edge-triggered)
         /* Per psx-spx: I_STAT bits are edge-triggered — they get set ONLY
@@ -754,28 +738,24 @@ void GPU_WriteGP1(uint32_t data)
         // Clear GS VRAM to black (PSX GPU reset clears VRAM)
         {
             Flush_GIF();
-            Push_GIF_Tag(GIF_TAG_LO(5, 1, 0, 0, 0, 1), 0xE);
+            Push_GIF_Tag(GIF_TAG_LO(5, 1, 0, 0, 0, 1), GIF_REG_AD);
             // Temporarily set full VRAM scissor
-            uint64_t full_scissor = 0 | ((uint64_t)(PSX_VRAM_WIDTH - 1) << 16) |
-                                    ((uint64_t)0 << 32) | ((uint64_t)(PSX_VRAM_HEIGHT - 1) << 48);
-            Push_GIF_Data(full_scissor, 0x40);
-            Push_GIF_Data(6, 0x00); // PRIM = SPRITE
-            Push_GIF_Data(GS_set_RGBAQ(0, 0, 0, 0, 0x3F800000), 0x01);
+            Push_GIF_Data(GS_SET_SCISSOR(0, PSX_VRAM_WIDTH - 1, 0, PSX_VRAM_HEIGHT - 1), GS_REG_SCISSOR_1);
+            Push_GIF_Data(GS_PACK_PRIM_FROM_INT(6), GS_REG_PRIM); // PRIM = SPRITE
+            Push_GIF_Data(GS_SET_RGBAQ(0, 0, 0, 0, 0x3F800000), GS_REG_RGBAQ);
             int32_t x1 = (0 + 2048) << 4;
             int32_t y1 = (0 + 2048) << 4;
             int32_t x2 = (PSX_VRAM_WIDTH + 2048) << 4;
             int32_t y2 = (PSX_VRAM_HEIGHT + 2048) << 4;
-            Push_GIF_Data(GS_set_XYZ(x1, y1, 0), 0x05);
-            Push_GIF_Data(GS_set_XYZ(x2, y2, 0), 0x05);
+            Push_GIF_Data(GS_SET_XYZ(x1, y1, 0), GS_REG_XYZ2);
+            Push_GIF_Data(GS_SET_XYZ(x2, y2, 0), GS_REG_XYZ2);
             Flush_GIF();
 
             // Restore scissor to current drawing area (PSX E4 is exclusive)
-            Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), 0xE);
+            Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), GIF_REG_AD);
             uint64_t sc_x2 = (draw_clip_x2 > 0) ? (draw_clip_x2 - 1) : 0;
             uint64_t sc_y2 = (draw_clip_y2 > 0) ? (draw_clip_y2 - 1) : 0;
-            uint64_t orig_scissor = (uint64_t)draw_clip_x1 | (sc_x2 << 16) |
-                                    ((uint64_t)draw_clip_y1 << 32) | (sc_y2 << 48);
-            Push_GIF_Data(orig_scissor, 0x40);
+            Push_GIF_Data(GS_SET_SCISSOR(draw_clip_x1, sc_x2, draw_clip_y1, sc_y2), GS_REG_SCISSOR_1);
             Flush_GIF();
 
             // Clear shadow VRAM

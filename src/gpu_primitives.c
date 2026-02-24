@@ -154,30 +154,30 @@ void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
     if (is_semi_trans)
         nregs++;
 
-    Push_GIF_Tag(GIF_TAG_LO(nregs, 1, 0, 0, 0, 1), 0xE); // A+D mode
+    Push_GIF_Tag(GIF_TAG_LO(nregs, 1, 0, 0, 0, 1), GIF_REG_AD); // A+D mode
 
     if (is_semi_trans)
     {
-        Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), 0x42); // ALPHA_1
+        Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), GS_REG_ALPHA_1); // ALPHA_1
     }
 
-    Push_GIF_Data(prim_reg, 0x00); // PRIM register
+    Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM); // PRIM register
 
     // Vertex 0 (lower Y / lower X = PSX start)
-    Push_GIF_Data(GS_set_RGBAQ(color0 & 0xFF, (color0 >> 8) & 0xFF,
+    Push_GIF_Data(GS_SET_RGBAQ(color0 & 0xFF, (color0 >> 8) & 0xFF,
                                (color0 >> 16) & 0xFF, 0x80, 0x3F800000),
-                  0x01);
+                  GS_REG_RGBAQ);
     int32_t gx0 = ((int32_t)x0 + draw_offset_x + 2048) << 4;
     int32_t gy0 = ((int32_t)y0 + draw_offset_y + 2048) << 4;
-    Push_GIF_Data(GS_set_XYZ(gx0, gy0, 0), 0x05);
+    Push_GIF_Data(GS_SET_XYZ(gx0, gy0, 0), GS_REG_XYZ2);
 
     // Vertex 1 (higher Y / higher X = PSX end, not drawn)
-    Push_GIF_Data(GS_set_RGBAQ(color1 & 0xFF, (color1 >> 8) & 0xFF,
+    Push_GIF_Data(GS_SET_RGBAQ(color1 & 0xFF, (color1 >> 8) & 0xFF,
                                (color1 >> 16) & 0xFF, 0x80, 0x3F800000),
-                  0x01);
+                  GS_REG_RGBAQ);
     int32_t gx1 = ((int32_t)x1 + draw_offset_x + 2048) << 4;
     int32_t gy1 = ((int32_t)y1 + draw_offset_y + 2048) << 4;
-    Push_GIF_Data(GS_set_XYZ(gx1, gy1, 0), 0x05);
+    Push_GIF_Data(GS_SET_XYZ(gx1, gy1, 0), GS_REG_XYZ2);
 }
 
 /* ── Main GP0 → GS translator ────────────────────────────────────── */
@@ -295,22 +295,22 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 int32_t gy1 = ((int32_t)(verts[3].y + 1) + draw_offset_y + 2048) << 4;
 
                 uint32_t c = verts[0].color;
-                uint64_t rgbaq = GS_set_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000);
+                uint64_t rgbaq = GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000);
 
                 int is_semi_trans_sprite = (cmd & 0x02) != 0;
                 int nregs_sprite = 7;
                 if (is_semi_trans_sprite)
                     nregs_sprite += 1;
-                Push_GIF_Tag(GIF_TAG_LO(nregs_sprite, 1, 0, 0, 0, 1), 0xE);
+                Push_GIF_Tag(GIF_TAG_LO(nregs_sprite, 1, 0, 0, 0, 1), GIF_REG_AD);
                 if (is_semi_trans_sprite)
-                    Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), 0x42);
-                Push_GIF_Data(sprite_prim, 0x00);
-                Push_GIF_Data(GS_set_XYZ(u0 << 4, v0 << 4, 0), 0x03);
-                Push_GIF_Data(rgbaq, 0x01);
-                Push_GIF_Data(GS_set_XYZ(gx0, gy0, 0), 0x05);
-                Push_GIF_Data(GS_set_XYZ(u1 << 4, v1 << 4, 0), 0x03);
-                Push_GIF_Data(rgbaq, 0x01);
-                Push_GIF_Data(GS_set_XYZ(gx1, gy1, 0), 0x05);
+                    Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), GS_REG_ALPHA_1);
+                Push_GIF_Data(GS_PACK_PRIM_FROM_INT(sprite_prim), GS_REG_PRIM);
+                Push_GIF_Data(GS_SET_XYZ(u0 << 4, v0 << 4, 0), GS_REG_UV);
+                Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
+                Push_GIF_Data(GS_SET_XYZ(gx0, gy0, 0), GS_REG_XYZ2);
+                Push_GIF_Data(GS_SET_XYZ(u1 << 4, v1 << 4, 0), GS_REG_UV);
+                Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
+                Push_GIF_Data(GS_SET_XYZ(gx1, gy1, 0), GS_REG_XYZ2);
             }
             else
             {
@@ -377,55 +377,37 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                         ndata += 2; // TEX0 + TEXFLUSH restore
                     if (t == 1 && is_textured)
                         ndata += 1; // TEST restore
-                    Push_GIF_Tag(GIF_TAG_LO(ndata, (t == 1) ? 1 : 0, 0, 0, 0, 1), 0xE);
+                    Push_GIF_Tag(GIF_TAG_LO(ndata, (t == 1) ? 1 : 0, 0, 0, 0, 1), GIF_REG_AD);
 
                     if (t == 0)
                     {
-                        Push_GIF_Data((uint64_t)use_dither, 0x45); // DTHE
+                        Push_GIF_Data(GS_SET_DTHE(use_dither), GS_REG_DTHE); // DTHE
                         if (is_semi_trans)
-                            Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), 0x42);
+                            Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), GS_REG_ALPHA_1);
                         if (poly_clut_decoded)
                         {
-                            uint64_t tex0_c = 0;
+                            uint64_t tex0_c;
                             if (poly_hw_clut)
                             {
-                                /* HW CLUT: indexed texture in PSMT8/4, GS does CLUT lookup */
                                 int psm = (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8;
-                                tex0_c |= (uint64_t)poly_hw_tbp0;               /* TBP0: indexed data */
-                                tex0_c |= (uint64_t)4 << 14;                    /* TBW: 256/64 = 4 */
-                                tex0_c |= (uint64_t)psm << 20;                  /* PSM: PSMT8 or PSMT4 */
-                                tex0_c |= (uint64_t)8 << 26;                    /* TW: 2^8 = 256 */
-                                tex0_c |= (uint64_t)8 << 30;                    /* TH: 2^8 = 256 */
-                                tex0_c |= (uint64_t)1 << 34;                    /* TCC: RGBA */
-                                tex0_c |= (uint64_t)(is_raw_tex ? 1 : 0) << 35; /* TFX */
-                                tex0_c |= (uint64_t)poly_hw_cbp << 37;          /* CBP: CLUT base */
-                                tex0_c |= (uint64_t)GS_PSM_16 << 51;            /* CPSM: CT16 */
-                                /* CSM=0 (bit 55), CSA=0 (bits 56-60) */
-                                tex0_c |= (uint64_t)1 << 61; /* CLD: load if changed */
+                                tex0_c = GS_SET_TEX0(poly_hw_tbp0, 4, psm, 8, 8, 1, (is_raw_tex ? 1 : 0), poly_hw_cbp, GS_PSM_16, 0, 0, 1);
                             }
                             else
                             {
-                                /* SW decode: CT16S cache at Y=512 → TBP0=4096 */
-                                tex0_c |= (uint64_t)4096; /* TBP0 */
-                                tex0_c |= (uint64_t)PSX_VRAM_FBW << 14;
-                                tex0_c |= (uint64_t)GS_PSM_16S << 20;
-                                tex0_c |= (uint64_t)10 << 26;
-                                tex0_c |= (uint64_t)10 << 30;
-                                tex0_c |= (uint64_t)1 << 34;
-                                tex0_c |= (uint64_t)(is_raw_tex ? 1 : 0) << 35;
+                                tex0_c = GS_SET_TEX0_SMALL(4096, PSX_VRAM_FBW, GS_PSM_16S, 10, 10, 1, (is_raw_tex ? 1 : 0));
                             }
-                            Push_GIF_Data(tex0_c, 0x06);
-                            Push_GIF_Data(0, 0x3F); // TEXFLUSH
+                            Push_GIF_Data(tex0_c, GS_REG_TEX0); // TEX0
+                            Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH); // TEXFLUSH
                         }
                         // Alpha test: skip transparent pixels (STP=0 → alpha=0)
                         if (is_textured)
                         {
                             uint64_t test_at = (uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST();
-                            Push_GIF_Data(test_at, 0x47);
+                            Push_GIF_Data(test_at, GS_REG_TEST_1);
                         }
                     }
 
-                    Push_GIF_Data(prim_reg, 0x00);
+                    Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
 
                     for (int v = 0; v < 3; v++)
                     {
@@ -443,31 +425,25 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                                 u = Apply_Tex_Window_U(verts[i].uv & 0xFF) + poly_tex_page_x;
                                 v_coord = Apply_Tex_Window_V((verts[i].uv >> 8) & 0xFF) + poly_tex_page_y;
                             }
-                            Push_GIF_Data(GS_set_XYZ(u << 4, v_coord << 4, 0), 0x03);
+                            Push_GIF_Data(GS_SET_XYZ(u << 4, v_coord << 4, 0), GS_REG_UV);
                         }
                         uint32_t c = verts[i].color;
-                        Push_GIF_Data(GS_set_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000), 0x01);
+                        Push_GIF_Data(GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000), GS_REG_RGBAQ);
 
                         int32_t gx = ((int32_t)verts[i].x + draw_offset_x + 2048) << 4;
                         int32_t gy = ((int32_t)verts[i].y + draw_offset_y + 2048) << 4;
-                        Push_GIF_Data(GS_set_XYZ(gx, gy, 0), 0x05);
+                        Push_GIF_Data(GS_SET_XYZ(gx, gy, 0), GS_REG_XYZ2);
                     }
                     // Restore TEX0 after second triangle
                     if (t == 1 && poly_clut_decoded)
                     {
-                        uint64_t tex0_r = 0;
-                        tex0_r |= (uint64_t)PSX_VRAM_FBW << 14;
-                        tex0_r |= (uint64_t)GS_PSM_16S << 20;
-                        tex0_r |= (uint64_t)10 << 26;
-                        tex0_r |= (uint64_t)9 << 30;
-                        tex0_r |= (uint64_t)1 << 34;
-                        Push_GIF_Data(tex0_r, 0x06);
-                        Push_GIF_Data(0, 0x3F);
+                        Push_GIF_Data(GS_SET_TEX0_SMALL(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9, 1, 0), GS_REG_TEX0);
+                        Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH);
                     }
                     // Restore alpha test after second triangle
                     if (t == 1 && is_textured)
                     {
-                        Push_GIF_Data(Get_Base_TEST(), 0x47);
+                        Push_GIF_Data(Get_Base_TEST(), GS_REG_TEST_1);
                     }
                 }
             }
@@ -525,52 +501,45 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 ndata += 4; // TEX0+TEXFLUSH before + TEX0+TEXFLUSH after
             if (is_textured)
                 ndata += 2; // TEST enable + TEST restore
-            Push_GIF_Tag(GIF_TAG_LO(ndata, 1, 0, 0, 0, 1), 0xE);
+            Push_GIF_Tag(GIF_TAG_LO(ndata, 1, 0, 0, 0, 1), GIF_REG_AD);
 
-            Push_GIF_Data((uint64_t)use_dither_tri, 0x45); // DTHE
+            Push_GIF_Data(GS_SET_DTHE(use_dither_tri), GS_REG_DTHE); // DTHE
             if (is_semi_trans_tri)
-                Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), 0x42);
+                Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), GS_REG_ALPHA_1);
 
             if (tri_clut_decoded)
             {
-                uint64_t tex0_c = 0;
+                uint64_t tex0_c;
                 if (tri_hw_clut)
                 {
                     int psm = (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8;
-                    tex0_c |= (uint64_t)tri_hw_tbp0;
-                    tex0_c |= (uint64_t)4 << 14;
-                    tex0_c |= (uint64_t)psm << 20;
-                    tex0_c |= (uint64_t)8 << 26;
-                    tex0_c |= (uint64_t)8 << 30;
-                    tex0_c |= (uint64_t)1 << 34;
-                    tex0_c |= (uint64_t)(is_raw_tex_tri ? 1 : 0) << 35;
-                    tex0_c |= (uint64_t)tri_hw_cbp << 37;
-                    tex0_c |= (uint64_t)GS_PSM_16 << 51; /* CPSM: CT16 */
-                    tex0_c |= (uint64_t)1 << 61;         /* CLD: load CLUT */
+                    tex0_c = GS_SET_TEX0(tri_hw_tbp0, 4, psm, 8, 8, 1, (is_raw_tex_tri ? 1 : 0), tri_hw_cbp, GS_PSM_16, 0, 0, 1);
                 }
                 else
                 {
-                    /* SW decode: CT16S cache at Y=512 → TBP0=4096 */
-                    tex0_c |= (uint64_t)4096; /* TBP0 */
-                    tex0_c |= (uint64_t)PSX_VRAM_FBW << 14;
-                    tex0_c |= (uint64_t)GS_PSM_16S << 20;
-                    tex0_c |= (uint64_t)10 << 26;
-                    tex0_c |= (uint64_t)10 << 30;
-                    tex0_c |= (uint64_t)1 << 34;
-                    tex0_c |= (uint64_t)(is_raw_tex_tri ? 1 : 0) << 35;
+                    tex0_c = GS_SET_TEX0_SMALL(4096, PSX_VRAM_FBW, GS_PSM_16S, 10, 10, 1, (is_raw_tex_tri ? 1 : 0));
                 }
-                Push_GIF_Data(tex0_c, 0x06);
-                Push_GIF_Data(0, 0x3F);
+                Push_GIF_Data(tex0_c, GS_REG_TEX0);
+                Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH);
             }
 
             // Alpha test: skip transparent pixels (STP=0 → alpha=0)
             if (is_textured)
             {
-                uint64_t test_at = (uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST();
-                Push_GIF_Data(test_at, 0x47);
+                uint64_t base_test = Get_Base_TEST();
+                uint64_t ate   = 1;                            // enable alpha test
+                uint64_t atst  = 6;                            // alpha-test function (>=)
+                uint64_t aref  = (base_test >> 4)  & 0xFF;     // 8-bit alpha reference
+                uint64_t afail = (base_test >> 12) & 0x3;      // alpha fail action
+                uint64_t date  = (base_test >> 14) & 0x1;      // destination alpha test enable
+                uint64_t datm  = (base_test >> 15) & 0x1;      // destination alpha test mode
+                uint64_t zte   = (base_test >> 16) & 0x1;      // depth test enable
+                uint64_t ztst  = (base_test >> 17) & 0x3;      // depth test function
+                uint64_t test_at = GS_SET_TEST(ate, atst, aref, afail, date, datm, zte, ztst);
+                Push_GIF_Data(test_at, GS_REG_TEST_1);
             }
 
-            Push_GIF_Data(prim_reg, 0x00);
+            Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
 
             for (int i = 0; i < 3; i++)
             {
@@ -587,30 +556,24 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                         u = Apply_Tex_Window_U(verts[i].uv & 0xFF) + poly_tex_page_x;
                         v_coord = Apply_Tex_Window_V((verts[i].uv >> 8) & 0xFF) + poly_tex_page_y;
                     }
-                    Push_GIF_Data(GS_set_XYZ(u << 4, v_coord << 4, 0), 0x03);
+                    Push_GIF_Data(GS_SET_XYZ(u << 4, v_coord << 4, 0), GS_REG_UV);
                 }
                 uint32_t c = verts[i].color;
-                Push_GIF_Data(GS_set_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000), 0x01);
+                Push_GIF_Data(GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000), GS_REG_RGBAQ);
 
                 int32_t gx = ((int32_t)verts[i].x + draw_offset_x + 2048) << 4;
                 int32_t gy = ((int32_t)verts[i].y + draw_offset_y + 2048) << 4;
-                Push_GIF_Data(GS_set_XYZ(gx, gy, 0), 0x05);
+                        Push_GIF_Data(GS_SET_XYZ(gx, gy, 0), GS_REG_XYZ2);
             }
             if (tri_clut_decoded)
             {
-                uint64_t tex0_r = 0;
-                tex0_r |= (uint64_t)PSX_VRAM_FBW << 14;
-                tex0_r |= (uint64_t)GS_PSM_16S << 20;
-                tex0_r |= (uint64_t)10 << 26;
-                tex0_r |= (uint64_t)9 << 30;
-                tex0_r |= (uint64_t)1 << 34;
-                Push_GIF_Data(tex0_r, 0x06);
-                Push_GIF_Data(0, 0x3F);
+                Push_GIF_Data(GS_SET_TEX0_SMALL(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9, 1, 0), GS_REG_TEX0);
+                Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH);
             }
             // Restore alpha test
             if (is_textured)
             {
-                Push_GIF_Data(Get_Base_TEST(), 0x47);
+                Push_GIF_Data(Get_Base_TEST(), GS_REG_TEST_1);
             }
         }
     }
@@ -744,7 +707,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 v1_gs = tmp;
             }
 
-            uint64_t rgbaq = GS_set_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0x3F800000);
+            uint64_t rgbaq = GS_SET_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0x3F800000);
 
             int is_raw_texture = (cmd & 0x01) != 0;
             int is_semi_trans = (cmd & 0x02) != 0;
@@ -789,32 +752,25 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 if (is_raw_texture)
                     nregs_tri += 4;
 
-                Push_GIF_Tag(GIF_TAG_LO(nregs_tri, 1, 0, 0, 0, 1), 0xE);
-                Push_GIF_Data(0, 0x45); // DTHE = 0
+                Push_GIF_Tag(GIF_TAG_LO(nregs_tri, 1, 0, 0, 0, 1), GIF_REG_AD);
+                Push_GIF_Data(GS_SET_DTHE(0), GS_REG_DTHE); // DTHE = 0
 
                 if (is_semi_trans)
-                    Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), 0x42);
+                    Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), GS_REG_ALPHA_1);
 
                 if (is_raw_texture)
                 {
-                    uint64_t tex0_before = 0;
-                    tex0_before |= (uint64_t)PSX_VRAM_FBW << 14;
-                    tex0_before |= (uint64_t)GS_PSM_16S << 20;
-                    tex0_before |= (uint64_t)10 << 26;
-                    tex0_before |= (uint64_t)9 << 30;
-                    tex0_before |= (uint64_t)1 << 34;
-                    tex0_before |= (uint64_t)1 << 35; // TFX=DECAL
-                    Push_GIF_Data(tex0_before, 0x06);
-                    Push_GIF_Data(0, 0x3F);
+                    Push_GIF_Data(GS_SET_TEX0_SMALL(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9, 1, 1), GS_REG_TEX0);
+                    Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH);
                 }
 
                 // Alpha test: skip transparent pixels (STP=0 → alpha=0)
                 {
                     uint64_t test_at = (uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST();
-                    Push_GIF_Data(test_at, 0x47);
+                    Push_GIF_Data(test_at, GS_REG_TEST_1);
                 }
 
-                Push_GIF_Data(tri_prim, 0x00);
+                Push_GIF_Data(GS_PACK_PRIM_FROM_INT(tri_prim), GS_REG_PRIM);
 
                 // STQ float UV normalized by texture size (1024x512)
                 float s_left = (float)u_left_i / 1024.0f;
@@ -830,39 +786,33 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 memcpy(&t_b_bits, &t_bottom, 4);
                 memcpy(&q_bits, &q, 4);
 
-                uint64_t rgbaq_q = GS_set_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, q_bits);
+                uint64_t rgbaq_q = GS_SET_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, q_bits);
 
                 // TL, TR, BL, BR
-                Push_GIF_Data((uint64_t)s_l_bits | ((uint64_t)t_t_bits << 32), 0x02);
-                Push_GIF_Data(rgbaq_q, 0x01);
-                Push_GIF_Data(GS_set_XYZ(sgx0, sgy0, 0), 0x05);
+                Push_GIF_Data(GS_SET_ST(s_l_bits, t_t_bits), GS_REG_ST);
+                Push_GIF_Data(rgbaq_q, GS_REG_RGBAQ);
+                Push_GIF_Data(GS_SET_XYZ(sgx0, sgy0, 0), GS_REG_XYZ2);
 
-                Push_GIF_Data((uint64_t)s_r_bits | ((uint64_t)t_t_bits << 32), 0x02);
-                Push_GIF_Data(rgbaq_q, 0x01);
-                Push_GIF_Data(GS_set_XYZ(sgx1, sgy0, 0), 0x05);
+                Push_GIF_Data(GS_SET_ST(s_r_bits, t_t_bits), GS_REG_ST);
+                Push_GIF_Data(rgbaq_q, GS_REG_RGBAQ);
+                Push_GIF_Data(GS_SET_XYZ(sgx1, sgy0, 0), GS_REG_XYZ2);
 
-                Push_GIF_Data((uint64_t)s_l_bits | ((uint64_t)t_b_bits << 32), 0x02);
-                Push_GIF_Data(rgbaq_q, 0x01);
-                Push_GIF_Data(GS_set_XYZ(sgx0, sgy1, 0), 0x05);
+                Push_GIF_Data(GS_SET_ST(s_l_bits, t_b_bits), GS_REG_ST);
+                Push_GIF_Data(rgbaq_q, GS_REG_RGBAQ);
+                Push_GIF_Data(GS_SET_XYZ(sgx0, sgy1, 0), GS_REG_XYZ2);
 
-                Push_GIF_Data((uint64_t)s_r_bits | ((uint64_t)t_b_bits << 32), 0x02);
-                Push_GIF_Data(rgbaq_q, 0x01);
-                Push_GIF_Data(GS_set_XYZ(sgx1, sgy1, 0), 0x05);
+                Push_GIF_Data(GS_SET_ST(s_r_bits, t_b_bits), GS_REG_ST);
+                Push_GIF_Data(rgbaq_q, GS_REG_RGBAQ);
+                Push_GIF_Data(GS_SET_XYZ(sgx1, sgy1, 0), GS_REG_XYZ2);
 
                 // Restore alpha test + TEX0
-                Push_GIF_Data(Get_Base_TEST(), 0x47);
+                Push_GIF_Data(Get_Base_TEST(), GS_REG_TEST_1);
                 if (is_raw_texture)
                 {
-                    uint64_t tex0_mod = 0;
-                    tex0_mod |= (uint64_t)PSX_VRAM_FBW << 14;
-                    tex0_mod |= (uint64_t)GS_PSM_16S << 20;
-                    tex0_mod |= (uint64_t)10 << 26;
-                    tex0_mod |= (uint64_t)9 << 30;
-                    tex0_mod |= (uint64_t)1 << 34;
-                    Push_GIF_Data(tex0_mod, 0x06);
-                    Push_GIF_Data(0, 0x3F);
+                    Push_GIF_Data(GS_SET_TEX0_SMALL(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9, 1, 0), GS_REG_TEX0);
+                    Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH);
                 }
-                Push_GIF_Data((uint64_t)dither_enabled, 0x45);
+                Push_GIF_Data(GS_SET_DTHE(dither_enabled), GS_REG_DTHE);
             }
             else
             {
@@ -900,89 +850,61 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 if (clut_decoded || is_raw_texture)
                     nregs += 4;
 
-                Push_GIF_Tag(GIF_TAG_LO(nregs, 1, 0, 0, 0, 1), 0xE);
-                Push_GIF_Data(0, 0x45); // DTHE = 0
+                Push_GIF_Tag(GIF_TAG_LO(nregs, 1, 0, 0, 0, 1), GIF_REG_AD);
+                Push_GIF_Data(GS_SET_DTHE(0), GS_REG_DTHE); // DTHE = 0
 
                 if (is_semi_trans)
-                    Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), 0x42);
+                    Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), GS_REG_ALPHA_1);
 
                 if (clut_decoded || is_raw_texture)
                 {
-                    uint64_t tex0_before = 0;
+                    uint64_t tex0_before;
                     if (rect_hw_clut)
                     {
                         /* HW CLUT: PSMT8/4 + CLUT */
-                        int psm = (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8;
-                        tex0_before |= (uint64_t)rect_hw_tbp0;
-                        tex0_before |= (uint64_t)4 << 14;
-                        tex0_before |= (uint64_t)psm << 20;
-                        tex0_before |= (uint64_t)8 << 26;
-                        tex0_before |= (uint64_t)8 << 30;
-                        tex0_before |= (uint64_t)1 << 34;
-                        tex0_before |= (uint64_t)(is_raw_texture ? 1 : 0) << 35;
-                        tex0_before |= (uint64_t)rect_hw_cbp << 37;
-                        tex0_before |= (uint64_t)GS_PSM_16 << 51; /* CPSM: CT16 */
-                        tex0_before |= (uint64_t)1 << 61;         /* CLD */
+                        tex0_before = GS_SET_TEX0(rect_hw_tbp0, 4, (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8, 8, 8, 1, (is_raw_texture ? 1 : 0), rect_hw_cbp, GS_PSM_16, 0, 0, 1);
                     }
                     else if (clut_decoded)
                     {
                         /* SW decode: CT16S cache at Y=512 → TBP0=4096 */
-                        tex0_before |= (uint64_t)4096; /* TBP0 */
-                        tex0_before |= (uint64_t)PSX_VRAM_FBW << 14;
-                        tex0_before |= (uint64_t)GS_PSM_16S << 20;
-                        tex0_before |= (uint64_t)10 << 26;
-                        tex0_before |= (uint64_t)10 << 30;
-                        tex0_before |= (uint64_t)1 << 34;
-                        tex0_before |= (uint64_t)(is_raw_texture ? 1 : 0) << 35;
+                        tex0_before = GS_SET_TEX0_SMALL(4096, PSX_VRAM_FBW, GS_PSM_16S, 10, 10, 1, (is_raw_texture ? 1 : 0));
                     }
                     else
                     {
                         /* is_raw_texture only — direct VRAM read */
-                        tex0_before |= (uint64_t)PSX_VRAM_FBW << 14;
-                        tex0_before |= (uint64_t)GS_PSM_16S << 20;
-                        tex0_before |= (uint64_t)10 << 26;
-                        tex0_before |= (uint64_t)9 << 30;
-                        tex0_before |= (uint64_t)1 << 34;
-                        tex0_before |= (uint64_t)1 << 35; /* TFX=DECAL for raw */
+                        tex0_before = GS_SET_TEX0_SMALL(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9, 1, 1);
                     }
-                    Push_GIF_Data(tex0_before, 0x06);
-                    Push_GIF_Data(0, 0x3F);
+                    Push_GIF_Data(tex0_before, GS_REG_TEX0);
+                    Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH);
                 }
 
                 // Alpha test: skip transparent pixels (STP=0 → alpha=0)
                 {
                     uint64_t test_at = (uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST();
-                    Push_GIF_Data(test_at, 0x47);
+                    Push_GIF_Data(test_at, GS_REG_TEST_1);
                 }
 
-                Push_GIF_Data(prim_reg, 0x00);
+                Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
 
                 // SPRITE: TL vertex + BR vertex
-                Push_GIF_Data(GS_set_XYZ(u0_gs << 4, v0_gs << 4, 0), 0x03);
-                Push_GIF_Data(rgbaq, 0x01);
-                Push_GIF_Data(GS_set_XYZ(sgx0, sgy0, 0), 0x05);
+                /* UV/RGBAQ/XYZ2 already emitted below using GS_REG_* names */
 
-                Push_GIF_Data(GS_set_XYZ(u1_gs << 4, v1_gs << 4, 0), 0x03);
-                Push_GIF_Data(rgbaq, 0x01);
-                Push_GIF_Data(GS_set_XYZ(sgx1, sgy1, 0), 0x05);
-
-                // Restore alpha test
-                Push_GIF_Data(Get_Base_TEST(), 0x47);
+                Push_GIF_Data(GS_SET_XYZ(u0_gs << 4, v0_gs << 4, 0), GS_REG_UV);
+                Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
+                Push_GIF_Data(GS_SET_XYZ(sgx0, sgy0, 0), GS_REG_XYZ2);
+                Push_GIF_Data(GS_SET_XYZ(u1_gs << 4, v1_gs << 4, 0), GS_REG_UV);
+                Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
+                Push_GIF_Data(GS_SET_XYZ(sgx1, sgy1, 0), GS_REG_XYZ2);
 
                 if (clut_decoded || is_raw_texture)
                 {
-                    uint64_t tex0_mod = 0;
-                    tex0_mod |= (uint64_t)PSX_VRAM_FBW << 14;
-                    tex0_mod |= (uint64_t)GS_PSM_16S << 20;
-                    tex0_mod |= (uint64_t)10 << 26;
-                    tex0_mod |= (uint64_t)9 << 30;
-                    tex0_mod |= (uint64_t)1 << 34;
-                    tex0_mod |= (uint64_t)0 << 35;
-                    Push_GIF_Data(tex0_mod, 0x06);
-                    Push_GIF_Data(0, 0x3F);
+                    Push_GIF_Data(GS_SET_TEX0_SMALL(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9, 1, 0), GS_REG_TEX0);
+                    Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH);
                 }
 
-                Push_GIF_Data((uint64_t)dither_enabled, 0x45);
+                // Restore alpha test (counted in nregs as alpha_test_restore)
+                Push_GIF_Data(Get_Base_TEST(), GS_REG_TEST_1);
+                Push_GIF_Data(GS_SET_DTHE(dither_enabled), GS_REG_DTHE);
             }
         }
         else
@@ -994,7 +916,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
             int32_t gx1 = ((int32_t)(x + w) + draw_offset_x + 2048) << 4;
             int32_t gy1 = ((int32_t)(y + h) + draw_offset_y + 2048) << 4;
 
-            uint64_t rgbaq = GS_set_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0x3F800000);
+            uint64_t rgbaq = GS_SET_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0x3F800000);
 
             int is_semi_trans = (cmd & 0x02) != 0;
             int nregs = 5;
@@ -1002,22 +924,22 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
             if (is_semi_trans)
                 nregs += 1;
 
-            Push_GIF_Tag(GIF_TAG_LO(nregs, 1, 0, 0, 0, 1), 0xE);
+            Push_GIF_Tag(GIF_TAG_LO(nregs, 1, 0, 0, 0, 1), GIF_REG_AD);
 
-            Push_GIF_Data(0, 0x45);
+            Push_GIF_Data(GS_SET_DTHE(0), GS_REG_DTHE);
 
             if (is_semi_trans)
-                Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), 0x42);
+                Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), GS_REG_ALPHA_1);
 
-            Push_GIF_Data(prim_reg, 0x00);
+            Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
 
-            Push_GIF_Data(rgbaq, 0x01);
-            Push_GIF_Data(GS_set_XYZ(gx0, gy0, 0), 0x05);
+            Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
+            Push_GIF_Data(GS_SET_XYZ(gx0, gy0, 0), GS_REG_XYZ2);
 
-            Push_GIF_Data(rgbaq, 0x01);
-            Push_GIF_Data(GS_set_XYZ(gx1, gy1, 0), 0x05);
+            Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
+            Push_GIF_Data(GS_SET_XYZ(gx1, gy1, 0), GS_REG_XYZ2);
 
-            Push_GIF_Data((uint64_t)dither_enabled, 0x45);
+            Push_GIF_Data(GS_SET_DTHE(dither_enabled), GS_REG_DTHE);
         }
     }
     else if (cmd == 0x02)
@@ -1038,27 +960,25 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
         /* ── Pixel fill estimate for fill-rect ── */
         gpu_estimated_pixels += (uint32_t)w * (uint32_t)h;
 
-        Push_GIF_Tag(GIF_TAG_LO(5, 1, 0, 0, 0, 1), 0xE);
-        uint64_t full_scissor = 0 | ((uint64_t)(PSX_VRAM_WIDTH - 1) << 16) | ((uint64_t)0 << 32) | ((uint64_t)(PSX_VRAM_HEIGHT - 1) << 48);
-        Push_GIF_Data(full_scissor, 0x40);
-        Push_GIF_Data(6, 0x00);
+        Push_GIF_Tag(GIF_TAG_LO(5, 1, 0, 0, 0, 1), GIF_REG_AD);
+        Push_GIF_Data(GS_SET_SCISSOR(0, PSX_VRAM_WIDTH - 1, 0, PSX_VRAM_HEIGHT - 1), GS_REG_SCISSOR_1);
+        Push_GIF_Data(GS_PACK_PRIM_FROM_INT(6), GS_REG_PRIM);
         uint32_t r = color & 0xFF;
         uint32_t g = (color >> 8) & 0xFF;
         uint32_t b = (color >> 16) & 0xFF;
-        Push_GIF_Data(GS_set_RGBAQ(r, g, b, 0x80, 0x3F800000), 0x01);
+        Push_GIF_Data(GS_SET_RGBAQ(r, g, b, 0x80, 0x3F800000), GS_REG_RGBAQ);
         int32_t x1 = (x + 2048) << 4;
         int32_t y1 = (y + 2048) << 4;
         int32_t x2 = (x + w + 2048) << 4;
         int32_t y2 = (y + h + 2048) << 4;
-        Push_GIF_Data(GS_set_XYZ(x1, y1, 0), 0x05);
-        Push_GIF_Data(GS_set_XYZ(x2, y2, 0), 0x05);
+        Push_GIF_Data(GS_SET_XYZ(x1, y1, 0), GS_REG_XYZ2);
+        Push_GIF_Data(GS_SET_XYZ(x2, y2, 0), GS_REG_XYZ2);
 
         // Restore original scissor (PSX E4 is exclusive, GS SCISSOR is inclusive)
-        Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), 0xE);
         uint64_t sc_x2 = (draw_clip_x2 > 0) ? (draw_clip_x2 - 1) : 0;
         uint64_t sc_y2 = (draw_clip_y2 > 0) ? (draw_clip_y2 - 1) : 0;
-        uint64_t orig_scissor = (uint64_t)draw_clip_x1 | (sc_x2 << 16) | ((uint64_t)draw_clip_y1 << 32) | (sc_y2 << 48);
-        Push_GIF_Data(orig_scissor, 0x40);
+        Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), GIF_REG_AD);
+        Push_GIF_Data(GS_SET_SCISSOR(draw_clip_x1, sc_x2, draw_clip_y1, sc_y2), GS_REG_SCISSOR_1);
 
         // Update shadow VRAM for filled area
         if (psx_vram_shadow)

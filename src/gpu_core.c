@@ -231,7 +231,7 @@ void Update_GS_Display(void)
     }
     int psx_h = (disp_range_y2 - disp_range_y1) * (disp_vres + 1);
 
-    DLOG("Update_GS_Display: disp_range_y1=%d, disp_range_y2=%d, psx_h=%d\n, disp_vres=%" PRIu32 "",
+    DLOG("Update_GS_Display: disp_range_y1=%d, disp_range_y2=%d, psx_h=%d\n, disp_vres=%" PRIu32 "\n",
          disp_range_y1, disp_range_y2, psx_h, disp_vres);
 
     /* 2. Calculate MAGH to fill a TV line (~2560 cycles) */
@@ -370,12 +370,12 @@ void Init_Graphics(void)
      * covering the entire 1024×512 PSX VRAM area. */
     {
         /* GIF tag: NLOOP=3, EOP=1, PRE=1, PRIM=sprite(6), FLG=PACKED, NREG=1, REGS=AD */
-        Push_GIF_Tag(GIF_TAG_LO(3, 1, 1, 6, 0, 1), 0xE);
+        Push_GIF_Tag(GIF_TAG_LO(3, 1, 1, 6, 0, 1), GIF_REG_AD);
         /* RGBAQ = black, full alpha */
-        Push_GIF_Data(GS_set_RGBAQ(0, 0, 0, 0x80, 0x3F800000), 0x01);
+        Push_GIF_Data(GS_SET_RGBAQ(0, 0, 0, 0x80, 0x3F800000), GS_REG_RGBAQ);
         /* XYZ2: top-left and bottom-right with 2048 offset already baked into GS coords */
-        Push_GIF_Data(GS_set_XYZ(2048 << 4, 2048 << 4, 0), 0x05);
-        Push_GIF_Data(GS_set_XYZ((2048 + PSX_VRAM_WIDTH) << 4, (2048 + PSX_VRAM_HEIGHT) << 4, 0), 0x05);
+        Push_GIF_Data(GS_SET_XYZ(2048 << 4, 2048 << 4, 0), GS_REG_XYZ2);
+        Push_GIF_Data(GS_SET_XYZ((2048 + PSX_VRAM_WIDTH) << 4, (2048 + PSX_VRAM_HEIGHT) << 4, 0), GS_REG_XYZ2);
         Flush_GIF();
     }
 

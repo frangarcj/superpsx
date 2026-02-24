@@ -19,6 +19,8 @@
 #include <malloc.h>
 #include <string.h>
 #include <gs_psm.h>
+#include <gs_gp.h>
+#include <gif_tags.h>
 
 #define LOG_TAG "GPU"
 
@@ -62,15 +64,6 @@ typedef struct __attribute__((aligned(16)))
     uint64_t d0;
     uint64_t d1;
 } gif_qword_t;
-
-/* ── Helper macros ───────────────────────────────────────────────── */
-#define GS_set_RGBAQ(r, g, b, a, q)                                 \
-    ((uint64_t)(r) | ((uint64_t)(g) << 8) | ((uint64_t)(b) << 16) | \
-     ((uint64_t)(a) << 24) | ((uint64_t)(q) << 32))
-
-#define GS_set_XYZ(x, y, z)                                        \
-    ((uint64_t)((x) & 0xFFFF) | ((uint64_t)((y) & 0xFFFF) << 16) | \
-     ((uint64_t)((z) & 0xFFFFFFFF) << 32))
 
 /* ── GPUSTAT helper macros ───────────────────────────────────────── */
 #define disp_hres368 ((gpu_stat >> 16) & 1)
@@ -212,8 +205,49 @@ static inline void Push_GIF_Data(uint64_t d0, uint64_t d1)
 }
 
 void Setup_GS_Environment(void);
-uint64_t Get_Alpha_Reg(int mode);
-static inline uint64_t Get_Base_TEST(void) { return cached_base_test; }
+/* ── Alpha blending register helpers ─────────────────────────────── */
+
+// Compute GS ALPHA_1 register value from PSX semi-transparency mode
+// GS formula: ((A-B)*C >> 7) + D  (C=FIX divides by 128, so FIX=128=1.0, 64=0.5, 32=0.25)
+// Note: For mode 0, we use FIX=0x58 (88/128≈0.6875) instead of the standard 0x40 (64/128=0.5)
+// to better match the reference test screenshots.  We use SDK helpers instead of
+// hand-packed bitfields.
+static inline uint64_t Get_Alpha_Reg(int mode)
+{
+    switch (mode & 3)
+    {
+    case 0:
+        /* mode 0: ~0.69*Cs + 0.31*Cd */
+        return GS_SET_ALPHA(0, 1, 2, 1, 0x58);
+    case 1:
+        /* mode 1: ~0.5*Cs + 0.5*Cd */
+        return GS_SET_ALPHA(0, 2, 2, 1, 0x80);
+    case 2:
+        return GS_SET_ALPHA(1, 0, 2, 2, 0x80);
+    default: 
+        /* mode 3: Cd + 0.25*Cs */
+        return GS_SET_ALPHA(0, 2, 2, 1, 0x20);
+    }
+}
+
+static inline uint64_t Get_Base_TEST(void)
+{
+    /* Compose TEST register using SDK macro so callers don't use raw bit masks.
+     * Use `mask_check_bit` to drive both DATEN and DATMD (prevents writing to pixels
+     * that already have bit 15 set in the framebuffer).
+     * GS_SET_TEST params: ATEN, ATMETH, ATREF, ATFAIL, DATEN, DATMD, ZTEN, ZTMETH
+     */
+    return GS_SET_TEST(1, 1, 0, 0, mask_check_bit, 0, 1, 1);
+}
+
+/* Helper: pack an existing prim bitfield value into the GS_SET_PRIM macro
+ * so callers that compute prim bits directly can still use the SDK helper. */
+static inline uint64_t GS_PACK_PRIM_FROM_INT(uint64_t v)
+{
+    return GS_SET_PRIM((v) & 0x7, ((v) >> 3) & 0x1, ((v) >> 4) & 0x1, ((v) >> 5) & 0x1,
+                       ((v) >> 6) & 0x1, ((v) >> 7) & 0x1, ((v) >> 8) & 0x1,
+                       ((v) >> 9) & 0x1, ((v) >> 10) & 0x1);
+}
 
 /* gpu_vram.c — VRAM transfer operations */
 void Start_VRAM_Transfer(int x, int y, int w, int h);

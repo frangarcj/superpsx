@@ -114,7 +114,6 @@ void Update_GS_Display(void) {}
 void Flush_GIF(void) {}
 void Flush_GIF_Sync(void) {}
 
-uint64_t Get_Alpha_Reg(int mode)   { (void)mode; return 0; }
 /* Get_Base_TEST() is now static inline in gpu_state.h */
 void     Setup_GS_Environment(void) {}
 
