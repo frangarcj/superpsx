@@ -14,17 +14,26 @@
 #define SPU_RAM_SIZE (512 * 1024)
 static uint8_t spu_ram[SPU_RAM_SIZE];
 
+/* ---- ADSR envelope phases ---- */
+typedef enum {
+    ADSR_ATTACK  = 0,
+    ADSR_DECAY   = 1,
+    ADSR_SUSTAIN = 2,
+    ADSR_RELEASE = 3,
+    ADSR_OFF     = 4
+} AdsrPhase;
+
 /* ---- Voice state ---- */
 #define SPU_NUM_VOICES 24
 
 typedef struct {
-    int16_t  vol_l;          /* Voice volume left */
-    int16_t  vol_r;          /* Voice volume right */
+    int16_t  vol_l;          /* Voice volume left  (raw register, bit15=sweep) */
+    int16_t  vol_r;          /* Voice volume right (raw register, bit15=sweep) */
     uint16_t pitch;          /* Sample rate (4096 = 44100 Hz) */
     uint16_t start_addr;     /* Start address in SPU RAM (in 8-byte units) */
-    uint16_t adsr_lo;        /* ADSR parameter low */
-    uint16_t adsr_hi;        /* ADSR parameter high */
-    uint16_t adsr_level;     /* Current ADSR volume level */
+    uint16_t adsr_lo;        /* ADSR parameter low  (1F801C08+N*10h) */
+    uint16_t adsr_hi;        /* ADSR parameter high (1F801C0Ah+N*10h) */
+    uint16_t adsr_level;     /* Current ADSR volume level register (mirrors adsr_vol) */
     uint16_t repeat_addr;    /* Loop address in SPU RAM (in 8-byte units) */
 
     /* Runtime state (not directly mapped to registers) */
@@ -34,6 +43,11 @@ typedef struct {
     int16_t  prev[2];        /* ADPCM decode history: prev[0]=s-1, prev[1]=s-2 */
     int16_t  decoded[28];    /* Decoded samples from current ADPCM block */
     int      block_decoded;  /* 1 = decoded[] is valid for current_addr */
+
+    /* ADSR envelope state */
+    int32_t  adsr_vol;       /* Current ADSR envelope volume: 0..0x7FFF */
+    AdsrPhase adsr_phase;    /* Current ADSR phase */
+    int32_t  adsr_counter;   /* Envelope step counter (incremented each sample) */
 } SPU_Voice;
 
 static SPU_Voice voices[SPU_NUM_VOICES];
@@ -71,6 +85,215 @@ static int16_t mix_buffer[SPU_MIX_BUF_SIZE * 2] __attribute__((aligned(16))); /*
 static int32_t mix_buf_l[SPU_MIX_BUF_SIZE] __attribute__((aligned(16)));
 static int32_t mix_buf_r[SPU_MIX_BUF_SIZE] __attribute__((aligned(16)));
 static int spu_initialized = 0;
+
+/* ---- ADSR envelope implementation ----
+ *
+ * PSX SPU ADSR algorithm (from psx-spx nocash documentation):
+ *
+ * Register layout:
+ *   adsr_lo (1F801C08+N*10h):
+ *     bit 15    = Attack Mode  (0=Linear, 1=Exponential)
+ *     bits 14-10 = Attack Shift (0..1Fh, fast to slow)
+ *     bits  9-8  = Attack Step  (0..3  = +7,+6,+5,+4)
+ *     bits  7-4  = Decay Shift  (0..0Fh)
+ *     bits  3-0  = Sustain Level (0..0Fh → threshold = (SL+1)<<11)
+ *
+ *   adsr_hi (1F801C0Ah+N*10h):
+ *     bit 15    = Sustain Mode      (0=Linear, 1=Exponential)
+ *     bit 14    = Sustain Direction (0=Increase, 1=Decrease)
+ *     bit 13    = (unused)
+ *     bits 12-8  = Sustain Shift    (0..1Fh)
+ *     bits  7-6  = Sustain Step     (0..3)
+ *     bit   5    = Release Mode     (0=Linear, 1=Exponential)
+ *     bits  4-0  = Release Shift    (0..1Fh)
+ *
+ * Envelope step algorithm (per 44100Hz sample tick):
+ *   AdsrStep         = (7 - step_val) << max(0, 11 - shift)
+ *   CounterIncrement = 0x8000 >> max(0, shift - 11)
+ *   Counter += CounterIncrement
+ *   if (Counter & 0x8000): Counter &= 0x7FFF; AdsrLevel += AdsrStep
+ *
+ *   Exponential decrease: AdsrStep = AdsrStep * AdsrLevel / 0x8000
+ *   Exponential increase (fake): when AdsrLevel > 0x6000, halve step (divide by 4 via sub-shift)
+ */
+
+static inline int imax(int a, int b) { return a > b ? a : b; }
+
+/* Compute one ADSR envelope tick.  Called once per 44100Hz sample. */
+static void adsr_tick(SPU_Voice *v)
+{
+    int32_t vol = v->adsr_vol;
+
+    /* Decode register fields */
+    uint16_t lo = v->adsr_lo;
+    uint16_t hi = v->adsr_hi;
+
+    int ar_mode  = (lo >> 15) & 1;
+    int ar_shift = (lo >> 10) & 0x1F;
+    int ar_step  = (lo >> 8)  & 0x03;
+    int dr_shift = (lo >> 4)  & 0x0F;
+    int sl_level = (int32_t)(((lo & 0x0F) + 1) << 11); /* sustain threshold 0x800..0x8000 */
+
+    int sm_mode  = (hi >> 15) & 1;
+    int sd_dir   = (hi >> 14) & 1;  /* 0=increase, 1=decrease */
+    int sr_shift = (hi >> 8)  & 0x1F;
+    int sr_step  = (hi >> 6)  & 0x03;
+    int rm_mode  = (hi >> 5)  & 1;
+    int rr_shift = hi          & 0x1F;
+
+    int shift, step_idx, is_exp, is_dec;
+    int32_t base_step, counter_inc, step;
+
+    switch (v->adsr_phase) {
+    case ADSR_ATTACK:
+        shift     = ar_shift;
+        step_idx  = ar_step;
+        is_exp    = ar_mode;
+        is_dec    = 0;
+        break;
+    case ADSR_DECAY:
+        shift     = dr_shift << 2; /* DR is 4-bit; hardware uses (dr<<2)|3 effectively */
+        /* Actually: DR uses shift directly but limited to 4 bits.
+         * The hardware formula: shift_val = dr_shift * 4 + 3 (to map 4-bit to same range)
+         * However psx-spx says DR shift field is 4 bits = 0..15 used directly as shift.
+         * For decay the step is always the maximum (+7) which means step_idx=0. */
+        /* Re-read spec: Decay uses bits 7-4 as shift directly (already a 4-bit shift field).
+         * Decay is always exponential decrease, step=+7 (step_idx=0 with sign flip). */
+        shift     = dr_shift;
+        step_idx  = 0;
+        is_exp    = 1;
+        is_dec    = 1;
+        break;
+    case ADSR_SUSTAIN:
+        shift     = sr_shift;
+        step_idx  = sr_step;
+        is_exp    = sm_mode;
+        is_dec    = sd_dir;
+        break;
+    case ADSR_RELEASE:
+        shift     = rr_shift;
+        step_idx  = 0;  /* Release step always = +7 base */
+        is_exp    = rm_mode;
+        is_dec    = 1;
+        break;
+    case ADSR_OFF:
+    default:
+        return;
+    }
+
+    /* Compute base step: (7 - step_idx) << max(0, 11 - shift) */
+    {
+        int step_val = 7 - step_idx;
+        int shift_up = 11 - shift;
+        if (shift_up > 0)
+            base_step = (int32_t)step_val << shift_up;
+        else
+            base_step = step_val;  /* shift_up <= 0: step doesn't grow further */
+    }
+
+    /* Compute counter increment: 0x8000 >> max(0, shift - 11) */
+    {
+        int shift_down = shift - 11;
+        if (shift_down > 0)
+            counter_inc = (int32_t)0x8000 >> shift_down;
+        else
+            counter_inc = 0x8000;
+    }
+
+    /* Apply direction sign to step */
+    if (is_dec)
+        step = -base_step;
+    else
+        step = base_step;
+
+    /* Exponential adjustment */
+    if (is_exp) {
+        if (is_dec) {
+            /* Exponential decrease: scale step by current volume */
+            step = (int32_t)((int64_t)step * vol / 0x8000);
+        } else {
+            /* Exponential increase (fake): when vol > 0x6000, slow down by /4 */
+            if (vol > 0x6000) {
+                /* Divide counter_inc by 4 (same effect as slowing down) */
+                counter_inc >>= 2;
+            }
+        }
+    }
+
+    /* Advance counter; only apply step when counter overflows 0x7FFF */
+    v->adsr_counter += counter_inc;
+    if (v->adsr_counter >= 0x8000) {
+        v->adsr_counter -= 0x8000;
+        vol += step;
+    }
+
+    /* Phase transitions and clamping */
+    switch (v->adsr_phase) {
+    case ADSR_ATTACK:
+        if (vol >= 0x7FFF || vol < 0) { /* overflow or wrapped */
+            vol = 0x7FFF;
+            v->adsr_phase = ADSR_DECAY;
+            v->adsr_counter = 0;
+        }
+        break;
+    case ADSR_DECAY:
+        if (vol < 0) vol = 0;
+        if (vol <= sl_level) {
+            vol = sl_level;
+            v->adsr_phase = ADSR_SUSTAIN;
+            v->adsr_counter = 0;
+        }
+        break;
+    case ADSR_SUSTAIN:
+        if (is_dec) {
+            if (vol < 0) vol = 0;
+        } else {
+            if (vol > 0x7FFF) vol = 0x7FFF;
+        }
+        break;
+    case ADSR_RELEASE:
+        if (vol < 0) vol = 0;
+        if (vol == 0) {
+            v->adsr_phase = ADSR_OFF;
+            v->active = 0;
+        }
+        break;
+    case ADSR_OFF:
+    default:
+        break;
+    }
+
+    v->adsr_vol = vol;
+    /* Mirror current envelope volume to the readable register (0..0x7FFF range) */
+    v->adsr_level = (uint16_t)(vol & 0x7FFF);
+}
+
+/* ---- Get effective voice volume (handle fixed vs sweep mode) ----
+ * Bit 15 = 0: Fixed mode. Bits 14-0 are the volume (signed, -0x4000..+0x3FFF range
+ *             but spec says 0x0000..0x3FFF for normal use; we take abs and treat as
+ *             0..0x7FFF by left-shifting one bit).
+ * Bit 15 = 1: Sweep mode. Bits 14-0 encode the sweep target/rate. For now, use bits
+ *             6-0 as a coarse volume level (simplified — full sweep not implemented).
+ *
+ * Returns value in 0..0x7FFF range.
+ */
+static inline int32_t get_effective_volume(int16_t raw)
+{
+    if (raw & (int16_t)0x8000) {
+        /* Sweep mode: bits 14-0 contain sweep parameters.
+         * Use bits 13-7 (current level field) or just return max for now.
+         * Proper sweep requires per-sample tracking; use a reasonable approximation. */
+        int32_t v = ((int32_t)(raw & 0x7FFF)) << 1;
+        if (v > 0x7FFF) v = 0x7FFF;
+        return v;
+    } else {
+        /* Fixed mode: value is in -0x4000..+0x3FFF; left-shift to 0x7FFF base */
+        int32_t v = (int32_t)(raw & 0x7FFF) << 1;
+        if (v > 0x7FFF) v = 0x7FFF;
+        if (v < 0) v = 0;
+        return v;
+    }
+}
 
 /* ---- Init / Shutdown ---- */
 void SPU_Init(void)
@@ -212,10 +435,14 @@ static void process_key_on(uint32_t kon)
             v->prev[0] = 0;
             v->prev[1] = 0;
             v->block_decoded = 0;
-            v->adsr_level = 0x7FFF; /* Max volume (simplified ADSR) */
+            /* Initialize ADSR envelope: Attack phase, volume 0 */
+            v->adsr_vol     = 0;
+            v->adsr_phase   = ADSR_ATTACK;
+            v->adsr_counter = 0;
+            v->adsr_level   = 0;
             endx &= ~(1 << i);     /* Clear ENDX bit on Key On */
-            DLOG("Voice %d Key On: addr=0x%05" PRIX32 " pitch=0x%04X vol=%d/%d\n",
-                 i, v->current_addr, v->pitch, v->vol_l, v->vol_r);
+            DLOG("Voice %d Key On: addr=0x%05" PRIX32 " pitch=0x%04X vol=%d/%d adsr_lo=0x%04X adsr_hi=0x%04X\n",
+                 i, v->current_addr, v->pitch, v->vol_l, v->vol_r, v->adsr_lo, v->adsr_hi);
         }
     }
 }
@@ -226,7 +453,12 @@ static void process_key_off(uint32_t koff)
     int i;
     for (i = 0; i < SPU_NUM_VOICES; i++) {
         if (koff & (1 << i)) {
-            voices[i].active = 0;
+            SPU_Voice *v = &voices[i];
+            if (v->active) {
+                /* Transition to Release phase (do not stop immediately) */
+                v->adsr_phase   = ADSR_RELEASE;
+                v->adsr_counter = 0;
+            }
         }
     }
 }
@@ -428,8 +660,9 @@ static void SPU_Mix_And_Clamp(int32_t * __restrict__ ml, int32_t * __restrict__ 
 {
     for (int i = 0; i < num_samples; i++)
     {
-        int32_t sl = (ml[i] * vol_l) >> 14;
-        int32_t sr = (mr[i] * vol_r) >> 14;
+        /* vol_l/vol_r are in 0x7FFF range; normalize with >>15 */
+        int32_t sl = (ml[i] * vol_l) >> 15;
+        int32_t sr = (mr[i] * vol_r) >> 15;
 
         /* Branchless clamp — compiler emits slt+movn/movz on MIPS */
         sl = (sl >  32767) ?  32767 : (sl < -32768) ? -32768 : sl;
@@ -470,8 +703,8 @@ void SPU_GenerateSamples(void)
 
         /* Hoist constant voice fields to locals (avoids alias-induced reloads
          * — compiler may fear mix_buf writes alias the Voice struct).          */
-        int32_t v_vol_l = v->vol_l;
-        int32_t v_vol_r = v->vol_r;
+        int32_t v_vol_l = get_effective_volume(v->vol_l);
+        int32_t v_vol_r = get_effective_volume(v->vol_r);
         uint32_t v_pitch = v->pitch;
 
         for (int s = 0; s < SAMPLES_PER_FRAME; s++) {
@@ -482,13 +715,24 @@ void SPU_GenerateSamples(void)
                     break; /* Voice stopped by loop-end with no repeat */
             }
 
+            /* Advance ADSR envelope (one tick per 44100Hz sample) */
+            adsr_tick(v);
+            if (v->adsr_phase == ADSR_OFF) {
+                v->active = 0;
+                break;
+            }
+
             /* Fetch sample from decoded buffer */
             uint32_t sample_idx = v->sample_pos >> 12;
             int16_t pcm = v->decoded[sample_idx];
 
-            /* Apply voice volume (0x3FFF = max, 14-bit range) and accumulate */
-            mix_buf_l[s] += ((int32_t)pcm * v_vol_l) >> 14;
-            mix_buf_r[s] += ((int32_t)pcm * v_vol_r) >> 14;
+            /* Apply voice volume (0x7FFF range) then ADSR envelope (0x7FFF range) */
+            int32_t voiced_l = ((int32_t)pcm * v_vol_l) >> 15;
+            int32_t voiced_r = ((int32_t)pcm * v_vol_r) >> 15;
+            voiced_l = (voiced_l * v->adsr_vol) >> 15;
+            voiced_r = (voiced_r * v->adsr_vol) >> 15;
+            mix_buf_l[s] += voiced_l;
+            mix_buf_r[s] += voiced_r;
 
             /* Advance sample position by pitch */
             v->sample_pos += v_pitch;
@@ -509,8 +753,12 @@ void SPU_GenerateSamples(void)
         }
     }
 
+    /* Apply main volume and get effective levels (0..0x7FFF range) */
+    int32_t eff_vol_l = get_effective_volume(main_vol_l);
+    int32_t eff_vol_r = get_effective_volume(main_vol_r);
+
     /* Perform final mix, volume apply and master clamp */
-    SPU_Mix_And_Clamp(mix_buf_l, mix_buf_r, mix_buffer, SAMPLES_PER_FRAME, main_vol_l, main_vol_r);
+    SPU_Mix_And_Clamp(mix_buf_l, mix_buf_r, mix_buffer, SAMPLES_PER_FRAME, eff_vol_l, eff_vol_r);
 
     /* Output to audsrv */
     int size = SAMPLES_PER_FRAME * 2 * sizeof(int16_t);
