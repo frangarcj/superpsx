@@ -188,11 +188,11 @@ static struct
 static void Upload_Indexed_8BPP(int tbp0, int tex_page_x, int tex_page_y)
 {
     /* BITBLTBUF: DBP=tbp0, DBW=4 (256/64), DPSM=PSMT8 */
-    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), 0xE);
-    Push_GIF_Data(((uint64_t)GS_PSM_8 << 56) | ((uint64_t)4 << 48) | ((uint64_t)tbp0 << 32), 0x50);
-    Push_GIF_Data(0, 0x51);                           /* TRXPOS: (0,0)→(0,0) */
-    Push_GIF_Data(((uint64_t)256 << 32) | 256, 0x52); /* TRXREG: 256×256 */
-    Push_GIF_Data(0, 0x53);                           /* TRXDIR: Host→Local */
+    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
+    Push_GIF_Data(GS_SET_BITBLTBUF(0,0,0, tbp0, 4, GS_PSM_8), GS_REG_BITBLTBUF);
+    Push_GIF_Data(GS_SET_TRXPOS(0,0,0,0,0), GS_REG_TRXPOS);                           /* TRXPOS: (0,0)→(0,0) */
+    Push_GIF_Data(GS_SET_TRXREG(256, 256), GS_REG_TRXREG); /* TRXREG: 256×256 */
+    Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR);                           /* TRXDIR: Host→Local */
 
     /* Pack raw bytes into IMAGE quadwords.
      * Little-endian MIPS: psx_vram_shadow halfwords contain [lo=texel_even, hi=texel_odd].
@@ -236,11 +236,11 @@ static void Upload_Indexed_8BPP(int tbp0, int tex_page_x, int tex_page_y)
 static void Upload_Indexed_4BPP(int tbp0, int tex_page_x, int tex_page_y)
 {
     /* BITBLTBUF: DBP=tbp0, DBW=4 (256/64), DPSM=PSMT4 */
-    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), 0xE);
-    Push_GIF_Data(((uint64_t)GS_PSM_4 << 56) | ((uint64_t)4 << 48) | ((uint64_t)tbp0 << 32), 0x50);
-    Push_GIF_Data(0, 0x51);
-    Push_GIF_Data(((uint64_t)256 << 32) | 256, 0x52);
-    Push_GIF_Data(0, 0x53);
+    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
+    Push_GIF_Data(GS_SET_BITBLTBUF(0,0,0, tbp0, 4, GS_PSM_4), GS_REG_BITBLTBUF);
+    Push_GIF_Data(GS_SET_TRXPOS(0,0,0,0,0), GS_REG_TRXPOS);
+    Push_GIF_Data(GS_SET_TRXREG(256, 256), GS_REG_TRXREG);
+    Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR);
 
     /* 4BPP: 128 bytes per row (256 texels / 2). PSX nibble layout matches PSMT4. */
     buf_image_ptr = 0;
@@ -318,11 +318,11 @@ static void Upload_CLUT_CSM1(int cbp, int clut_x, int clut_y, int tex_format)
     int upload_h = (num_entries == 256) ? 16 : 2;
 
     /* BITBLTBUF: DBP=cbp, DBW=1 (64px), DPSM=CT16 (matches CSM1 standard) */
-    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), 0xE);
-    Push_GIF_Data(((uint64_t)GS_PSM_16 << 56) | ((uint64_t)1 << 48) | ((uint64_t)cbp << 32), 0x50);
-    Push_GIF_Data(0, 0x51);
-    Push_GIF_Data(((uint64_t)upload_h << 32) | (uint64_t)upload_w, 0x52);
-    Push_GIF_Data(0, 0x53);
+    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
+    Push_GIF_Data(GS_SET_BITBLTBUF(0,0,0, cbp, 1, GS_PSM_16), GS_REG_BITBLTBUF);
+    Push_GIF_Data(GS_SET_TRXPOS(0,0,0,0,0), GS_REG_TRXPOS);
+    Push_GIF_Data(GS_SET_TRXREG(upload_w, upload_h), GS_REG_TRXREG);
+    Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR);
 
     /* Pack shuffled CLUT entries into IMAGE quadwords */
     buf_image_ptr = 0;
