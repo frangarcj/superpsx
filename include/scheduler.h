@@ -18,13 +18,20 @@
 
 /* ---- PSX timing constants ---- */
 #define PSX_CPU_FREQ 33868800U  /* 33.8688 MHz */
-#define CYCLES_PER_HBLANK 2152U /* ~33868800 / 15734 */
+/* Per-scanline CPU cycle counts derived from psx-spx:
+ * Video clock = 53222400 Hz. CPU clock / Video clock = 7/11 (exact).
+ * NTSC: 3413 video cycles/scanline × 7/11 = 2172.27 → 2173 (round up)
+ * PAL:  3406 video cycles/scanline × 7/11 = 2167.45 → 2168 (round up)  */
+#define CYCLES_PER_HBLANK_NTSC 2173U  /* 3413 × 7/11 ≈ 2172.27 */
+#define CYCLES_PER_HBLANK_PAL  2168U  /* 3406 × 7/11 ≈ 2167.45 */
+/* Keep a default alias for code that doesn't distinguish region yet. */
+#define CYCLES_PER_HBLANK CYCLES_PER_HBLANK_NTSC
 #define CYCLES_PER_SCANLINE CYCLES_PER_HBLANK
 #define SCANLINES_PER_FRAME 263U     /* NTSC */
 #define SCANLINES_PER_FRAME_PAL 314U /* PAL  */
-/* Accurate frame timing: scanlines × cycles/scanline (not CPU_FREQ/fps) */
-#define CYCLES_PER_FRAME_NTSC (SCANLINES_PER_FRAME * CYCLES_PER_HBLANK)    /* 565976 */
-#define CYCLES_PER_FRAME_PAL (SCANLINES_PER_FRAME_PAL * CYCLES_PER_HBLANK) /* 675728 */
+/* Accurate frame timing: scanlines × cycles/scanline */
+#define CYCLES_PER_FRAME_NTSC (SCANLINES_PER_FRAME * CYCLES_PER_HBLANK_NTSC)        /* 571399 */
+#define CYCLES_PER_FRAME_PAL  (SCANLINES_PER_FRAME_PAL * CYCLES_PER_HBLANK_PAL)     /* 680752 */
 
 /* Timer0 dotclock dividers: CPU_FREQ / dotclock_freq (integer approx)
  * 256-wide:  5.3222400 MHz → div≈7  (exact: 6.366)

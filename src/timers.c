@@ -5,6 +5,8 @@
 #include "psx_timers.h"
 #include "gpu_state.h"
 
+#include "config.h"
+
 #ifdef LOG_TAG
 #undef LOG_TAG
 #endif
@@ -49,7 +51,17 @@ static void timer_update_divider_cache(int t)
         }
         return;
     }
-    if (t == 1 && (src == 1 || src == 3)) { timer_divider_cache[1] = CYCLES_PER_HBLANK; return; }
+    if (t == 1 && (src == 1 || src == 3)) {
+        /* Real hardware counts discrete HBlank events, not cycle fractions.
+         * We approximate with cycle division, so use divider - 1 to provide
+         * exactly SCANLINES_PER_FRAME cycles of margin per frame.  This
+         * prevents the fencepost where measurement overhead (timer reset to
+         * timer read spans slightly less than a full frame) would otherwise
+         * cause floor(cycles / divider) to return 262 instead of 263. */
+        uint32_t hblank = psx_config.region_pal ? CYCLES_PER_HBLANK_PAL : CYCLES_PER_HBLANK_NTSC;
+        timer_divider_cache[1] = hblank - 1;
+        return;
+    }
     if (t == 2 && (src == 2 || src == 3)) { timer_divider_cache[2] = 8; return; }
     timer_divider_cache[t] = 1;
 }

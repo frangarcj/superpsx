@@ -61,6 +61,7 @@ uint64_t stat_total_psx_instrs = 0;
 static uint32_t hblank_scanline = 0;
 static uint64_t hblank_ideal_deadline = 0;
 static uint64_t perf_frame_count = 0;
+static uint32_t cycles_per_hblank_runtime = CYCLES_PER_HBLANK_NTSC; /* Set at init based on region */
 
 #ifdef ENABLE_PERF_REPORT
 static uint64_t perf_last_report_cycle = 0;
@@ -442,7 +443,7 @@ static void Sched_HBlank_Callback(void)
     /* Re-schedule HBlank */
     uint32_t next_remaining = SCANLINES_PER_FRAME - hblank_scanline;
     uint32_t next_batch = (next_remaining < HBLANK_BATCH_SIZE) ? next_remaining : HBLANK_BATCH_SIZE;
-    hblank_ideal_deadline += (uint64_t)next_batch * CYCLES_PER_HBLANK;
+    hblank_ideal_deadline += (uint64_t)next_batch * cycles_per_hblank_runtime;
 
     if (hblank_ideal_deadline <= global_cycles)
         hblank_ideal_deadline = global_cycles + 1;
@@ -583,7 +584,8 @@ void Run_CPU(void)
     perf_frame_count = 0;
     perf_last_report_cycle = 0;
     perf_last_report_tick = get_wall_ms();
-    hblank_ideal_deadline = global_cycles + HBLANK_BATCH_SIZE * CYCLES_PER_HBLANK;
+    cycles_per_hblank_runtime = psx_config.region_pal ? CYCLES_PER_HBLANK_PAL : CYCLES_PER_HBLANK_NTSC;
+    hblank_ideal_deadline = global_cycles + HBLANK_BATCH_SIZE * cycles_per_hblank_runtime;
     Scheduler_ScheduleEvent(SCHED_EVENT_HBLANK, hblank_ideal_deadline, Sched_HBlank_Callback);
 
     Timer_ScheduleAll();
