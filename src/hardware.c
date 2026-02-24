@@ -82,7 +82,12 @@ uint32_t ReadHardware(uint32_t phys)
 
     case 0x0C: /* 0x1F801C00-0x1F801CFF: SPU (low half) */
     case 0x0D: /* 0x1F801D00-0x1F801DFF: SPU (high half) */
-        return SPU_ReadReg((phys - 0x1F801C00) >> 1);
+    {
+        uint32_t sreg = (phys - 0x1F801C00) >> 1;
+        uint32_t lo = SPU_ReadReg(sreg);
+        uint32_t hi = ((phys + 2) < 0x1F801E00) ? SPU_ReadReg(sreg + 1) : 0;
+        return lo | (hi << 16);
+    }
 
     case 0x10: case 0x11: case 0x12: case 0x13: /* Expansion 2 */
     case 0x14: case 0x15: case 0x16: case 0x17:
@@ -95,7 +100,7 @@ uint32_t ReadHardware(uint32_t phys)
     }
 }
 
-void WriteHardware(uint32_t phys, uint32_t data)
+void WriteHardware(uint32_t phys, uint32_t data, int size)
 {
     uint32_t off = phys - 0x1F801000;
 
@@ -157,7 +162,9 @@ void WriteHardware(uint32_t phys, uint32_t data)
     {
         uint32_t soff = (phys - 0x1F801C00) >> 1;
         SPU_WriteReg(soff, (uint16_t)data);
-        if ((data >> 16) && (phys + 2) < 0x1F801E00)
+        /* For 32-bit word writes, always write the upper halfword too even if
+         * it is zero (a zero upper halfword is a valid register value). */
+        if (size == 4 && (phys + 2) < 0x1F801E00)
             SPU_WriteReg(soff + 1, (uint16_t)(data >> 16));
         return;
     }

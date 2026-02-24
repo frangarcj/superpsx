@@ -295,7 +295,7 @@ void WriteByte(uint32_t addr, uint8_t data)
     }
     if (phys >= 0x1F801000 && phys < 0x1F803000)
     {
-        WriteHardware(phys, data);
+        WriteHardware(phys, data, 1);
         return;
     }
 }
@@ -333,7 +333,7 @@ void WriteHalf(uint32_t addr, uint16_t data)
     }
     if (phys >= 0x1F801000 && phys < 0x1F803000)
     {
-        WriteHardware(phys, data);
+        WriteHardware(phys, data, 2);
         return;
     }
 }
@@ -371,7 +371,7 @@ void WriteWord(uint32_t addr, uint32_t data)
     }
     if (phys >= 0x1F801000 && phys < 0x1F803000)
     {
-        WriteHardware(phys, data);
+        WriteHardware(phys, data, 4);
         return;
     }
     /* Cache control */

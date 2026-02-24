@@ -90,7 +90,9 @@ void WriteByte(uint32_t addr, uint8_t data);
 
 /*=== Hardware ===*/
 uint32_t ReadHardware(uint32_t phys);
-void WriteHardware(uint32_t phys, uint32_t data);
+/* size: access width in bytes (1, 2, or 4).  Used by the SPU handler to
+ * decide whether to write one or two consecutive 16-bit registers. */
+void WriteHardware(uint32_t phys, uint32_t data, int size);
 void SignalInterrupt(uint32_t irq);
 void Init_Interrupts(void);
 static inline int CheckInterrupts(void)
