@@ -52,7 +52,8 @@
 #define SCHED_EVENT_CDROM_DEFERRED 5 /* Deferred first-response delivery */
 #define SCHED_EVENT_CDROM_IRQ 6      /* IRQ signal delay (I_STAT assertion) */
 #define SCHED_EVENT_HBLANK 7         /* Per-scanline HBlank event           */
-#define SCHED_EVENT_COUNT 8
+#define SCHED_EVENT_DMA    8         /* Deferred DMA completion event        */
+#define SCHED_EVENT_COUNT 9
 
 /* ---- Callback type ---- */
 typedef void (*sched_callback_t)(void);

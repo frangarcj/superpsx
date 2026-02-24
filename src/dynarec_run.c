@@ -623,6 +623,12 @@ void Run_CPU(void)
         {
             if (run_jit_chain(deadline) == RUN_RES_BREAK)
                 break;
+            /* A hardware write (e.g. DMA CHCR) may have scheduled a new
+             * event with a deadline earlier than our current batch deadline.
+             * Break out so the outer loop re-reads scheduler_cached_earliest
+             * and uses the closer deadline for the next batch. */
+            if (scheduler_cached_earliest < deadline)
+                break;
         }
 
         if (global_cycles >= scheduler_cached_earliest)
