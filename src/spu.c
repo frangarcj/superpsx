@@ -689,6 +689,12 @@ void SPU_GenerateSamples(void)
         int32_t v_vol_r = get_effective_volume(v->vol_r);
         uint32_t v_pitch = v->pitch;
 
+        /* Precompute combined (voice × ADSR) volume — updated only when adsr_vol
+         * changes (rare: counter overflow ~once per 10-10000 samples in sustain) */
+        int32_t last_adsr_vol = v->adsr_vol;
+        int32_t comb_vol_l = (v_vol_l * last_adsr_vol) >> 15;
+        int32_t comb_vol_r = (v_vol_r * last_adsr_vol) >> 15;
+
         for (int s = 0; s < SAMPLES_PER_FRAME; s++) {
             /* Decode block if needed (rare: only at block boundaries) */
             if (__builtin_expect(!v->block_decoded, 0)) {
@@ -704,15 +710,20 @@ void SPU_GenerateSamples(void)
                 break;
             }
 
+            /* Update combined volume if ADSR changed (rare except in fast Attack) */
+            if (__builtin_expect(v->adsr_vol != last_adsr_vol, 0)) {
+                last_adsr_vol = v->adsr_vol;
+                comb_vol_l = (v_vol_l * last_adsr_vol) >> 15;
+                comb_vol_r = (v_vol_r * last_adsr_vol) >> 15;
+            }
+
             /* Fetch sample from decoded buffer */
             uint32_t sample_idx = v->sample_pos >> 12;
             int16_t pcm = v->decoded[sample_idx];
 
-            /* Apply voice volume (0x7FFF range) then ADSR envelope (0x7FFF range) */
-            int32_t voiced_l = ((int32_t)pcm * v_vol_l) >> 15;
-            int32_t voiced_r = ((int32_t)pcm * v_vol_r) >> 15;
-            voiced_l = (voiced_l * v->adsr_vol) >> 15;
-            voiced_r = (voiced_r * v->adsr_vol) >> 15;
+            /* Apply combined volume (voice × ADSR) — 2 multiplies instead of 4 */
+            int32_t voiced_l = ((int32_t)pcm * comb_vol_l) >> 15;
+            int32_t voiced_r = ((int32_t)pcm * comb_vol_r) >> 15;
             mix_buf_l[s] += voiced_l;
             mix_buf_r[s] += voiced_r;
 
