@@ -71,7 +71,10 @@ uint32_t ReadHardware(uint32_t phys)
             return byte_val | (byte_val << 8) | (byte_val << 16) | (byte_val << 24);
         }
         if (phys == 0x1F801810)
-            return GPU_Read();
+        {
+            uint32_t val = GPU_Read();
+            return val;
+        }
         if (phys == 0x1F801814)
             return GPU_ReadStatus();
         if (phys == 0x1F801820)

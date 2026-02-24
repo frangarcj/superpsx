@@ -17,6 +17,10 @@
 uint32_t gpu_stat = 0x14802000;
 uint32_t gpu_read = 0;
 
+/* GPU deferred interrupt variable — kept for ABI compatibility but no longer
+ * used.  GP0(1Fh) now fires I_STAT immediately via edge-triggered logic. */
+volatile uint64_t gpu_irq_delay_cycle = 0;
+
 /* Framebuffer configuration */
 int fb_address = 0;
 int fb_width = 640;
@@ -54,7 +58,7 @@ uint16_t *psx_vram_shadow = NULL;
 volatile int gpu_pending_vblank_flush = 0;
 
 /* Debug log file */
-/* FILE *gpu_debug_log = NULL; -- removed */
+
 
 /* VRAM transfer tracking for shadow writes */
 int vram_tx_x = 0, vram_tx_y = 0, vram_tx_w = 0, vram_tx_h = 0, vram_tx_pixel = 0;
@@ -90,6 +94,12 @@ uint32_t tex_win_mask_y = 0;
 uint32_t tex_win_off_x = 0;
 uint32_t tex_win_off_y = 0;
 
+/* Raw E-register values for GP1(10h) query responses */
+uint32_t raw_tex_window = 0;
+uint32_t raw_draw_area_tl = 0;
+uint32_t raw_draw_area_br = 0;
+uint32_t raw_draw_offset = 0;
+
 /* Immediate mode command buffer */
 int gpu_cmd_remaining = 0;
 uint32_t gpu_cmd_buffer[16];
@@ -111,7 +121,6 @@ uint32_t GPU_Read(void)
     if (vram_read_remaining > 0)
     {
         uint16_t p0 = 0, p1 = 0;
-
         if (psx_vram_shadow && vram_read_w > 0)
         {
             int px0 = vram_read_x + (vram_read_pixel % vram_read_w);
@@ -134,7 +143,10 @@ uint32_t GPU_Read(void)
             gpu_stat &= ~0x08000000; /* Clear bit 27 (ready to send VRAM to CPU) */
         }
 
-        return (uint32_t)p0 | ((uint32_t)p1 << 16);
+        /* Latch returned value so GPUREAD retains it for GP1(10h) upper-bit
+         * preservation.  Real PSX hardware keeps the last GPUREAD value. */
+        gpu_read = (uint32_t)p0 | ((uint32_t)p1 << 16);
+        return gpu_read;
     }
 
     /* Otherwise return GPU info (GP1 10h responses) */
@@ -165,10 +177,13 @@ uint32_t GPU_ReadStatus(void)
             Scheduler_DispatchEvents(global_cycles);
     }
 
-    /* Force bits: 28 (ready DMA), 26 (ready CMD), 13 (interlace field) */
-    /* Bit 27 (ready VRAM-to-CPU) is dynamic, set only during C0h transfer */
-    /* Bit 23 (display disable) must NOT be forced — it reflects GP1(03h) state */
-    return gpu_stat | 0x14002000;
+    /* Force bits: 28 (ready DMA), 26 (ready CMD), 13 (interlace field).
+     * Bit 27 (ready VRAM-to-CPU) is dynamic, set only during C0h transfer.
+     * Bit 23 (display disable) must NOT be forced — it reflects GP1(03h) state.
+     * Note: bit 28 should ideally depend on DMA direction, but the BIOS kernel
+     * expects it set during GPU initialization regardless. */
+    uint32_t final_stat = gpu_stat | 0x14002000;
+    return final_stat;
 }
 
 void GPU_VBlank(void)

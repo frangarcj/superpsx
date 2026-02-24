@@ -157,6 +157,16 @@ extern uint8_t cdrom_irq_active;
  * Set to the global_cycles deadline at which IRQ7 should actually fire;
  * 0 means no pending SIO IRQ. */
 extern volatile uint64_t sio_irq_delay_cycle;
+
+/* GPU (IRQ1) deferred interrupt support.
+ * On real PSX hardware the GPU command FIFO is processed asynchronously:
+ * writing GP0(1Fh) puts the "Interrupt Request" command in the FIFO, and the
+ * interrupt only reaches I_STAT bit 1 AFTER the GPU has processed it - which
+ * is several hundred CPU cycles after the write.  Firing IRQ1 synchronously
+ * (inside the SW handler) causes tests that read I_STAT immediately after the
+ * GP0 write to see bit 1 set when they expect 0.
+ * Set to the global_cycles deadline at which IRQ1 should fire; 0 = no pending. */
+extern volatile uint64_t gpu_irq_delay_cycle;
 void CDROM_ScheduleEvent(void);
 uint32_t CDROM_ReadDataFIFO(uint8_t *dst, uint32_t count);
 

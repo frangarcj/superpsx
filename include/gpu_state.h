@@ -35,6 +35,11 @@
 /* ── GIF packet buffer ───────────────────────────────────────────── */
 #define GIF_BUFFER_SIZE 16384
 
+/* ── GPU deferred IRQ ───────────────────────────────────────────── */
+/* Cycles after GP0(1Fh) before IRQ1 fires into I_STAT (mirrors real PSX
+ * async GPU FIFO processing latency). */
+#define GPU_IRQ_DELAY 500
+
 /* ── CLUT decoded texture temp area in GS VRAM ──────────────────── */
 #define CLUT_DECODED_Y 512
 #define CLUT_DECODED_X 0
@@ -157,6 +162,12 @@ extern uint32_t tex_win_mask_x;
 extern uint32_t tex_win_mask_y;
 extern uint32_t tex_win_off_x;
 extern uint32_t tex_win_off_y;
+
+/* Raw E-register values for GP1(10h) query responses */
+extern uint32_t raw_tex_window;     /* E2: bits 0-19 */
+extern uint32_t raw_draw_area_tl;   /* E3: bits 0-19 */
+extern uint32_t raw_draw_area_br;   /* E4: bits 0-19 */
+extern uint32_t raw_draw_offset;    /* E5: bits 0-21 */
 
 /* Immediate mode command buffer */
 extern int gpu_cmd_remaining;

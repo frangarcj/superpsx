@@ -15,7 +15,7 @@
 uint64_t gpu_busy_until = 0;
 
 /* DMA bus cost: ~5 CPU cycles per word transferred, ~10 per OT node */
-#define DMA_CYCLES_PER_WORD   5
+#define DMA_CYCLES_PER_WORD 5
 #define DMA_CYCLES_PER_PACKET 10
 
 /* Approximate GPU rendering cost per primitive pixel-clock.
@@ -132,7 +132,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
     {
         int packets = 0;
         int max_packets = 20000;
-        uint32_t total_dma_words = 0;  /* track total data words for cycle cost */
+        uint32_t total_dma_words = 0; /* track total data words for cycle cost */
 
         while (packets < max_packets)
         {
@@ -140,7 +140,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
             uint32_t header = GPU_GetWord(addr);
             uint32_t count = header >> 24;
             uint32_t next = header & 0xFFFFFF;
-            total_dma_words += count + 1;  /* +1 for the header word */
+            total_dma_words += count + 1; /* +1 for the header word */
 
             if (count > 256)
             {
@@ -197,7 +197,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                 else if ((cmd_word >> 24) == 0xA0)
                 {
                     uint32_t coords = GPU_GetWord(addr + 4);
-                    uint32_t dims   = GPU_GetWord(addr + 8);
+                    uint32_t dims = GPU_GetWord(addr + 8);
                     uint32_t image_words = ((dims & 0xFFFF) * (dims >> 16)) / 2;
 
                     // Procesar por vía rápida solo si el bloque está completo en este paquete
@@ -205,7 +205,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                     {
                         GS_UploadRegionFast(coords, dims, (uint32_t *)(psx_ram + ((addr + 12) & 0x1FFFFC)), image_words);
                         uint32_t skip = 3 + image_words;
-                        i    += skip;
+                        i += skip;
                         addr += (skip * 4);
                     }
                     else
@@ -260,8 +260,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
 
         /* ── DMA bus + GPU processing cycle cost for linked-list ── */
         {
-            uint64_t dma_cost = (uint64_t)total_dma_words * DMA_CYCLES_PER_WORD
-                              + (uint64_t)packets * DMA_CYCLES_PER_PACKET;
+            uint64_t dma_cost = (uint64_t)total_dma_words * DMA_CYCLES_PER_WORD + (uint64_t)packets * DMA_CYCLES_PER_PACKET;
             uint64_t gpu_cost = gpu_estimated_pixels * GPU_CYCLES_PER_PIXEL;
             gpu_estimated_pixels = 0;
             global_cycles += dma_cost;

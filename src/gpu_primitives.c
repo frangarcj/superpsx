@@ -131,8 +131,8 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 verts[i].color = color;
 
             uint32_t xy = psx_cmd[idx++];
-            verts[i].x = (int16_t)(xy & 0xFFFF);
-            verts[i].y = (int16_t)(xy >> 16);
+            verts[i].x = (int16_t)((int32_t)((xy & 0xFFFF) << 21) >> 21);
+            verts[i].y = (int16_t)((int32_t)((xy >> 16) << 21) >> 21);
 
             if (is_textured)
             {
@@ -507,8 +507,8 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
 
         int16_t x, y;
         uint32_t xy = psx_cmd[idx++];
-        x = (int16_t)(xy & 0xFFFF);
-        y = (int16_t)(xy >> 16);
+        x = (int16_t)((int32_t)((xy & 0xFFFF) << 21) >> 21);
+        y = (int16_t)((int32_t)((xy >> 16) << 21) >> 21);
 
         uint32_t uv_clut = 0;
         if (is_textured)
@@ -901,11 +901,11 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
         int y = (xy >> 16) & 0x1FF;
         int w = ((wh & 0xFFFF) & 0x3FF) + 0xF;
         w &= ~0xF;
-        if (w == 0)
-            w = 0x400;
         int h = (wh >> 16) & 0x1FF;
-        if (h == 0)
-            h = 0x200;
+
+        /* Width=0 or Height=0 → no fill (real PSX HW does nothing) */
+        if (w == 0 || h == 0)
+            goto fillrect_done;
 
         /* ── Pixel fill estimate for fill-rect ── */
         gpu_estimated_pixels += (uint32_t)w * (uint32_t)h;
@@ -946,6 +946,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 }
             }
         }
+    fillrect_done:;
     }
     else if ((cmd & 0xE0) == 0x40)
     { // Line

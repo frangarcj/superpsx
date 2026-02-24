@@ -238,8 +238,9 @@ uint16_t ReadHalf(uint32_t addr)
         return *(uint16_t *)(psx_bios + (phys - 0x1FC00000));
     if (phys >= 0x1F800000 && phys < 0x1F800400)
         return *(uint16_t *)(scratchpad_buf + (phys - 0x1F800000));
-    if (phys >= 0x1F801000 && phys < 0x1F803000)
+    if (phys >= 0x1F801000 && phys < 0x1F803000) {
         return (uint16_t)ReadHardware(phys);
+    }
     return 0;
 }
 

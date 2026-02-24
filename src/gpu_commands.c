@@ -58,6 +58,27 @@ int GPU_GetCommandSize(uint32_t cmd)
 
     return 1;
 }
+static uint32_t cache_e1 = 0xFFFFFFFF;
+static uint32_t cache_e3 = 0xFFFFFFFF;
+static uint32_t cache_e4 = 0xFFFFFFFF;
+static uint32_t cache_e5 = 0xFFFFFFFF;
+static uint32_t cache_gp1_05 = 0xFFFFFFFF;
+static uint32_t cache_gp1_06 = 0xFFFFFFFF;
+static uint32_t cache_gp1_07 = 0xFFFFFFFF;
+static uint32_t cache_gp1_08 = 0xFFFFFFFF;
+
+static void clear_gpu_param_cache(void)
+{
+    cache_e1 = 0xFFFFFFFF;
+    cache_e3 = 0xFFFFFFFF;
+    cache_e4 = 0xFFFFFFFF;
+    cache_e5 = 0xFFFFFFFF;
+    cache_gp1_05 = 0xFFFFFFFF;
+    cache_gp1_06 = 0xFFFFFFFF;
+    cache_gp1_07 = 0xFFFFFFFF;
+    cache_gp1_08 = 0xFFFFFFFF;
+}
+
 
 /* ── GP0 Write ───────────────────────────────────────────────────── */
 
@@ -528,10 +549,9 @@ void GPU_WriteGP0(uint32_t data)
     {
     case 0xE1: // Draw Mode
     {
-        static u32 last_e1 = 0xFFFFFFFF;
-        if (data != last_e1)
+        if (data != cache_e1)
         {
-            last_e1 = data;
+            cache_e1 = data;
 
             uint32_t tp_x = data & 0xF;
             uint32_t tp_y = (data >> 4) & 1;
@@ -579,10 +599,10 @@ void GPU_WriteGP0(uint32_t data)
     break;
     case 0xE3: // Drawing Area Top-Left
     {
-        static uint32_t last_e3 = 0xFFFFFFFF;
-        if (data != last_e3)
+        raw_draw_area_tl = data & 0xFFFFF;
+        if (data != cache_e3)
         {
-            last_e3 = data;
+            cache_e3 = data;
             draw_clip_x1 = data & 0x3FF;
             draw_clip_y1 = (data >> 10) & 0x3FF;
             {
@@ -600,10 +620,10 @@ void GPU_WriteGP0(uint32_t data)
     break;
     case 0xE4: // Drawing Area Bottom-Right
     {
-        static uint32_t last_e4 = 0xFFFFFFFF;
-        if (data != last_e4)
+        raw_draw_area_br = data & 0xFFFFF;
+        if (data != cache_e4)
         {
-            last_e4 = data;
+            cache_e4 = data;
             draw_clip_x2 = data & 0x3FF;
             draw_clip_y2 = (data >> 10) & 0x3FF;
             {
@@ -621,10 +641,10 @@ void GPU_WriteGP0(uint32_t data)
     break;
     case 0xE5: // Drawing Offset
     {
-        static uint32_t last_e5 = 0xFFFFFFFF;
-        if (data != last_e5)
+        raw_draw_offset = data & 0x3FFFFF;
+        if (data != cache_e5)
         {
-            last_e5 = data;
+            cache_e5 = data;
             draw_offset_x = (int16_t)(data & 0x7FF);
             if (draw_offset_x & 0x400)
                 draw_offset_x |= 0xF800;
@@ -635,6 +655,7 @@ void GPU_WriteGP0(uint32_t data)
     }
     break;
     case 0xE2: // Texture Window Setting
+        raw_tex_window = data & 0xFFFFF;
         tex_win_mask_x = data & 0x1F;
         tex_win_mask_y = (data >> 5) & 0x1F;
         tex_win_off_x = (data >> 10) & 0x1F;
@@ -651,6 +672,16 @@ void GPU_WriteGP0(uint32_t data)
             Push_GIF_Tag(GIF_TAG_LO(2, 1, 0, 0, 0, 1), 0xE);
             Push_GIF_Data((uint64_t)mask_set_bit, 0x4A); // FBA_1
             Push_GIF_Data(Get_Base_TEST(), 0x47);        // TEST_1
+        }
+        break;
+    case 0x1F: // GPU IRQ Request (edge-triggered)
+        /* Per psx-spx: I_STAT bits are edge-triggered — they get set ONLY
+         * when the interrupt source transitions from false to true.
+         * GPUSTAT.24 is the source line for I_STAT bit 1 (GPU IRQ).
+         * Only fire SignalInterrupt when GPUSTAT.24 was previously 0. */
+        if (!(gpu_stat & 0x01000000)) {
+            gpu_stat |= 0x01000000;
+            SignalInterrupt(1); /* Rising edge → set I_STAT bit 1 */
         }
         break;
     case 0x00: // NOP
@@ -690,7 +721,9 @@ void GPU_WriteGP1(uint32_t data)
     switch (cmd)
     {
     case 0x00: // Reset GPU
+        clear_gpu_param_cache();
         gpu_stat = 0x14802000;
+        gpu_read = 0;
         draw_offset_x = 0;
         draw_offset_y = 0;
         draw_clip_x1 = 0;
@@ -713,6 +746,10 @@ void GPU_WriteGP1(uint32_t data)
         mask_set_bit = 0;
         mask_check_bit = 0;
         cached_base_test = 0;
+        raw_tex_window = 0;
+        raw_draw_area_tl = 0;
+        raw_draw_area_br = 0;
+        raw_draw_offset = 0;
 
         // Clear GS VRAM to black (PSX GPU reset clears VRAM)
         {
@@ -743,15 +780,23 @@ void GPU_WriteGP1(uint32_t data)
 
             // Clear shadow VRAM
             if (psx_vram_shadow)
+            {
                 memset(psx_vram_shadow, 0, PSX_VRAM_WIDTH * PSX_VRAM_HEIGHT * 2);
+            }
         }
         break;
     case 0x01: // Reset Command Buffer
         gpu_cmd_remaining = 0;
         gpu_transfer_words = 0;
+        polyline_active = 0;
         break;
     case 0x02: // Ack IRQ
-        gpu_stat &= ~0x01000000;
+        gpu_stat &= ~0x01000000;   /* Clear GPUSTAT bit 24 (IRQ flag) */
+        /* I_STAT bit 1 is NOT cleared here — software must clear it
+         * by writing to I_STAT (0x1F801070) separately.
+         * Per psx-spx interrupt acknowledge ordering, clearing the
+         * source (GPUSTAT.24) re-arms the edge detector so that a
+         * subsequent GP0(1Fh) will trigger a new rising edge. */
         break;
     case 0x03: // Display Enable
         if (data & 1)
@@ -766,10 +811,9 @@ void GPU_WriteGP1(uint32_t data)
         break;
     case 0x05: // Display Start
     {
-        static u32 last_gp1_05 = 0xFFFFFFFF;
-        if (data != last_gp1_05)
+        if (data != cache_gp1_05)
         {
-            last_gp1_05 = data;
+            cache_gp1_05 = data;
             uint32_t x = data & 0x3FF;
             uint32_t y = (data >> 10) & 0x1FF;
 
@@ -787,20 +831,18 @@ void GPU_WriteGP1(uint32_t data)
     break;
     case 0x06: // Horizontal Display Range
     {
-        static uint32_t last_h_range = 0xFFFFFFFF;
-        if (data != last_h_range)
+        if (data != cache_gp1_06)
         {
-            last_h_range = data;
+            cache_gp1_06 = data;
             Update_GS_Display();
         }
     }
     break;
     case 0x07: // Vertical Display Range
     {
-        static uint32_t last_v_range = 0xFFFFFFFF;
-        if (data != last_v_range)
+        if (data != cache_gp1_07)
         {
-            last_v_range = data;
+            cache_gp1_07 = data;
             disp_range_y1 = data & 0x3FF;
             disp_range_y2 = (data >> 10) & 0x3FF;
             Update_GS_Display();
@@ -812,14 +854,13 @@ void GPU_WriteGP1(uint32_t data)
         gpu_stat = (gpu_stat & ~0x007F4000) |
                    ((data & 0x3F) << 17) | ((data & 0x40) << 10);
 
-        static uint32_t last_display_mode = 0xFFFFFFFF;
         uint32_t mode_bits = data & 0x7F;
-        if (mode_bits != last_display_mode)
+        if (mode_bits != cache_gp1_08)
         {
             gpu_stat = (gpu_stat & ~0x007F4000) |
                        ((data & 0x3F) << 17) | ((data & 0x40) << 10);
 
-            last_display_mode = mode_bits;
+            cache_gp1_08 = mode_bits;
             uint32_t hres = data & 3;
             uint32_t vres = (data >> 2) & 1;
             uint32_t pal = (data >> 3) & 1;
@@ -842,26 +883,31 @@ void GPU_WriteGP1(uint32_t data)
         gp1_allow_2mb = data & 1;
         break;
     case 0x10: // Get GPU Info
+    case 0x11: case 0x12: case 0x13: case 0x14:
+    case 0x15: case 0x16: case 0x17: case 0x18:
+    case 0x19: case 0x1A: case 0x1B: case 0x1C:
+    case 0x1D: case 0x1E: case 0x1F:
     {
-        uint32_t info_type = data & 0x0F;
+        uint32_t info_type = data & 0x0F;  /* Lower 4 bits select info type */
         switch (info_type)
         {
-        case 2:
-            gpu_read = 0;
+        case 2: /* Texture window: lower 20 bits, preserve upper 12 */
+            gpu_read = (gpu_read & 0xFFF00000) | (raw_tex_window & 0xFFFFF);
             break;
-        case 3:
-            gpu_read = (draw_clip_y1 << 10) | draw_clip_x1;
+        case 3: /* Draw area top-left: lower 20 bits, preserve upper 12 */
+            gpu_read = (gpu_read & 0xFFF00000) | (raw_draw_area_tl & 0xFFFFF);
             break;
-        case 4:
-            gpu_read = (draw_clip_y2 << 10) | draw_clip_x2;
+        case 4: /* Draw area bottom-right: lower 20 bits, preserve upper 12 */
+            gpu_read = (gpu_read & 0xFFF00000) | (raw_draw_area_br & 0xFFFFF);
             break;
-        case 5:
-            gpu_read = ((draw_offset_y & 0x7FF) << 11) | (draw_offset_x & 0x7FF);
+        case 5: /* Draw offset: lower 22 bits, preserve upper 10 */
+            gpu_read = (gpu_read & 0xFFC00000) | (raw_draw_offset & 0x3FFFFF);
             break;
-        case 7:
+        case 7: /* GPU version */
             gpu_read = 2;
             break;
         default:
+            /* Types 0, 1, 6, 8-F: set GPUREAD to 0 */
             gpu_read = 0;
             break;
         }

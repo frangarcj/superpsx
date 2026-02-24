@@ -163,7 +163,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
          * Only fall to the full C call when GPU is busy (gpu_busy_until != 0),
          * which triggers scheduler fast-forward logic.
          */
-        if (phys == 0x1F801814 && size == 4)
+        if (phys == 0x1F801814 && size == 4 && 0 /* DISABLED FAST PATH for debug */)
         {
             /* Check gpu_busy_until == 0 (both halves) */
             emit_load_imm32(REG_T2, (uint32_t)&gpu_busy_until);
