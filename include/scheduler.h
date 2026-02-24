@@ -33,17 +33,29 @@
 #define CYCLES_PER_FRAME_NTSC (SCANLINES_PER_FRAME * CYCLES_PER_HBLANK_NTSC)        /* 571399 */
 #define CYCLES_PER_FRAME_PAL  (SCANLINES_PER_FRAME_PAL * CYCLES_PER_HBLANK_PAL)     /* 680752 */
 
-/* Timer0 dotclock dividers: CPU_FREQ / dotclock_freq (integer approx)
- * 256-wide:  5.3222400 MHz → div≈7  (exact: 6.366)
- * 320-wide:  6.6528000 MHz → div≈5  (exact: 5.091)  [most common]
- * 368-wide:  7.6032000 MHz → div≈4  (exact: 4.454)
- * 512-wide: 10.6444800 MHz → div≈3  (exact: 3.183)
- * 640-wide: 13.3056000 MHz → div≈3  (exact: 2.546)   */
+/* Timer0 dotclock dividers — exact rational: CPU/dot = N × 7 / 11
+ * where N = video-clocks-per-dot (10,8,7,5,4 for each resolution).
+ * Integer approximations (DIV) are kept for backward compat / scheduling;
+ * the fractional numerators (NUM) are used in Timer_SyncValue for
+ * exact accumulation: ticks = elapsed_sub11 / NUM,  sub11 = cycles×11.
+ *
+ * 256-wide: N=10, CPU/dot = 70/11 = 6.3636...
+ * 320-wide: N= 8, CPU/dot = 56/11 = 5.0909...
+ * 368-wide: N= 7, CPU/dot = 49/11 = 4.4545...
+ * 512-wide: N= 5, CPU/dot = 35/11 = 3.1818...
+ * 640-wide: N= 4, CPU/dot = 28/11 = 2.5454...  */
 #define DOTCLOCK_DIV_256 7U
 #define DOTCLOCK_DIV_320 5U
-#define DOTCLOCK_DIV_368 4U /* actually ~4.45, fractional handled */
+#define DOTCLOCK_DIV_368 4U
 #define DOTCLOCK_DIV_512 3U
-#define DOTCLOCK_DIV_640 3U /* actually ~2.55, fractional handled */
+#define DOTCLOCK_DIV_640 3U
+/* Fractional numerators (denominator is always 11):
+ * ticks = (elapsed_cycles * 11 + residue) / DOTCLOCK_NUM_xxx */
+#define DOTCLOCK_NUM_256 70U  /* 10 × 7 */
+#define DOTCLOCK_NUM_320 56U  /*  8 × 7 */
+#define DOTCLOCK_NUM_368 49U  /*  7 × 7 */
+#define DOTCLOCK_NUM_512 35U  /*  5 × 7 */
+#define DOTCLOCK_NUM_640 28U  /*  4 × 7 */
 
 /* Approximate CD-ROM sector read delay (1x speed, ~150 sectors/s) */
 #define CDROM_READ_CYCLES (PSX_CPU_FREQ / 150) /* ~225792 */

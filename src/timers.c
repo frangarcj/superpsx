@@ -31,6 +31,13 @@ static uint8_t timer_stopped_cache[3] = {0, 0, 0};
 static uint32_t timer_divider_cache[3] = {1, 1, 1};
 static uint64_t timer_mode_set_cycle[3] = {0, 0, 0}; /* Cycle at which mode register was written */
 
+/* Timer0 dotclock fractional accumulator.
+ * Real dotclock dividers are N×7/11 CPU cycles (not integer).
+ * timer0_dotclock_num = N×7 when in dotclock mode, 0 when in sysclk.
+ * timer0_dotclock_residue = fractional sub-11 CPU cycle accumulator (0..10). */
+static uint32_t timer0_dotclock_num = 0;
+static uint32_t timer0_dotclock_residue = 0;
+
 static void Timer_Callback0(void);
 static void Timer_Callback1(void);
 static void Timer_Callback2(void);
@@ -42,16 +49,22 @@ static void timer_update_divider_cache(int t)
     uint32_t src = (timers[t].mode >> 8) & 3;
     if (t == 0 && (src == 1 || src == 3))
     {
-        if (disp_hres368) timer_divider_cache[0] = DOTCLOCK_DIV_368;
-        else switch (disp_hres) {
-            case 0: timer_divider_cache[0] = DOTCLOCK_DIV_256; break;
-            case 1: timer_divider_cache[0] = DOTCLOCK_DIV_320; break;
-            case 2: timer_divider_cache[0] = DOTCLOCK_DIV_512; break;
-            case 3: timer_divider_cache[0] = DOTCLOCK_DIV_640; break;
-            default: timer_divider_cache[0] = DOTCLOCK_DIV_320; break;
+        /* Dotclock mode: set both integer divider (for scheduling) and
+         * fractional numerator (for exact tick computation). */
+        if (disp_hres368) {
+            timer_divider_cache[0] = DOTCLOCK_DIV_368;
+            timer0_dotclock_num = DOTCLOCK_NUM_368;
+        } else switch (disp_hres) {
+            case 0: timer_divider_cache[0] = DOTCLOCK_DIV_256; timer0_dotclock_num = DOTCLOCK_NUM_256; break;
+            case 1: timer_divider_cache[0] = DOTCLOCK_DIV_320; timer0_dotclock_num = DOTCLOCK_NUM_320; break;
+            case 2: timer_divider_cache[0] = DOTCLOCK_DIV_512; timer0_dotclock_num = DOTCLOCK_NUM_512; break;
+            case 3: timer_divider_cache[0] = DOTCLOCK_DIV_640; timer0_dotclock_num = DOTCLOCK_NUM_640; break;
+            default: timer_divider_cache[0] = DOTCLOCK_DIV_320; timer0_dotclock_num = DOTCLOCK_NUM_320; break;
         }
+        timer0_dotclock_residue = 0;
         return;
     }
+    if (t == 0) timer0_dotclock_num = 0; /* sysclk mode */
     if (t == 1 && (src == 1 || src == 3)) {
         /* Real hardware counts discrete HBlank events, not cycle fractions.
          * We approximate with cycle division, so use divider - 1 to provide
@@ -98,8 +111,11 @@ static void Timer_SyncValue(int t)
              * Value = ticks within the current scanline. */
             uint64_t cif = now - hblank_frame_start_cycle;
             uint32_t cycle_in_scanline = (uint32_t)(cif % hblank);
-            uint32_t divider = timer_divider_cache[0];
-            uint32_t ticks = cycle_in_scanline / divider;
+            uint32_t ticks;
+            if (timer0_dotclock_num > 0)
+                ticks = (uint32_t)((uint64_t)cycle_in_scanline * 11 / timer0_dotclock_num);
+            else
+                ticks = cycle_in_scanline / timer_divider_cache[0];
             timers[0].value = ticks & 0xFFFF;
             timers[0].last_sync_cycle = now;
             return;
@@ -144,10 +160,29 @@ static void Timer_SyncValue(int t)
     }
 
     if (timer_stopped_cache[t]) { timers[t].last_sync_cycle = now; return; }
+
     uint32_t divider = timer_divider_cache[t];
     uint64_t elapsed = now - timers[t].last_sync_cycle;
-    uint32_t ticks = (uint32_t)(elapsed / divider);
-    timers[t].last_sync_cycle += (uint64_t)ticks * divider;
+    uint32_t ticks;
+
+    if (t == 0 && timer0_dotclock_num > 0)
+    {
+        /* Fractional dotclock accumulation: exact tick count using
+         * sub-11 CPU cycle precision (denominator is always 11).
+         * ticks = (elapsed × 11 + residue) / dotclock_num */
+        uint64_t sub11 = elapsed * 11 + timer0_dotclock_residue;
+        ticks = (uint32_t)(sub11 / timer0_dotclock_num);
+        uint64_t consumed_sub11 = (uint64_t)ticks * timer0_dotclock_num;
+        uint32_t remaining_sub11 = (uint32_t)(sub11 - consumed_sub11);
+        timers[0].last_sync_cycle = now - remaining_sub11 / 11;
+        timer0_dotclock_residue = remaining_sub11 % 11;
+    }
+    else
+    {
+        /* Integer divider path (sysclk, hblank, sysclk/8). */
+        ticks = (uint32_t)(elapsed / divider);
+        timers[t].last_sync_cycle += (uint64_t)ticks * divider;
+    }
     if (ticks == 0) return;
 
     uint32_t val = timers[t].value & 0xFFFF;
@@ -199,7 +234,12 @@ static void Timer_ScheduleOne(int t)
         }
     }
     if (ticks_to_event == 0) ticks_to_event = 1;
-    Scheduler_ScheduleEvent(SCHED_EVENT_TIMER0 + t, EFFECTIVE_CYCLES + (uint64_t)ticks_to_event * divider, timer_callbacks[t]);
+    uint64_t deadline;
+    if (t == 0 && timer0_dotclock_num > 0)
+        deadline = EFFECTIVE_CYCLES + ((uint64_t)ticks_to_event * timer0_dotclock_num + 10) / 11;
+    else
+        deadline = EFFECTIVE_CYCLES + (uint64_t)ticks_to_event * divider;
+    Scheduler_ScheduleEvent(SCHED_EVENT_TIMER0 + t, deadline, timer_callbacks[t]);
 }
 
 static void Timer_FireEvent(int t)
