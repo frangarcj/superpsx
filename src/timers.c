@@ -29,6 +29,7 @@ typedef struct
 static PsxTimer timers[3];
 static uint8_t timer_stopped_cache[3] = {0, 0, 0};
 static uint32_t timer_divider_cache[3] = {1, 1, 1};
+static uint64_t timer_mode_set_cycle[3] = {0, 0, 0}; /* Cycle at which mode register was written */
 
 static void Timer_Callback0(void);
 static void Timer_Callback1(void);
@@ -72,7 +73,9 @@ static void timer_update_stopped_cache(int t)
     uint32_t mode = timers[t].mode;
     if (!(mode & 1)) { timer_stopped_cache[t] = 0; return; }
     uint32_t sync_mode = (mode >> 1) & 3;
-    if (t == 0 && sync_mode == 2) { timer_stopped_cache[t] = 1; return; }
+    /* Timer0: mode 1 handled in SyncValue (reset at Hblank); mode 2 stopped;
+     *         mode 3 initially stopped (handled lazily in SyncValue). */
+    if (t == 0 && (sync_mode == 2 || sync_mode == 3)) { timer_stopped_cache[t] = 1; return; }
     if (t == 1 && (sync_mode == 2 || sync_mode == 3)) { timer_stopped_cache[t] = 1; return; }
     if (t == 2 && (sync_mode == 0 || sync_mode == 3)) { timer_stopped_cache[t] = 1; return; }
     timer_stopped_cache[t] = 0;
@@ -82,6 +85,64 @@ static void Timer_SyncValue(int t)
 {
     if (t < 0 || t > 2) return;
     uint64_t now = EFFECTIVE_CYCLES;
+
+    /* ---- Timer0 sync modes (Hblank-related) ---- */
+    if (t == 0 && (timers[0].mode & 1))
+    {
+        uint32_t sync_mode = (timers[0].mode >> 1) & 3;
+        uint32_t hblank = psx_config.region_pal ? CYCLES_PER_HBLANK_PAL : CYCLES_PER_HBLANK_NTSC;
+
+        if (sync_mode == 1)
+        {
+            /* Reset counter to 0 at each Hblank.
+             * Value = ticks within the current scanline. */
+            uint64_t cif = now - hblank_frame_start_cycle;
+            uint32_t cycle_in_scanline = (uint32_t)(cif % hblank);
+            uint32_t divider = timer_divider_cache[0];
+            uint32_t ticks = cycle_in_scanline / divider;
+            timers[0].value = ticks & 0xFFFF;
+            timers[0].last_sync_cycle = now;
+            return;
+        }
+        if (sync_mode == 3)
+        {
+            /* Pause until first Hblank after mode write, then free-run. */
+            uint64_t set_cycle = timer_mode_set_cycle[0];
+
+            /* If mode was set before current frame, Hblank has definitely occurred. */
+            if (set_cycle < hblank_frame_start_cycle)
+            {
+                /* Timer should have started running at the first Hblank of
+                 * the frame (or earlier).  Adjust last_sync_cycle once. */
+                if (timers[0].last_sync_cycle < hblank_frame_start_cycle)
+                    timers[0].last_sync_cycle = hblank_frame_start_cycle;
+                timer_stopped_cache[0] = 0;
+                /* Fall through to normal sync */
+            }
+            else
+            {
+                /* Mode was set within current frame — compute first Hblank. */
+                uint64_t pos_in_scanline = (set_cycle - hblank_frame_start_cycle) % hblank;
+                uint64_t cycles_to_hblank = hblank - pos_in_scanline;
+                uint64_t first_hblank = set_cycle + cycles_to_hblank;
+
+                if (now < first_hblank)
+                {
+                    /* Still paused, waiting for first Hblank. */
+                    timers[0].last_sync_cycle = now;
+                    return;
+                }
+                /* First Hblank occurred — start free-running from there. */
+                if (timers[0].last_sync_cycle < first_hblank)
+                    timers[0].last_sync_cycle = first_hblank;
+                timer_stopped_cache[0] = 0;
+                /* Fall through to normal sync */
+            }
+        }
+        /* sync_mode 0 and 2: mode 0 treated as free-run (TODO: pause during
+         * Hblank); mode 2 caught by stopped_cache above. */
+    }
+
     if (timer_stopped_cache[t]) { timers[t].last_sync_cycle = now; return; }
     uint32_t divider = timer_divider_cache[t];
     uint64_t elapsed = now - timers[t].last_sync_cycle;
@@ -197,6 +258,7 @@ void Timers_Write(uint32_t addr, uint32_t data)
     switch (reg) {
         case 0: timers[t].value = data; timers[t].last_sync_cycle = now; break;
         case 1: timers[t].value = 0; timers[t].mode = data; timers[t].last_sync_cycle = now;
+                timer_mode_set_cycle[t] = now;
                 timer_update_stopped_cache(t); timer_update_divider_cache(t); break;
         case 2: timers[t].target = data; break;
     }

@@ -62,6 +62,7 @@ static uint32_t hblank_scanline = 0;
 static uint64_t hblank_ideal_deadline = 0;
 static uint64_t perf_frame_count = 0;
 static uint32_t cycles_per_hblank_runtime = CYCLES_PER_HBLANK_NTSC; /* Set at init based on region */
+uint64_t hblank_frame_start_cycle = 0;  /* Cycle at which current frame started (VBlank reset) */
 
 #ifdef ENABLE_PERF_REPORT
 static uint64_t perf_last_report_cycle = 0;
@@ -430,6 +431,7 @@ static void Sched_HBlank_Callback(void)
     if (hblank_scanline >= SCANLINES_PER_FRAME)
     {
         hblank_scanline = 0;
+        hblank_frame_start_cycle = global_cycles;
         GPU_VBlank();
         gpu_pending_vblank_flush = 1;
         SignalInterrupt(0);
@@ -585,6 +587,7 @@ void Run_CPU(void)
     perf_last_report_cycle = 0;
     perf_last_report_tick = get_wall_ms();
     cycles_per_hblank_runtime = psx_config.region_pal ? CYCLES_PER_HBLANK_PAL : CYCLES_PER_HBLANK_NTSC;
+    hblank_frame_start_cycle = global_cycles;
     hblank_ideal_deadline = global_cycles + HBLANK_BATCH_SIZE * cycles_per_hblank_runtime;
     Scheduler_ScheduleEvent(SCHED_EVENT_HBLANK, hblank_ideal_deadline, Sched_HBlank_Callback);
 

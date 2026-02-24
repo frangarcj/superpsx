@@ -81,6 +81,7 @@ extern volatile uint32_t chain_cycles_acc;
 extern int scheduler_unlimited_speed;
 extern uint64_t scheduler_cached_earliest;
 extern int scheduler_earliest_id;
+extern uint64_t hblank_frame_start_cycle;  /* in dynarec_run.c */
 
 /* ---- Init (in scheduler.c) ---- */
 void Scheduler_Init(void);
