@@ -316,14 +316,62 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0));     /* b @done */
     EMIT_NOP();
 
+    /*
+     * Dynamic GPU_ReadStatus fast-path (phys == 0x1F801814).
+     * Typical DrawSync loops read from a register offset: lw t0, 0x1814(t1)
+     * We can catch this right before falling into the expensive C-call slow path
+     * to avoid a huge performance penalty when polling GPUSTAT.
+     */
+    uint32_t *gpustat_check_branch = code_ptr;
+    emit(MK_I(0x0C, REG_T0, REG_A0, 0xFFFF));       /* andi a0, t0, 0xFFFF */
+    emit(MK_I(0x0E, REG_A0, REG_A0, 0x1814));       /* xori a0, a0, 0x1814 */
+    emit(MK_I(0x05, REG_A0, REG_ZERO, 0));          /* bne a0, zero, @slow_real */
+    EMIT_NOP();
+
+    /* Ensure it's HW page (phys >= 0x1F800000 && < 0x20000000) */
+    emit(MK_R(0, 0, REG_T1, REG_A0, 16, 0x02));     /* srl a0, t1, 16 (t1 was set to phys above) */
+    emit(MK_I(0x0E, REG_A0, REG_A0, 0x1F80));       /* xori a0, a0, 0x1F80 */
+    uint32_t *gpustat_check_hw = code_ptr;
+    emit(MK_I(0x05, REG_A0, REG_ZERO, 0));          /* bne a0, zero, @slow_real */
+    EMIT_NOP();
+
+    /* Fast path: Check gpu_busy_until == 0 */
+    emit_load_imm32(REG_A0, (uint32_t)&gpu_busy_until);
+    EMIT_LW(REG_A1, 0, REG_A0);                     /* a1 = low 32 bits  */
+    EMIT_LW(REG_A0, 4, REG_A0);                     /* a0 = high 32 bits */
+    EMIT_OR(REG_A0, REG_A1, REG_A0);                /* a0 = low | high   */
+    uint32_t *gpustat_busy_branch = code_ptr;
+    EMIT_BNE(REG_A0, REG_ZERO, 0);                  /* bne a0, zero, @slow_real */
+    EMIT_NOP();
+
+    /* Fast path execution: v0 = gpu_stat | 0x14002000 */
+    emit_load_imm32(REG_A0, (uint32_t)&gpu_stat);
+    EMIT_LW(REG_V0, 0, REG_A0);
+    EMIT_LUI(REG_A0, 0x1400);
+    EMIT_ORI(REG_A0, REG_A0, 0x2000);
+    EMIT_OR(REG_V0, REG_V0, REG_A0);
+    
+    uint32_t *gpustat_done = code_ptr;
+    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0));        /* b @done */
+    EMIT_NOP();
+
+
+    /* @slow_real: Actual slow path C helper call */
+    int32_t soff_gpustat = (int32_t)(code_ptr - gpustat_check_branch - 1);
+    *gpustat_check_branch = (*gpustat_check_branch & 0xFFFF0000) | ((uint32_t)soff_gpustat & 0xFFFF);
+    int32_t soff_gpustat_hw = (int32_t)(code_ptr - gpustat_check_hw - 1);
+    *gpustat_check_hw = (*gpustat_check_hw & 0xFFFF0000) | ((uint32_t)soff_gpustat_hw & 0xFFFF);
+    int32_t soff_gpustat_busy = (int32_t)(code_ptr - gpustat_busy_branch - 1);
+    *gpustat_busy_branch = (*gpustat_busy_branch & 0xFFFF0000) | ((uint32_t)soff_gpustat_busy & 0xFFFF);
+
     /* Slow path: C helper call (I/O, unmapped, etc.) */
-    /* @slow: alignment branch and sp_miss land here */
+    /* @slow: alignment branch and sp_miss land before GPUSTAT check, now they just skip it */
     if (align_branch)
     {
-        int32_t soff1 = (int32_t)(code_ptr - align_branch - 1);
+        int32_t soff1 = (int32_t)(gpustat_check_branch - align_branch);
         *align_branch = (*align_branch & 0xFFFF0000) | ((uint32_t)soff1 & 0xFFFF);
     }
-    int32_t soff_sp = (int32_t)(code_ptr - sp_miss - 1);
+    int32_t soff_sp = (int32_t)(gpustat_check_branch - sp_miss);
     *sp_miss = (*sp_miss & 0xFFFF0000) | ((uint32_t)soff_sp & 0xFFFF);
 
     emit_load_imm32(REG_T2, emit_current_psx_pc);
@@ -356,6 +404,10 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
     int32_t doff_sp = (int32_t)(code_ptr - sp_done - 1);
     *sp_done = (*sp_done & 0xFFFF0000) | ((uint32_t)doff_sp & 0xFFFF);
+    if (size == 4) {
+        int32_t doff_gpu = (int32_t)(code_ptr - gpustat_done - 1);
+        *gpustat_done = (*gpustat_done & 0xFFFF0000) | ((uint32_t)doff_gpu & 0xFFFF);
+    }
 
     if (!dynarec_load_defer)
         emit_store_psx_reg(rt_psx, REG_V0);
