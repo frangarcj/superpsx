@@ -326,7 +326,7 @@ void SPU_Shutdown(void)
 /* ---- Decode one 16-byte ADPCM block into 28 samples ---- */
 /* Two-phase approach: (1) extract all nibbles branch-free, (2) tight IIR filter.
  * Filter-0 fast path: f0=f1=0 means no prediction → direct copy.             */
-static void decode_adpcm_block(SPU_Voice *v, uint32_t addr)
+static inline __attribute__((always_inline)) void decode_adpcm_block(SPU_Voice *v, uint32_t addr)
 {
     uint8_t *block = &spu_ram[addr & (SPU_RAM_SIZE - 1)];
 
@@ -681,6 +681,10 @@ void SPU_GenerateChunk(int num_samples)
         int32_t v_vol_l = get_effective_volume(v->vol_l);
         int32_t v_vol_r = get_effective_volume(v->vol_r);
         uint32_t v_pitch = v->pitch;
+
+        /* Skip entirely silent voices (zero volume on both channels) */
+        if (__builtin_expect(v_vol_l == 0 && v_vol_r == 0, 0))
+            continue;
 
         int32_t last_adsr_vol = v->adsr_vol;
         int32_t comb_vol_l = (v_vol_l * last_adsr_vol) >> 15;
