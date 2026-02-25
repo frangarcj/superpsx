@@ -150,7 +150,7 @@ extern uint8_t jit_page_gen[JIT_L1_RAM_PAGES];
 static inline void jit_invalidate_page(uint32_t phys_addr)
 {
     uint32_t page = phys_addr >> 12;
-    if (page < JIT_L1_RAM_PAGES)
+    if (page < JIT_L1_RAM_PAGES && jit_l1_ram[page] != NULL)
         jit_page_gen[page]++;
 }
 

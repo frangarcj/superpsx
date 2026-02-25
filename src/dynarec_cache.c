@@ -38,13 +38,26 @@ void emit_direct_link(uint32_t target_psx_pc)
     BlockEntry *be = lookup_block(target_psx_pc);
     if (be && be->native != NULL)
     {
-        /* SMC check: compare page generation counter.  If the page was
-         * written to since block compilation, the block may be stale. */
+        /* Two-tier SMC check: page_gen fast filter + hash fallback */
         uint32_t phys = target_psx_pc & 0x1FFFFFFF;
         if (phys < PSX_RAM_SIZE && be->page_gen != jit_get_page_gen(phys))
         {
-            be->native = NULL;
-            be = NULL;
+            uint32_t *opcodes = get_psx_code_ptr(target_psx_pc);
+            if (opcodes)
+            {
+                uint32_t hash = 0;
+                for (uint32_t i = 0; i < be->instr_count; i++)
+                    hash = (hash << 5) + hash + opcodes[i];
+                if (hash != be->code_hash)
+                {
+                    be->native = NULL;
+                    be = NULL;
+                }
+                else
+                {
+                    be->page_gen = jit_get_page_gen(phys);
+                }
+            }
         }
     }
     if (be && be->native != NULL)

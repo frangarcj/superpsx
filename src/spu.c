@@ -92,6 +92,7 @@ static int16_t mix_buffer[SPU_MIX_BUF_SIZE * 2] __attribute__((aligned(16))); /*
 static int32_t mix_buf_l[SPU_MIX_BUF_SIZE] __attribute__((aligned(16)));
 static int32_t mix_buf_r[SPU_MIX_BUF_SIZE] __attribute__((aligned(16)));
 static int spu_initialized = 0;
+int spu_samples_generated = 0; /* Incremental: how many samples generated this frame */
 
 /* ---- ADSR envelope implementation ----
  *
@@ -655,90 +656,72 @@ static void SPU_Mix_And_Clamp(int32_t * __restrict__ ml, int32_t * __restrict__ 
     }
 }
 
-/* ---- Audio mixing: generate one frame of samples ---- */
-void SPU_GenerateSamples(void)
+/* ---- Audio mixing: generate a chunk of samples into the mix buffers ---- */
+/* Called incrementally during HBlank batches to spread CPU load.           */
+void SPU_GenerateChunk(int num_samples)
 {
-    if (!spu_initialized)
+    if (!spu_initialized || num_samples <= 0)
         return;
 
-    /* Check if any voice is active — skip mixing entirely if silent */
-    int any_active = 0;
-    {
-        for (int i = 0; i < SPU_NUM_VOICES; i++) {
-            if (voices[i].active) {
-                any_active = 1;
-                break;
-            }
-        }
-    }
-    if (!any_active)
+    int offset = spu_samples_generated;
+    if (offset + num_samples > SAMPLES_PER_FRAME)
+        num_samples = SAMPLES_PER_FRAME - offset;
+    if (num_samples <= 0)
         return;
 
-    /* Accumulate into intermediate 32-bit buffers */
-    memset(mix_buf_l, 0, SPU_MIX_BUF_SIZE * sizeof(int32_t));
-    memset(mix_buf_r, 0, SPU_MIX_BUF_SIZE * sizeof(int32_t));
+    /* Clear the chunk region in mix buffers */
+    memset(&mix_buf_l[offset], 0, num_samples * sizeof(int32_t));
+    memset(&mix_buf_r[offset], 0, num_samples * sizeof(int32_t));
 
     for (int i = 0; i < SPU_NUM_VOICES; i++) {
         SPU_Voice *v = &voices[i];
         if (!v->active)
             continue;
 
-        /* Hoist constant voice fields to locals (avoids alias-induced reloads
-         * — compiler may fear mix_buf writes alias the Voice struct).          */
         int32_t v_vol_l = get_effective_volume(v->vol_l);
         int32_t v_vol_r = get_effective_volume(v->vol_r);
         uint32_t v_pitch = v->pitch;
 
-        /* Precompute combined (voice × ADSR) volume — updated only when adsr_vol
-         * changes (rare: counter overflow ~once per 10-10000 samples in sustain) */
         int32_t last_adsr_vol = v->adsr_vol;
         int32_t comb_vol_l = (v_vol_l * last_adsr_vol) >> 15;
         int32_t comb_vol_r = (v_vol_r * last_adsr_vol) >> 15;
 
-        for (int s = 0; s < SAMPLES_PER_FRAME; s++) {
-            /* Decode block if needed (rare: only at block boundaries) */
+        for (int s = 0; s < num_samples; s++) {
             if (__builtin_expect(!v->block_decoded, 0)) {
                 decode_adpcm_block(v, v->current_addr);
                 if (!v->active)
-                    break; /* Voice stopped by loop-end with no repeat */
+                    break;
             }
 
-            /* Advance ADSR envelope (one tick per 44100Hz sample) */
             adsr_tick(v);
             if (v->adsr_phase == ADSR_OFF) {
                 v->active = 0;
                 break;
             }
 
-            /* Update combined volume if ADSR changed (rare except in fast Attack) */
             if (__builtin_expect(v->adsr_vol != last_adsr_vol, 0)) {
                 last_adsr_vol = v->adsr_vol;
                 comb_vol_l = (v_vol_l * last_adsr_vol) >> 15;
                 comb_vol_r = (v_vol_r * last_adsr_vol) >> 15;
             }
 
-            /* Fetch sample from decoded buffer */
             uint32_t sample_idx = v->sample_pos >> 12;
             int16_t pcm = v->decoded[sample_idx];
 
-            /* Apply combined volume (voice × ADSR) — 2 multiplies instead of 4 */
             int32_t voiced_l = ((int32_t)pcm * comb_vol_l) >> 15;
             int32_t voiced_r = ((int32_t)pcm * comb_vol_r) >> 15;
-            mix_buf_l[s] += voiced_l;
-            mix_buf_r[s] += voiced_r;
+            mix_buf_l[offset + s] += voiced_l;
+            mix_buf_r[offset + s] += voiced_r;
 
-            /* Advance sample position by pitch */
             v->sample_pos += v_pitch;
 
-            /* Check if we've crossed into the next 28-sample block (rare) */
             if (__builtin_expect((v->sample_pos >> 12) >= 28, 0)) {
                 do {
                     v->sample_pos -= (28 << 12);
-                    v->current_addr += 16; /* 16 bytes per ADPCM block */
+                    v->current_addr += 16;
                     v->current_addr &= (SPU_RAM_SIZE - 1);
                 } while ((v->sample_pos >> 12) >= 28);
                 v->block_decoded = 0;
-                /* Decode next block immediately to handle flags and have valid samples */
                 decode_adpcm_block(v, v->current_addr);
                 if (!v->active)
                     break;
@@ -746,15 +729,40 @@ void SPU_GenerateSamples(void)
         }
     }
 
-    /* Apply main volume and get effective levels (0..0x7FFF range) */
+    spu_samples_generated += num_samples;
+}
+
+/* ---- Flush accumulated samples to audio hardware ---- */
+void SPU_FlushAudio(void)
+{
+    if (!spu_initialized)
+        return;
+
+    int total = spu_samples_generated;
+    if (total <= 0) {
+        spu_samples_generated = 0;
+        return;
+    }
+
+    /* Apply main volume and clamp */
     int32_t eff_vol_l = get_effective_volume(main_vol_l);
     int32_t eff_vol_r = get_effective_volume(main_vol_r);
-
-    /* Perform final mix, volume apply and master clamp */
-    SPU_Mix_And_Clamp(mix_buf_l, mix_buf_r, mix_buffer, SAMPLES_PER_FRAME, eff_vol_l, eff_vol_r);
+    SPU_Mix_And_Clamp(mix_buf_l, mix_buf_r, mix_buffer, total, eff_vol_l, eff_vol_r);
 
     /* Output to audsrv */
-    int size = SAMPLES_PER_FRAME * 2 * sizeof(int16_t);
+    int size = total * 2 * sizeof(int16_t);
     audsrv_wait_audio(size);
     audsrv_play_audio((char *)mix_buffer, size);
+
+    spu_samples_generated = 0;
+}
+
+/* ---- Legacy: generate full frame (backwards compat) ---- */
+void SPU_GenerateSamples(void)
+{
+    /* Generate any remaining samples for this frame */
+    int remaining = SAMPLES_PER_FRAME - spu_samples_generated;
+    if (remaining > 0)
+        SPU_GenerateChunk(remaining);
+    SPU_FlushAudio();
 }
