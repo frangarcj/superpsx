@@ -16,7 +16,11 @@
  * During JIT block execution, partial_block_cycles holds the compile-time
  * cycle offset for the current instruction, allowing mid-block timer reads
  * to see accurate elapsed time instead of stale global_cycles. */
-#define EFFECTIVE_CYCLES  (global_cycles + chain_cycles_acc + partial_block_cycles)
+/* Effective cycle count during JIT execution:
+ * global_cycles is only advanced at block boundaries when a chain ends.
+ * We add elapsed cycles within the current chain (initial - current) plus any
+ * cycle cost from the partially executed current block. */
+#define EFFECTIVE_CYCLES  (global_cycles + (cpu.initial_cycles_left - cpu.cycles_left) + partial_block_cycles)
 
 typedef struct
 {

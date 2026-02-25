@@ -41,9 +41,9 @@ uint32_t r3000a_cycle_cost(uint32_t opcode)
         case 0x19:
             return 6; /* MULTU */
         case 0x1A:
-            return 36; /* DIV   */
+            return 2; /* DIV (was 36) */
         case 0x1B:
-            return 36; /* DIVU  */
+            return 2; /* DIVU (was 36) */
         default:
             return 1;
         }
@@ -282,24 +282,6 @@ void emit_branch_epilogue(uint32_t target_pc)
 {
     /* Calculate remaining cycles after this block */
     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
-
-    /*
-     * Accumulate this block's cycle cost into chain_cycles_acc so that
-     * timer reads/writes during subsequent chained blocks see correct
-     * elapsed time.  Without this, global_cycles stays stale across the
-     * entire direct-link chain and timers undercount.
-     *
-     * Uses %hi/%lo split to handle sign-extension of the 16-bit offset.
-     */
-    {
-        uint32_t cca = (uint32_t)&chain_cycles_acc;
-        uint16_t cca_lo = cca & 0xFFFF;
-        uint16_t cca_hi = (cca + 0x8000) >> 16;
-        EMIT_LUI(REG_AT, cca_hi);
-        EMIT_LW(REG_T1, (int16_t)cca_lo, REG_AT);
-        EMIT_ADDIU(REG_T1, REG_T1, (int16_t)block_cycle_count);
-        EMIT_SW(REG_T1, (int16_t)cca_lo, REG_AT);
-    }
 
     /* Update cpu.pc IMMEDIATELY, before any potential abort check */
     emit_load_imm32(REG_T0, target_pc);

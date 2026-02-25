@@ -118,6 +118,9 @@ void emit_reload_pinned(void)
  * and reloads them after return (C code may have modified cpu.regs[]). */
 void emit_call_c(uint32_t func_addr)
 {
+    /* Flush S2 to memory so C code sees current cycles_left */
+    EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
+    
     /* Use the shared trampoline to flush/reload pinned registers and provide ABI shadow space
      * without emitting 24 instructions per C-call. Target is passed in REG_T0. */
     emit_load_imm32(REG_T0, func_addr);
@@ -131,6 +134,7 @@ void emit_call_c_lite(uint32_t func_addr)
      * Only flushes/reloads caller-saved pinned regs (V1, T3-T9), saving 8
      * instructions vs the full trampoline.  Safe for memory R/W, LWL/LWR,
      * SWL/SWR helpers. */
+    EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
     emit_load_imm32(REG_T0, func_addr);
     EMIT_JAL_ABS((uint32_t)call_c_trampoline_lite_addr);
     EMIT_NOP();

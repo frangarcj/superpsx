@@ -538,6 +538,9 @@ static inline int run_jit_chain(uint64_t deadline)
     if (cycles_left < 0)
         cycles_left = 0;
 
+    cpu.initial_cycles_left = cycles_left;
+    cpu.cycles_left = cycles_left;
+
     psx_block_exception = 1;
     int32_t remaining = ((block_func_t)block)(&cpu, psx_ram, psx_bios, cycles_left);
     psx_block_exception = 0;
@@ -553,7 +556,6 @@ static inline int run_jit_chain(uint64_t deadline)
         cycles_taken = 8;
     global_cycles += cycles_taken;
     partial_block_cycles = 0; /* Reset mid-block cycle offset */
-    chain_cycles_acc = 0;     /* Reset chain accumulator */
 
     if (be)
         update_dynarec_stats(be, cycles_taken);

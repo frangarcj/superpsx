@@ -1,0 +1,63 @@
+--- src/gpu_commands.c
++++ src/gpu_commands.c
+@@ -102,6 +102,15 @@
+ 
+     if (gpu_cmd_ptr > 0)
+     {
++        // Handle polyline termination during the first segment accumulation
++        if ((gpu_cmd_buffer[0] & 0xE8000000) == 0x48000000) {
++            if ((data & 0xF000F000) == 0x50005000) {
++                gpu_cmd_ptr = 0;
++                gpu_cmd_remaining = 0;
++                polyline_active = 0;
++                return;
++            }
++        }
+         gpu_cmd_buffer[gpu_cmd_ptr++] = data;
+         gpu_cmd_remaining--;
+ 
+--- src/gpu_primitives.c
++++ src/gpu_primitives.c
+@@ -128,8 +128,8 @@
+                 verts[i].color = color;
+ 
+             uint32_t xy = psx_cmd[idx++];
+-            verts[i].x = (int16_t)(xy & 0xFFFF);
+-            verts[i].y = (int16_t)(xy >> 16);
++            verts[i].x = (int16_t)((int32_t)((xy & 0xFFFF) << 21) >> 21);
++            verts[i].y = (int16_t)((int32_t)((xy >> 16) << 21) >> 21);
+ 
+             if (is_textured)
+             {
+@@ -499,8 +499,8 @@
+         int idx = 1;
+ 
+         int16_t x, y;
+         uint32_t xy = psx_cmd[idx++];
+-        x = (int16_t)(xy & 0xFFFF);
+-        y = (int16_t)(xy >> 16);
++        x = (int16_t)((int32_t)((xy & 0xFFFF) << 21) >> 21);
++        y = (int16_t)((int32_t)((xy >> 16) << 21) >> 21);
+ 
+         uint32_t uv_clut = 0;
+         if (is_textured)
+@@ -948,8 +948,8 @@
+         int idx = 1;
+ 
+         uint32_t xy0 = psx_cmd[idx++];
+-        int16_t x0 = (int16_t)(xy0 & 0xFFFF);
+-        int16_t y0 = (int16_t)(xy0 >> 16);
++        int16_t x0 = (int16_t)((int32_t)((xy0 & 0xFFFF) << 21) >> 21);
++        int16_t y0 = (int16_t)((int32_t)((xy0 >> 16) << 21) >> 21);
+ 
+         uint32_t color1 = color0;
+         if (is_shaded)
+             color1 = psx_cmd[idx++] & 0xFFFFFF;
+         uint32_t xy1 = psx_cmd[idx++];
+-        int16_t x1 = (int16_t)(xy1 & 0xFFFF);
+-        int16_t y1 = (int16_t)(xy1 >> 16);
++        int16_t x1 = (int16_t)((int32_t)((xy1 & 0xFFFF) << 21) >> 21);
++        int16_t y1 = (int16_t)((int32_t)((xy1 >> 16) << 21) >> 21);
+ 
+         Emit_Line_Segment_AD(x0, y0, color0, x1, y1, color1, is_shaded, is_semi_trans);
+     }

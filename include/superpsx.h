@@ -38,6 +38,8 @@ typedef struct
     uint32_t i_mask;         /* Interrupt Mask Register */
     uint32_t block_aborted;  /* Set by PSX_Exception mid-block; checked by JIT */
     uint32_t branch_cond;    /* Scratch: branch condition saved across delay slot */
+    uint32_t initial_cycles_left; /* Used to compute elapsed cycles during JIT execution */
+    uint32_t cycles_left;    /* Maintained by JIT, sync'd to cpu on C calls */
 } R3000CPU;
 
 /* Struct offsets for asm code generation */
@@ -55,6 +57,8 @@ typedef struct
 #define CPU_I_MASK (CPU_I_STAT + 4)
 #define CPU_BLOCK_ABORTED (CPU_I_MASK + 4)
 #define CPU_BRANCH_COND (CPU_BLOCK_ABORTED + 4)
+#define CPU_INITIAL_CYCLES_LEFT (CPU_BRANCH_COND + 4)
+#define CPU_CYCLES_LEFT (CPU_INITIAL_CYCLES_LEFT + 4)
 
 /* COP0 register indices */
 #define PSX_COP0_SR 12
