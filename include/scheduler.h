@@ -29,6 +29,8 @@
 #define CYCLES_PER_SCANLINE CYCLES_PER_HBLANK
 #define SCANLINES_PER_FRAME 263U     /* NTSC */
 #define SCANLINES_PER_FRAME_PAL 314U /* PAL  */
+#define VBLANK_START_SCANLINE_NTSC 240U  /* First VBlank scanline (NTSC) */
+#define VBLANK_START_SCANLINE_PAL  288U  /* First VBlank scanline (PAL)  */
 /* Accurate frame timing: scanlines × cycles/scanline */
 #define CYCLES_PER_FRAME_NTSC (SCANLINES_PER_FRAME * CYCLES_PER_HBLANK_NTSC)        /* 571399 */
 #define CYCLES_PER_FRAME_PAL  (SCANLINES_PER_FRAME_PAL * CYCLES_PER_HBLANK_PAL)     /* 680752 */

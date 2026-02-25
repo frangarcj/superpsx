@@ -435,6 +435,7 @@ static void Sched_HBlank_Callback(void)
         GPU_VBlank();
         gpu_pending_vblank_flush = 1;
         SignalInterrupt(0);
+        Timer_ScheduleAll();  /* Reschedule timers after VBlank reset */
         SPU_GenerateSamples();
 
         perf_frame_count++;

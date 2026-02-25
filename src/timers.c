@@ -159,6 +159,76 @@ static void Timer_SyncValue(int t)
          * Hblank); mode 2 caught by stopped_cache above. */
     }
 
+    /* ---- Timer1 sync modes (VBlank-related) ---- */
+    if (t == 1 && (timers[1].mode & 1))
+    {
+        uint32_t sync_mode = (timers[1].mode >> 1) & 3;
+        uint32_t hblank = psx_config.region_pal ? CYCLES_PER_HBLANK_PAL : CYCLES_PER_HBLANK_NTSC;
+        uint32_t vblank_start_sl = psx_config.region_pal ? VBLANK_START_SCANLINE_PAL : VBLANK_START_SCANLINE_NTSC;
+
+        if (sync_mode == 1)
+        {
+            /* Reset counter to 0 at VBlank.
+             * Value = ticks elapsed since frame start (= VBlank moment). */
+            uint64_t elapsed = now - hblank_frame_start_cycle;
+            uint32_t divider = timer_divider_cache[1];
+            uint32_t ticks = (uint32_t)(elapsed / divider);
+            timers[1].value = ticks & 0xFFFF;
+            timers[1].last_sync_cycle = now;
+            return;
+        }
+        if (sync_mode == 0)
+        {
+            /* Pause counter during VBlank.
+             * Count ticks only during active video (scanlines 0..vblank_start-1). */
+            uint64_t frame_pos = now - hblank_frame_start_cycle;
+            uint64_t vblank_cycle = (uint64_t)vblank_start_sl * hblank;
+            if (frame_pos >= vblank_cycle)
+            {
+                /* In VBlank — cap elapsed at VBlank boundary. */
+                if (timers[1].last_sync_cycle < hblank_frame_start_cycle)
+                    timers[1].last_sync_cycle = hblank_frame_start_cycle;
+                uint64_t sync_pos = timers[1].last_sync_cycle - hblank_frame_start_cycle;
+                uint64_t eff = (sync_pos < vblank_cycle) ? (vblank_cycle - sync_pos) : 0;
+                uint32_t divider = timer_divider_cache[1];
+                uint32_t ticks = (uint32_t)(eff / divider);
+                timers[1].value = (timers[1].value + ticks) & 0xFFFF;
+                timers[1].last_sync_cycle = now;
+                return;
+            }
+            /* Active video — adjust last_sync if it was in previous VBlank. */
+            if (timers[1].last_sync_cycle < hblank_frame_start_cycle)
+                timers[1].last_sync_cycle = hblank_frame_start_cycle;
+            /* Fall through to normal sync */
+        }
+        if (sync_mode == 3)
+        {
+            /* Pause until VBlank occurs once, then free-run. */
+            uint64_t set_cycle = timer_mode_set_cycle[1];
+            if (set_cycle < hblank_frame_start_cycle)
+            {
+                /* VBlank has occurred since mode was set. */
+                if (timers[1].last_sync_cycle < hblank_frame_start_cycle)
+                    timers[1].last_sync_cycle = hblank_frame_start_cycle;
+                timer_stopped_cache[1] = 0;
+            }
+            else
+            {
+                /* Mode set in current frame — next VBlank at frame end. */
+                uint32_t total_sl = psx_config.region_pal ? SCANLINES_PER_FRAME_PAL : SCANLINES_PER_FRAME;
+                uint64_t next_vblank = hblank_frame_start_cycle + (uint64_t)total_sl * hblank;
+                if (now < next_vblank)
+                {
+                    timers[1].last_sync_cycle = now;
+                    return;
+                }
+                if (timers[1].last_sync_cycle < next_vblank)
+                    timers[1].last_sync_cycle = next_vblank;
+                timer_stopped_cache[1] = 0;
+            }
+        }
+    }
+
     if (timer_stopped_cache[t]) { timers[t].last_sync_cycle = now; return; }
 
     uint32_t divider = timer_divider_cache[t];

@@ -14,9 +14,10 @@
  * making DrawSync(0) poll loops consume real emulated time.             */
 uint64_t gpu_busy_until = 0;
 
-/* DMA bus cost: ~5 CPU cycles per word transferred, ~10 per OT node */
-#define DMA_CYCLES_PER_WORD 5
-#define DMA_CYCLES_PER_PACKET 10
+/* DMA bus cost: ~1 CPU cycle per word (psx-spx: 0110h clks per 100h words).
+ * Linked-list header read adds ~1 cycle per node. */
+#define DMA_CYCLES_PER_WORD 1
+#define DMA_CYCLES_PER_PACKET 1
 
 /* Approximate GPU rendering cost per primitive pixel-clock.
  * Real PSX GPU fills ~2 cycles/pixel (flat), ~3 (gouraud), ~4 (textured).
