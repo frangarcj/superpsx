@@ -520,7 +520,7 @@ static inline void push_color(R3000CPU *cpu)
 /* ================================================================
  * Store MAC1/2/3 and IR1/2/3 from 64-bit accumulators
  * ================================================================ */
-static inline void store_mac_ir(R3000CPU *cpu, int64_t m1, int64_t m2, int64_t m3, int sf, int lm)
+static inline __attribute__((always_inline)) void store_mac_ir(R3000CPU *cpu, int64_t m1, int64_t m2, int64_t m3, int sf, int lm)
 {
     check_mac_overflow(m1, 1);
     check_mac_overflow(m2, 2);
@@ -824,7 +824,7 @@ static void gte_cmd_sqr(R3000CPU *cpu, int sf, int lm)
 
 /* Interpolate: result = acc + (FC - acc) * IR0
  * acc1/acc2/acc3 are the RAW accumulator values (before sf-shift). */
-static inline void interpolate_color_acc(R3000CPU *cpu, int64_t acc1, int64_t acc2, int64_t acc3, int sf, int lm)
+static inline __attribute__((always_inline)) void interpolate_color_acc(R3000CPU *cpu, int64_t acc1, int64_t acc2, int64_t acc3, int sf, int lm)
 {
     int64_t fc1 = (int64_t)(int32_t)C(c_RFC) << 12;
     int64_t fc2 = (int64_t)(int32_t)C(c_GFC) << 12;

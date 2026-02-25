@@ -29,7 +29,7 @@ static uint16_t serial_baud = 0;
 
 #define SIO_IRQ_DELAY 500
 volatile uint64_t sio_irq_delay_cycle = 0;
-static int sio_irq_pending = 0;
+int sio_irq_pending = 0;
 
 uint32_t SIO_Read(uint32_t addr)
 {
