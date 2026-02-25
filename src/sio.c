@@ -223,13 +223,3 @@ void SIO_Write(uint32_t addr, uint32_t data)
     }
 }
 
-/* SIO IRQ check for I_STAT (called by hardware.c) */
-void SIO_CheckIRQ(uint32_t data)
-{
-    if (sio_irq_pending && !(data & (1 << 7)))
-    {
-        sio_irq_pending = 0;
-        sio_irq_delay_cycle = 0;
-        SignalInterrupt(7);
-    }
-}
