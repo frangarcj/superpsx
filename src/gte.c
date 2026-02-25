@@ -489,7 +489,7 @@ static uint32_t gte_divide(uint16_t h, uint16_t sz3)
 /* ================================================================
  * Push FIFOs
  * ================================================================ */
-static void push_sxy(R3000CPU *cpu, int32_t sx, int32_t sy)
+static inline void push_sxy(R3000CPU *cpu, int32_t sx, int32_t sy)
 {
     D(d_SXY0) = D(d_SXY1);
     D(d_SXY1) = D(d_SXY2);
@@ -498,7 +498,7 @@ static void push_sxy(R3000CPU *cpu, int32_t sx, int32_t sy)
     D(d_SXY2) = ((uint32_t)(uint16_t)sx) | ((uint32_t)(uint16_t)sy << 16);
 }
 
-static void push_sz(R3000CPU *cpu, int64_t val)
+static inline void push_sz(R3000CPU *cpu, int64_t val)
 {
     D(d_SZ0) = D(d_SZ1);
     D(d_SZ1) = D(d_SZ2);
@@ -506,7 +506,7 @@ static void push_sz(R3000CPU *cpu, int64_t val)
     D(d_SZ3) = (uint32_t)saturate_sz(val);
 }
 
-static void push_color(R3000CPU *cpu)
+static inline void push_color(R3000CPU *cpu)
 {
     D(d_RGB0) = D(d_RGB1);
     D(d_RGB1) = D(d_RGB2);
@@ -520,7 +520,7 @@ static void push_color(R3000CPU *cpu)
 /* ================================================================
  * Store MAC1/2/3 and IR1/2/3 from 64-bit accumulators
  * ================================================================ */
-static void store_mac_ir(R3000CPU *cpu, int64_t m1, int64_t m2, int64_t m3, int sf, int lm)
+static inline void store_mac_ir(R3000CPU *cpu, int64_t m1, int64_t m2, int64_t m3, int sf, int lm)
 {
     check_mac_overflow(m1, 1);
     check_mac_overflow(m2, 2);
@@ -824,7 +824,7 @@ static void gte_cmd_sqr(R3000CPU *cpu, int sf, int lm)
 
 /* Interpolate: result = acc + (FC - acc) * IR0
  * acc1/acc2/acc3 are the RAW accumulator values (before sf-shift). */
-static void interpolate_color_acc(R3000CPU *cpu, int64_t acc1, int64_t acc2, int64_t acc3, int sf, int lm)
+static inline void interpolate_color_acc(R3000CPU *cpu, int64_t acc1, int64_t acc2, int64_t acc3, int sf, int lm)
 {
     int64_t fc1 = (int64_t)(int32_t)C(c_RFC) << 12;
     int64_t fc2 = (int64_t)(int32_t)C(c_GFC) << 12;
