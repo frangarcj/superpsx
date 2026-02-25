@@ -59,10 +59,9 @@
 #define DOTCLOCK_NUM_512 35U  /*  5 × 7 */
 #define DOTCLOCK_NUM_640 28U  /*  4 × 7 */
 
-/* Approximate CD-ROM sector read delay (1x speed, ~150 sectors/s) */
-#define CDROM_READ_CYCLES (PSX_CPU_FREQ / 150) /* ~225792 */
-/* Fast approximation for usability (not exact) */
-#define CDROM_READ_CYCLES_FAST 50000U
+/* CD-ROM read timing: PSX_CPU_FREQ / 75 sectors-per-second */
+#define CDROM_READ_CYCLES_1X  (PSX_CPU_FREQ / 75)  /* 1x speed: 451584 cycles */
+#define CDROM_READ_CYCLES_2X  (PSX_CPU_FREQ / 150) /* 2x speed: 225792 cycles */
 
 /* ---- Event IDs ---- */
 #define SCHED_EVENT_TIMER0 0
@@ -72,9 +71,10 @@
 #define SCHED_EVENT_CDROM 4
 #define SCHED_EVENT_CDROM_DEFERRED 5 /* Deferred first-response delivery */
 #define SCHED_EVENT_CDROM_IRQ 6      /* IRQ signal delay (I_STAT assertion) */
-#define SCHED_EVENT_HBLANK 7         /* Per-scanline HBlank event           */
-#define SCHED_EVENT_DMA    8         /* Deferred DMA completion event        */
-#define SCHED_EVENT_COUNT 9
+#define SCHED_EVENT_CDROM_PENDING 7  /* Pending (2nd) response delivery      */
+#define SCHED_EVENT_HBLANK 8         /* Per-scanline HBlank event           */
+#define SCHED_EVENT_DMA    9         /* Deferred DMA completion event        */
+#define SCHED_EVENT_COUNT 10
 
 /* ---- Callback type ---- */
 typedef void (*sched_callback_t)(void);

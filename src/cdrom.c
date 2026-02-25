@@ -91,7 +91,8 @@ static struct
     uint8_t disc_present;   /* 0 = no disc (ShellOpen), 1 = disc inserted */
     int32_t read_delay;     /* Cycles until next INT1 delivery (legacy, used for state) */
     int32_t pending_delay;  /* Cycles until pending response delivery (legacy) */
-    uint8_t seek_pending;   /* 1 = seek is in progress, waiting for scheduler */
+    uint8_t seek_pending;       /* 1 = seek is in progress, waiting for scheduler */
+    uint8_t location_changed;   /* 1 = SetLoc was issued, first sector gets extra delay */
 
     /* Deferred first response (INT3) — mimics real CD controller latency */
     uint8_t deferred_response[RESPONSE_FIFO_SIZE];
@@ -118,6 +119,12 @@ static void CDROM_EventCallback(void);
 static void CDROM_PendingCallback(void);
 static void CDROM_DeferredCallback(void);
 static void CDROM_DeferredIRQActivate(void);
+
+/* ---- Speed-aware read delay based on mode bit 7 ---- */
+static inline uint32_t cdrom_read_delay(void)
+{
+    return (cdrom.mode & 0x80) ? CDROM_READ_CYCLES_2X : CDROM_READ_CYCLES_1X;
+}
 
 /* ---- Update stat preserving ShellOpen when no disc ---- */
 static void cdrom_set_stat(uint8_t new_stat)
@@ -213,6 +220,7 @@ static void cdrom_execute_command(uint8_t cmd)
         cdrom.setloc_lba = msf_to_lba(mm, ss, ff);
         DLOG("Cmd 02h Setloc(%02X:%02X:%02X) -> LBA %" PRIu32 "\n",
              mm, ss, ff, cdrom.setloc_lba);
+        cdrom.location_changed = 1; /* First sector after read gets extra seek delay */
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
         break;
@@ -703,9 +711,9 @@ static void CDROM_EventCallback(void)
     {
         cdrom.seek_pending = 0;
         cdrom_set_stat(0x22); /* Reading + Motor On */
-        /* Schedule first sector delivery */
+        /* Schedule first sector delivery using speed-aware timing */
         Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
-                                global_cycles + CDROM_READ_CYCLES_FAST,
+                                global_cycles + cdrom_read_delay(),
                                 CDROM_EventCallback);
         return;
     }
@@ -713,9 +721,11 @@ static void CDROM_EventCallback(void)
     /* Phase 2: Sector delivery (INT1) */
     if (cdrom.int_flag != 0 || cdrom.has_pending)
     {
-        /* Previous INT not acknowledged yet - retry shortly */
+        /* Previous INT not acknowledged yet — reschedule for half a read
+         * cycle to give the game time to process it.
+         * This prevents sector data from being overwritten before ACK. */
         Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
-                                global_cycles + 1000,
+                                global_cycles + cdrom_read_delay() / 2,
                                 CDROM_EventCallback);
         return;
     }
@@ -755,9 +765,17 @@ static void CDROM_EventCallback(void)
     /* Advance position */
     cdrom.cur_lba++;
 
-    /* Schedule next sector (~50000 cycles fast approximation) */
+    /* Schedule next sector with speed-aware timing.
+     * After a location change (SetLoc), the first sector takes 30×
+     * the normal read time to simulate the physical seek. */
+    uint32_t delay = cdrom_read_delay();
+    if (cdrom.location_changed)
+    {
+        delay *= 30;
+        cdrom.location_changed = 0;
+    }
     Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
-                            global_cycles + CDROM_READ_CYCLES_FAST,
+                            global_cycles + delay,
                             CDROM_EventCallback);
 }
 
@@ -774,7 +792,7 @@ void CDROM_ScheduleEvent(void)
     if (cdrom.reading)
     {
         Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
-                                global_cycles + CDROM_READ_CYCLES_FAST,
+                                global_cycles + cdrom_read_delay(),
                                 CDROM_EventCallback);
     }
 }
@@ -881,7 +899,7 @@ void CDROM_Write(uint32_t addr, uint32_t data)
              * FIFO before it's overwritten by the pending response. */
             if (cdrom.has_pending && cdrom.int_flag == 0)
             {
-                Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
+                Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_PENDING,
                                         global_cycles + 200,
                                         CDROM_PendingCallback);
             }

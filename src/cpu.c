@@ -12,22 +12,8 @@ jmp_buf psx_block_jmp;
 volatile int psx_block_exception = 0;
 uint32_t psx_abort_pc = 0;            /* saved exception-handler PC            */
 
-/* ---- PSX Exception Handling ---- */
-static int cdrom_irq_count = 0;
 void PSX_Exception(uint32_t cause_code)
 {
-    /* Debug: log CD-ROM interrupt delivery (first 20) */
-    if (cause_code == 0 && cdrom_irq_count < 20)
-    {
-        uint32_t istat = CheckInterrupts();
-        if (istat & 0x04)
-        {
-            DLOG("Delivering CD-ROM interrupt #%d! PC=%08X SR=%08X\n",
-                 cdrom_irq_count, (unsigned)cpu.pc, (unsigned)cpu.cop0[PSX_COP0_SR]);
-            cdrom_irq_count++;
-        }
-    }
-
     /* Save EPC and set Cause */
     cpu.cop0[PSX_COP0_EPC] = cpu.pc;
 
