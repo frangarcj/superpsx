@@ -468,10 +468,21 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
 
         /*
          * Const-address I/O write whitelist:
+         * I_STAT (0x1F801070): cpu.i_stat &= data (acknowledge IRQs)
          * I_MASK (0x1F801074): cpu.i_mask = data & 0xFFFF07FF
-         * Note: I_STAT (0x1F801070) has SIO_CheckIRQ side effect so it
-         * stays on the C path.
+         *
+         * The SIO_CheckIRQ side effect for I_STAT writes is handled by
+         * sio_irq_delay_cycle in the dynarec loop, so we can safely
+         * inline the acknowledge-only logic here.
          */
+        if (phys == 0x1F801070 && size == 4) /* I_STAT */
+        {
+            int data_reg = emit_use_reg(rt_psx, REG_T2);
+            EMIT_LW(REG_T1, CPU_I_STAT, REG_S0);                   /* t1 = cpu.i_stat */
+            emit(MK_R(0, REG_T1, data_reg, REG_T1, 0, 0x24));      /* and t1, t1, data */
+            EMIT_SW(REG_T1, CPU_I_STAT, REG_S0);                    /* cpu.i_stat = t1 */
+            return;
+        }
         if (phys == 0x1F801074 && size == 4) /* I_MASK */
         {
             emit_load_psx_reg(REG_T2, rt_psx);
