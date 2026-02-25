@@ -11,6 +11,9 @@
 jit_l2_t jit_l1_ram[JIT_L1_RAM_PAGES];
 jit_l2_t jit_l1_bios[JIT_L1_BIOS_PAGES];
 
+/* ---- SMC page generation counters ---- */
+uint8_t jit_page_gen[JIT_L1_RAM_PAGES];
+
 BlockEntry *block_node_pool;
 int block_node_pool_idx = 0;
 
@@ -35,22 +38,13 @@ void emit_direct_link(uint32_t target_psx_pc)
     BlockEntry *be = lookup_block(target_psx_pc);
     if (be && be->native != NULL)
     {
-        /* SMC check: if the target block's code changed since compilation,
-         * invalidate it so we don't chain to stale native code.  This is
-         * critical when self-modifying code modifies a loop body and control
-         * flows from a setup block that was recompiled via SMC detection —
-         * without this, the inner loop block still runs old compiled code. */
-        uint32_t *opcodes = get_psx_code_ptr(target_psx_pc);
-        if (opcodes)
+        /* SMC check: compare page generation counter.  If the page was
+         * written to since block compilation, the block may be stale. */
+        uint32_t phys = target_psx_pc & 0x1FFFFFFF;
+        if (phys < PSX_RAM_SIZE && be->page_gen != jit_get_page_gen(phys))
         {
-            uint32_t hash = 0;
-            for (uint32_t i = 0; i < be->instr_count; i++)
-                hash = (hash << 5) + hash + opcodes[i]; /* djb2 */
-            if (hash != be->code_hash)
-            {
-                be->native = NULL;
-                be = NULL;
-            }
+            be->native = NULL;
+            be = NULL;
         }
     }
     if (be && be->native != NULL)
@@ -178,6 +172,7 @@ BlockEntry *cache_block(uint32_t psx_pc, uint32_t *native)
         be->psx_pc = psx_pc;
         be->native = native;
         be->next = NULL;
+        be->page_gen = jit_get_page_gen(phys);
     }
     return be;
 }

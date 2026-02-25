@@ -141,6 +141,7 @@ void Init_Dynarec(void)
     memset(block_node_pool, 0, BLOCK_NODE_POOL_SIZE * sizeof(BlockEntry));
     memset(jit_l1_ram, 0, sizeof(jit_l1_ram));
     memset(jit_l1_bios, 0, sizeof(jit_l1_bios));
+    memset(jit_page_gen, 0, sizeof(jit_page_gen));
 
     block_node_pool_idx = 0;
     blocks_compiled = 0;
@@ -476,23 +477,17 @@ static inline int run_jit_chain(uint64_t deadline)
     BlockEntry *be = lookup_block(pc);
     uint32_t *block = be ? be->native : NULL;
 
-    /* Self-modifying code check: if the block's PSX opcodes changed since
-     * compilation, discard the stale block and force recompilation.
-     * Uses an XOR hash of all block opcodes for cheap comparison. */
+    /* Self-modifying code check: if the page was written to since this
+     * block was compiled, discard the block and force recompilation.
+     * Uses page generation counter for O(1) detection. */
     if (block && be)
     {
-        uint32_t *opcodes = get_psx_code_ptr(pc);
-        if (opcodes)
+        uint32_t phys = pc & 0x1FFFFFFF;
+        if (phys < PSX_RAM_SIZE && be->page_gen != jit_get_page_gen(phys))
         {
-            uint32_t hash = 0;
-            for (uint32_t i = 0; i < be->instr_count; i++)
-                hash = (hash << 5) + hash + opcodes[i]; /* djb2-style */
-            if (hash != be->code_hash)
-            {
-                be->native = NULL;
-                block = NULL;
-                be = NULL;
-            }
+            be->native = NULL;
+            block = NULL;
+            be = NULL;
         }
     }
 

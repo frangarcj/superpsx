@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stdio.h>
+#include "dynarec.h" /* for jit_invalidate_page */
 #include <string.h>
 #include <malloc.h>
 #include <unistd.h>
@@ -363,6 +364,7 @@ void WriteWord(uint32_t addr, uint32_t data)
     if (phys < PSX_RAM_SIZE)
     {
         *(uint32_t *)(psx_ram + phys) = data;
+        jit_invalidate_page(phys);
         return;
     }
     if (phys >= 0x1F800000 && phys < 0x1F800400)

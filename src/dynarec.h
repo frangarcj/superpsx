@@ -40,7 +40,8 @@ typedef struct BlockEntry
     uint32_t cycle_count;    /* Weighted R3000A cycle count for this block */
     uint32_t is_idle;        /* 1 = idle loop (self-jump, no side effects) */
     struct BlockEntry *next; /* Collision chain pointer */
-    uint32_t code_hash;        /* XOR hash of PSX block opcodes (SMC detect) */
+    uint32_t code_hash;      /* XOR hash of PSX block opcodes (legacy, unused) */
+    uint8_t  page_gen;       /* Page generation at compile time (SMC fast check) */
 } BlockEntry;
 
 typedef struct
@@ -138,6 +139,28 @@ typedef BlockEntry *(*jit_l2_t)[JIT_L2_ENTRIES];
 
 extern jit_l2_t jit_l1_ram[JIT_L1_RAM_PAGES];
 extern jit_l2_t jit_l1_bios[JIT_L1_BIOS_PAGES];
+
+/* ================================================================
+ *  SMC detection — Page generation counters
+ *  Each 4KB RAM page has a generation counter. Incremented on writes.
+ *  Blocks store the gen at compile time; mismatch = stale block.
+ * ================================================================ */
+extern uint8_t jit_page_gen[JIT_L1_RAM_PAGES];
+
+static inline void jit_invalidate_page(uint32_t phys_addr)
+{
+    uint32_t page = phys_addr >> 12;
+    if (page < JIT_L1_RAM_PAGES)
+        jit_page_gen[page]++;
+}
+
+static inline uint8_t jit_get_page_gen(uint32_t phys_addr)
+{
+    uint32_t page = phys_addr >> 12;
+    if (page < JIT_L1_RAM_PAGES)
+        return jit_page_gen[page];
+    return 0;
+}
 
 extern BlockEntry *block_node_pool;
 extern int block_node_pool_idx;

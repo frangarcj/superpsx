@@ -2,6 +2,7 @@
 #include "scheduler.h"
 #include "spu.h"
 #include "superpsx.h"
+#include "dynarec.h" /* for jit_invalidate_page */
 #include <stdint.h>
 
 typedef struct {
@@ -56,6 +57,12 @@ static void CDROM_DMA3(uint32_t madr, uint32_t bcr, uint32_t chcr) {
     total_bytes = PSX_RAM_SIZE - phys_addr;
 
   CDROM_ReadDataFIFO(psx_ram + phys_addr, total_bytes);
+
+  /* Invalidate all pages touched by this DMA transfer */
+  for (uint32_t off = 0; off < total_bytes; off += 4096)
+    jit_invalidate_page(phys_addr + off);
+  if (total_bytes > 0)
+    jit_invalidate_page(phys_addr + total_bytes - 1);
 }
 
 static void GPU_DMA6(uint32_t madr, uint32_t bcr, uint32_t chcr) {
