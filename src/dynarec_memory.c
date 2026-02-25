@@ -32,7 +32,7 @@ extern uint64_t gpu_busy_until;
  * We use the standard %hi/%lo split: hi = (addr + 0x8000) >> 16 to
  * compensate for sign extension of the lower half.
  */
-static void emit_flush_partial_cycles(void)
+void emit_flush_partial_cycles(void)
 {
     uint32_t addr = (uint32_t)&partial_block_cycles;
     uint16_t lo = addr & 0xFFFF;

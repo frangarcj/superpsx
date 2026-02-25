@@ -11,6 +11,7 @@
 #define LOG_TAG "DYNAREC"
 #include "loader.h"
 
+extern void emit_flush_partial_cycles(void);
 /* ---- Debug helpers ---- */
 static int mtc0_sr_log_count = 0;
 static uint32_t last_sr_logged = 0xDEAD;
@@ -588,17 +589,24 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             if (rs == 0x00)
             {
                 mark_vreg_var(rt);
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, rd);
-                emit_call_c((uint32_t)GTE_ReadData);
-                emit_store_psx_reg(rt, REG_V0);
+                if (rd == 15 || rd == 28 || rd == 29)
+                {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, rd);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_ReadData);
+                    emit_store_psx_reg(rt, REG_V0);
+                }
+                else
+                {
+                    EMIT_LW(REG_V0, CPU_CP2_DATA(rd & 0x1F), REG_S0);
+                    emit_store_psx_reg(rt, REG_V0);
+                }
             }
             else if (rs == 0x02)
             {
                 mark_vreg_var(rt);
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, rd);
-                emit_call_c((uint32_t)GTE_ReadCtrl);
+                EMIT_LW(REG_V0, CPU_CP2_CTRL(rd & 0x1F), REG_S0);
                 emit_store_psx_reg(rt, REG_V0);
             }
             else if (rs == 0x04)
@@ -606,14 +614,16 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 EMIT_MOVE(REG_A0, REG_S0);
                 emit_load_imm32(REG_A1, rd);
                 emit_load_psx_reg(6, rt);
-                emit_call_c((uint32_t)GTE_WriteData);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_WriteData);
             }
             else if (rs == 0x06)
             {
                 EMIT_MOVE(REG_A0, REG_S0);
                 emit_load_imm32(REG_A1, rd);
                 emit_load_psx_reg(6, rt);
-                emit_call_c((uint32_t)GTE_WriteCtrl);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_WriteCtrl);
             }
             else
             {
@@ -628,7 +638,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             {
             case 0x06: /* NCLIP */
                 EMIT_MOVE(REG_A0, REG_S0);
-                emit_call_c((uint32_t)GTE_Inline_NCLIP);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_NCLIP);
                 break;
             case 0x28: /* SQR */
             {
@@ -637,16 +648,19 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 EMIT_MOVE(REG_A0, REG_S0);
                 emit_load_imm32(REG_A1, gte_sf);
                 emit_load_imm32(REG_A2, gte_lm);
-                emit_call_c((uint32_t)GTE_Inline_SQR);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_SQR);
                 break;
             }
             case 0x2D: /* AVSZ3 */
                 EMIT_MOVE(REG_A0, REG_S0);
-                emit_call_c((uint32_t)GTE_Inline_AVSZ3);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_AVSZ3);
                 break;
             case 0x2E: /* AVSZ4 */
                 EMIT_MOVE(REG_A0, REG_S0);
-                emit_call_c((uint32_t)GTE_Inline_AVSZ4);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_AVSZ4);
                 break;
             default:
             {
@@ -656,7 +670,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 EMIT_LW(REG_A0, 0, REG_T0);
             }
                 EMIT_MOVE(REG_A1, REG_S0);
-                emit_call_c((uint32_t)GTE_Execute);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Execute);
                 break;
             }
         }
