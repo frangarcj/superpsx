@@ -429,15 +429,6 @@ static void Sched_HBlank_Callback(void)
 
     hblank_scanline += batch;
 
-    /* Incremental SPU: generate audio proportional to scanline progress */
-    {
-        uint32_t target_samples = (uint32_t)((uint64_t)hblank_scanline * 735 / SCANLINES_PER_FRAME);
-        extern int spu_samples_generated;  /* from spu.c */
-        int chunk = (int)target_samples - spu_samples_generated;
-        if (chunk > 0)
-            SPU_GenerateChunk(chunk);
-    }
-
     if (hblank_scanline >= SCANLINES_PER_FRAME)
     {
         hblank_scanline = 0;
@@ -446,7 +437,7 @@ static void Sched_HBlank_Callback(void)
         gpu_pending_vblank_flush = 1;
         SignalInterrupt(0);
         Timer_ScheduleAll();  /* Reschedule timers after VBlank reset */
-        SPU_GenerateSamples(); /* Flush remaining + submit to audio hw */
+        SPU_GenerateSamples(); /* Generate all audio + submit to audio hw */
 
         perf_frame_count++;
         check_profiling_exit(perf_frame_count);
