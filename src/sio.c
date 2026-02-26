@@ -31,17 +31,16 @@ static uint16_t serial_baud = 0;
 volatile uint64_t sio_irq_delay_cycle = 0;
 int sio_irq_pending = 0;
 
-uint32_t SIO_Read(uint32_t addr)
+uint32_t SIO_Read(uint32_t phys)   /* caller passes physical addr */
 {
-    uint32_t phys = addr & 0x1FFFFFFF;
-
-    if (phys == 0x1F801040)
+    switch (phys - 0x1F801040) {
+    case 0x00: /* SIO_DATA */
     {
         uint32_t val = sio_data;
         sio_tx_pending = 0;
         return val;
     }
-    if (phys == 0x1F801044)
+    case 0x04: /* SIO_STAT */
     {
         uint32_t stat = 0x00000005;
         if (sio_tx_pending)
@@ -51,32 +50,31 @@ uint32_t SIO_Read(uint32_t addr)
         stat |= (sio_stat & (1 << 9));
         return stat;
     }
-    if (phys == 0x1F801048)
+    case 0x08: /* SIO_MODE */
         return sio_mode & 0x003F;
-    if (phys == 0x1F80104A)
+    case 0x0A: /* SIO_CTRL */
         return sio_ctrl;
-    if (phys == 0x1F80104E)
+    case 0x0E: /* SIO_BAUD */
         return sio_baud;
-
-    if (phys == 0x1F801050)
+    case 0x10: /* Serial DATA */
         return 0xFF;
-    if (phys == 0x1F801054)
+    case 0x14: /* Serial STAT */
         return 0x00000005;
-    if (phys == 0x1F801058)
+    case 0x18: /* Serial MODE */
         return serial_mode & 0xFF;
-    if (phys == 0x1F80105A)
+    case 0x1A: /* Serial CTRL */
         return serial_ctrl;
-    if (phys == 0x1F80105E)
+    case 0x1E: /* Serial BAUD */
         return serial_baud;
-
-    return 0;
+    default:
+        return 0;
+    }
 }
 
-void SIO_Write(uint32_t addr, uint32_t data)
+void SIO_Write(uint32_t phys, uint32_t data)   /* caller passes physical addr */
 {
-    uint32_t phys = addr & 0x1FFFFFFF;
-
-    if (phys == 0x1F801040)
+    switch (phys - 0x1F801040) {
+    case 0x00: /* 0x1F801040: SIO_DATA */
     {
         uint8_t tx = (uint8_t)(data & 0xFF);
         if (!sio_selected)
@@ -159,12 +157,10 @@ void SIO_Write(uint32_t addr, uint32_t data)
         }
         return;
     }
-    if (phys == 0x1F801048)
-    {
+    case 0x08: /* 0x1F801048: SIO_MODE */
         sio_mode = (uint16_t)(data & 0x003F);
         return;
-    }
-    if (phys == 0x1F80104A)
+    case 0x0A: /* 0x1F80104A: SIO_CTRL */
     {
         sio_ctrl = (uint16_t)data;
         if (data & 0x40)
@@ -199,25 +195,17 @@ void SIO_Write(uint32_t addr, uint32_t data)
         }
         return;
     }
-    if (phys == 0x1F80104E)
-    {
+    case 0x0E: /* 0x1F80104E: SIO_BAUD */
         sio_baud = (uint16_t)data;
         return;
-    }
-
-    if (phys == 0x1F801058)
-    {
+    case 0x18: /* 0x1F801058: Serial MODE */
         serial_mode = (uint16_t)(data & 0xFF);
         return;
-    }
-    if (phys == 0x1F80105A)
-    {
+    case 0x1A: /* 0x1F80105A: Serial CTRL */
         serial_ctrl = (uint16_t)data;
         if (data & 0x40) { serial_ctrl = 0; serial_mode = 0; serial_baud = 0; }
         return;
-    }
-    if (phys == 0x1F80105E)
-    {
+    case 0x1E: /* 0x1F80105E: Serial BAUD */
         serial_baud = (uint16_t)data;
         return;
     }
