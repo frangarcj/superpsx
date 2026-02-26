@@ -322,6 +322,11 @@ uint32_t *compile_block(uint32_t psx_pc)
         block_node_pool_idx = 0;
         patch_sites_count = 0;
         blocks_compiled = 0;
+        /* Clear hash table — all native pointers are now stale */
+        for (int i = 0; i < JIT_HT_SIZE; i++) {
+            jit_ht[i].psx_pc = 0xFFFFFFFF;
+            jit_ht[i].native = NULL;
+        }
     }
 
     uint32_t *block_start = code_ptr;
@@ -508,9 +513,20 @@ uint32_t *compile_block(uint32_t psx_pc)
                 *bp = (*bp & 0xFFFF0000) | (offset & 0xFFFF);
                 emit_branch_epilogue(branch_target);
             }
-            /* Register jump (JR/JALR): Abort to C for lookup through Page Table */
-            EMIT_J_ABS((uint32_t)abort_trampoline_addr);
-            EMIT_NOP();
+            else if (branch_type == 3)
+            {
+                /* Register jump (JR/JALR): Inline hash dispatch.
+                 * T0 = target PSX PC (stored in cpu.pc before delay slot).
+                 * Reload T0 from cpu.pc because the delay slot instruction
+                 * may have clobbered T0 as a scratch register.
+                 * Deduct block cycles, then jump to dispatch trampoline which
+                 * does inline hash table lookup.  Hit → direct jump to native.
+                 * Miss → falls through to abort trampoline (no regression). */
+                EMIT_LW(REG_T0, CPU_PC, REG_S0);
+                EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
+                EMIT_J_ABS((uint32_t)jump_dispatch_trampoline_addr);
+                EMIT_NOP();
+            }
             block_ended = 1;
             break;
         }

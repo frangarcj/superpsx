@@ -175,6 +175,39 @@ extern uint64_t stat_dbl_patches;
 #endif
 
 /* ================================================================
+ *  Hash table for fast indirect jump dispatch (JR/JALR)
+ *
+ *  Instead of exiting to C on every JR $ra, the JIT does an inline
+ *  hash lookup in ~14 R5900 instructions.  Inspired by pcsx-rearmed.
+ * ================================================================ */
+#define JIT_HT_SIZE 4096  /* Must be power of 2 */
+#define JIT_HT_MASK (JIT_HT_SIZE - 1)
+
+typedef struct
+{
+    uint32_t psx_pc;    /* PSX virtual address */
+    uint32_t *native;   /* Pointer to compiled native code (past prologue) */
+} JitHTEntry;
+
+extern JitHTEntry jit_ht[JIT_HT_SIZE];
+extern uint32_t *jump_dispatch_trampoline_addr;
+
+static inline uint32_t jit_ht_hash(uint32_t pc)
+{
+    return ((pc >> 12) ^ pc) & JIT_HT_MASK;
+}
+
+static inline void jit_ht_add(uint32_t psx_pc, uint32_t *native)
+{
+    uint32_t h = jit_ht_hash(psx_pc);
+    jit_ht[h].psx_pc = psx_pc;
+    /* Store entry point PAST prologue (same as DBL: native + DYNAREC_PROLOGUE_WORDS).
+     * The dispatch trampoline jumps here directly, reusing the caller's
+     * stack frame and pinned registers. */
+    jit_ht[h].native = native + DYNAREC_PROLOGUE_WORDS;
+}
+
+/* ================================================================
  *  Shared state — compile-time
  * ================================================================ */
 extern uint32_t blocks_compiled;

@@ -41,6 +41,10 @@ uint32_t *abort_trampoline_addr;
 uint32_t *call_c_trampoline_addr = NULL;
 uint32_t *call_c_trampoline_lite_addr = NULL;
 
+/* Hash table for fast JR/JALR dispatch */
+JitHTEntry jit_ht[JIT_HT_SIZE] __attribute__((aligned(64)));
+uint32_t *jump_dispatch_trampoline_addr = NULL;
+
 /* Host log */
 #ifdef ENABLE_HOST_LOG
 FILE *host_log_file = NULL;
@@ -142,6 +146,12 @@ void Init_Dynarec(void)
     memset(jit_l1_ram, 0, sizeof(jit_l1_ram));
     memset(jit_l1_bios, 0, sizeof(jit_l1_bios));
     memset(jit_page_gen, 0, sizeof(jit_page_gen));
+
+    /* Clear hash table — set all entries to unmatchable */
+    for (int i = 0; i < JIT_HT_SIZE; i++) {
+        jit_ht[i].psx_pc = 0xFFFFFFFF;
+        jit_ht[i].native = NULL;
+    }
 
     block_node_pool_idx = 0;
     blocks_compiled = 0;
@@ -260,6 +270,73 @@ void Init_Dynarec(void)
         *p++ = MK_I(0x23, REG_S0, REG_T9, CPU_REG(10));
         *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08);
         *p++ = 0;
+    }
+
+    /* ---- Jump dispatch trampoline at code_buffer[96] ----
+     * Fast inline dispatch for JR/JALR.  Instead of returning to C,
+     * do an inline hash table lookup and jump directly to the target
+     * block if found.  Reduces dispatch overhead from ~50 to ~14 instr.
+     *
+     * Entry conditions (set by JR/JALR emission code):
+     *   T0 = target PSX PC (already stored in cpu.pc)
+     *   S2 = cycles_left (already decremented by block_cycle_count)
+     *   S0 = &cpu (pinned)
+     *
+     * Exit: jump to target native block, or fall through to abort.
+     */
+    jump_dispatch_trampoline_addr = &code_buffer[96];
+    {
+        uint32_t *p = &code_buffer[96];
+
+        /* 1. If cycles <= 0, abort to C scheduler */
+        *p++ = MK_I(0x07, REG_S2, REG_ZERO, 0); /* bgtz s2, +0 (patched below) */
+        uint32_t *cyc_branch = p - 1;
+        *p++ = 0; /* delay: nop */
+        *p++ = MK_J(2, (uint32_t)abort_trampoline_addr >> 2); /* j abort */
+        *p++ = 0; /* delay: nop */
+
+        /* Patch the bgtz to skip the abort (target = here) */
+        uint32_t *cyc_ok = p;
+        int32_t cyc_off = (int32_t)(cyc_ok - cyc_branch - 1);
+        *cyc_branch = (*cyc_branch & 0xFFFF0000) | ((uint32_t)cyc_off & 0xFFFF);
+
+        /* 2. Compute hash: t1 = ((t0 >> 12) ^ t0) & JIT_HT_MASK */
+        *p++ = MK_R(0, 0, REG_T0, REG_T1, 12, 0x02); /* srl  t1, t0, 12 */
+        *p++ = MK_R(0, REG_T1, REG_T0, REG_T1, 0, 0x26); /* xor  t1, t1, t0 */
+        *p++ = MK_I(0x0C, REG_T1, REG_T1, JIT_HT_MASK); /* andi t1, t1, MASK */
+
+        /* 3. Scale to byte offset: t1 <<= 3 (sizeof(JitHTEntry) = 8) */
+        *p++ = MK_R(0, 0, REG_T1, REG_T1, 3, 0x00); /* sll  t1, t1, 3 */
+
+        /* 4. Load hash table base: t2 = &jit_ht */
+        uint32_t ht_addr = (uint32_t)&jit_ht[0];
+        *p++ = MK_I(0x0F, 0, REG_T2, (ht_addr >> 16) & 0xFFFF); /* lui t2, hi */
+        *p++ = MK_I(0x0D, REG_T2, REG_T2, ht_addr & 0xFFFF); /* ori t2, lo */
+
+        /* 5. Index into table: t1 = &jit_ht[hash] */
+        *p++ = MK_R(0, REG_T1, REG_T2, REG_T1, 0, 0x21); /* addu t1, t1, t2 */
+
+        /* 6. Load entry: t2 = ht[hash].psx_pc, at = ht[hash].native
+         *    NOTE: use AT ($1) instead of T3 ($11) for the native pointer
+         *    because T3 is pinned to PSX $a0 and must not be clobbered. */
+        *p++ = MK_I(0x23, REG_T1, REG_T2, 0); /* lw t2, 0(t1) = psx_pc */
+        *p++ = MK_I(0x23, REG_T1, REG_AT, 4); /* lw at, 4(t1) = native */
+
+        /* 7. Compare: if psx_pc != target, miss → abort */
+        *p++ = MK_I(0x05, REG_T2, REG_T0, 0); /* bne t2, t0, @miss (patched) */
+        uint32_t *miss_branch = p - 1;
+        *p++ = 0; /* delay: nop */
+
+        /* 8. HIT: jump to native block directly! */
+        *p++ = MK_R(0, REG_AT, 0, 0, 0, 0x08); /* jr at */
+        *p++ = 0; /* delay: nop */
+
+        /* 9. @miss: fall through to abort trampoline */
+        uint32_t *miss_target = p;
+        int32_t miss_off = (int32_t)(miss_target - miss_branch - 1);
+        *miss_branch = (*miss_branch & 0xFFFF0000) | ((uint32_t)miss_off & 0xFFFF);
+        *p++ = MK_J(2, (uint32_t)abort_trampoline_addr >> 2); /* j abort */
+        *p++ = 0; /* delay: nop */
     }
 
     code_ptr = code_buffer + 128;
@@ -477,6 +554,31 @@ static inline int run_jit_chain(uint64_t deadline)
     BlockEntry *be = lookup_block(pc);
     uint32_t *block = be ? be->native : NULL;
 
+    /* Populate hash table for fast JR/JALR dispatch */
+    if (block)
+    {
+#ifdef ENABLE_JIT_HT_DEBUG
+        uint32_t h = jit_ht_hash(pc);
+        uint32_t *ht_native = jit_ht[h].native;
+        uint32_t ht_pc = jit_ht[h].psx_pc;
+        if (ht_pc == pc && ht_native != NULL) {
+            uint32_t *expected = block + DYNAREC_PROLOGUE_WORDS;
+            if (ht_native != expected) {
+                printf("[JIT_HT] STALE entry! PC=%08X slot=%u ht_native=%p expected=%p\n",
+                       (unsigned)pc, h, (void*)ht_native, (void*)expected);
+            }
+        } else if (ht_pc != pc && ht_pc != 0xFFFFFFFF) {
+            /* Collision: a different PC occupies this slot */
+            static uint32_t ht_collision_count = 0;
+            if (++ht_collision_count <= 20) {
+                printf("[JIT_HT] Collision: slot=%u old_pc=%08X new_pc=%08X\n",
+                       h, (unsigned)ht_pc, (unsigned)pc);
+            }
+        }
+#endif
+        jit_ht_add(pc, block);
+    }
+
     /* Two-tier SMC detection:
      * Tier 1: O(1) page generation check (fast reject for clean pages).
      * Tier 2: O(N) hash verification (only when page was written to).
@@ -496,6 +598,13 @@ static inline int run_jit_chain(uint64_t deadline)
                 if (hash != be->code_hash)
                 {
                     be->native = NULL;
+                    /* Clear stale hash table entry to prevent dispatch
+                     * trampoline from jumping to invalidated code */
+                    uint32_t h = jit_ht_hash(pc);
+                    if (jit_ht[h].psx_pc == pc) {
+                        jit_ht[h].psx_pc = 0xFFFFFFFF;
+                        jit_ht[h].native = NULL;
+                    }
                     block = NULL;
                     be = NULL;
                 }
@@ -520,6 +629,7 @@ static inline int run_jit_chain(uint64_t deadline)
         }
         be = lookup_block(pc);
         apply_pending_patches(pc, block);
+        jit_ht_add(pc, block);
         FlushCache(0);
         FlushCache(2);
     }
