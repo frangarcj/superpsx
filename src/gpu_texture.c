@@ -42,41 +42,34 @@ void Tex_Cache_DirtyRegion(int x, int y, int w, int h)
 {
     if (w <= 0 || h <= 0)
         return;
-    int col_start = x / 64;
-    int col_end = (x + w - 1) / 64;
-    int row_start = y / 256;
-    int row_end = (y + h - 1) / 256;
-    if (col_start < 0)
-        col_start = 0;
+    /* Use unsigned shifts — avoids GCC sign-extension fixup for signed / */
+    unsigned int col_start = (unsigned)x >> 6;
+    unsigned int col_end   = (unsigned)(x + w - 1) >> 6;
+    unsigned int row_start = (unsigned)y >> 8;
+    unsigned int row_end   = (unsigned)(y + h - 1) >> 8;
     if (col_end >= VRAM_DIRTY_COLS)
         col_end = VRAM_DIRTY_COLS - 1;
-    if (row_start < 0)
-        row_start = 0;
     if (row_end >= VRAM_DIRTY_ROWS)
         row_end = VRAM_DIRTY_ROWS - 1;
-    for (int r = row_start; r <= row_end; r++)
-        for (int c = col_start; c <= col_end; c++)
+    for (unsigned int r = row_start; r <= row_end; r++)
+        for (unsigned int c = col_start; c <= col_end; c++)
             vram_page_gen[r * VRAM_DIRTY_COLS + c]++;
 }
 
 /* Get max generation across all VRAM blocks overlapping a pixel region */
 static inline uint32_t get_region_gen(int x, int y, int w, int h)
 {
-    int col_start = x / 64;
-    int col_end = (x + w - 1) / 64;
-    int row_start = y / 256;
-    int row_end = (y + h - 1) / 256;
-    if (col_start < 0)
-        col_start = 0;
+    unsigned int col_start = (unsigned)x >> 6;
+    unsigned int col_end   = (unsigned)(x + w - 1) >> 6;
+    unsigned int row_start = (unsigned)y >> 8;
+    unsigned int row_end   = (unsigned)(y + h - 1) >> 8;
     if (col_end >= VRAM_DIRTY_COLS)
         col_end = VRAM_DIRTY_COLS - 1;
-    if (row_start < 0)
-        row_start = 0;
     if (row_end >= VRAM_DIRTY_ROWS)
         row_end = VRAM_DIRTY_ROWS - 1;
     uint32_t max_gen = 0;
-    for (int r = row_start; r <= row_end; r++)
-        for (int c = col_start; c <= col_end; c++)
+    for (unsigned int r = row_start; r <= row_end; r++)
+        for (unsigned int c = col_start; c <= col_end; c++)
         {
             uint32_t g = vram_page_gen[r * VRAM_DIRTY_COLS + c];
             if (g > max_gen)
@@ -157,6 +150,7 @@ typedef struct
 
 static TexPageCacheEntry tex_page_cache[TEX_CACHE_SLOTS];
 static uint32_t tex_cache_tick = 0;
+static int last_hit_slot = 0;  /* MRU shortcut — last cache hit index */
 
 /* SW decode slot layout — Y=512+ (v4 layout) */
 static inline void tex_cache_get_sw_slot_pos(int slot, int *x, int *y)
@@ -570,6 +564,36 @@ int Decode_TexPage_Cached(int tex_format,
     /* Compute current combined generation for this texture+CLUT region */
     uint32_t current_gen = get_tex_combined_gen(tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
 
+    /* ── MRU shortcut: check last-hit slot before full scan ──── */
+    {
+        TexPageCacheEntry *e = &tex_page_cache[last_hit_slot];
+        if (e->valid &&
+            e->combined_gen == current_gen &&
+            e->tex_format == tex_format &&
+            e->tex_page_x == tex_page_x &&
+            e->tex_page_y == tex_page_y &&
+            e->clut_x == clut_x &&
+            e->clut_y == clut_y &&
+            e->tw_mask_x == tex_win_mask_x &&
+            e->tw_mask_y == tex_win_mask_y &&
+            e->tw_off_x == tex_win_off_x &&
+            e->tw_off_y == tex_win_off_y)
+        {
+            tex_stats.page_hits++;
+            tex_stats.pixels_saved += 256 * 256;
+            e->lru_tick = tex_cache_tick;
+            if (e->is_hw_clut)
+            {
+                *out_slot_x = e->hw_tbp0;
+                *out_slot_y = e->hw_cbp;
+                return 2;
+            }
+            *out_slot_x = e->slot_x;
+            *out_slot_y = e->slot_y - CLUT_DECODED_Y;
+            return 1;
+        }
+    }
+
     /* ── Search for matching entry ─────────────────────────────── */
     for (int i = 0; i < TEX_CACHE_SLOTS; i++)
     {
@@ -590,6 +614,7 @@ int Decode_TexPage_Cached(int tex_format,
             tex_stats.page_hits++;
             tex_stats.pixels_saved += 256 * 256;
             e->lru_tick = tex_cache_tick;
+            last_hit_slot = i;
 
             if (e->is_hw_clut)
             {
@@ -688,6 +713,7 @@ int Decode_TexPage_Cached(int tex_format,
     e->tw_off_y = tex_win_off_y;
     e->combined_gen = current_gen;
     e->lru_tick = tex_cache_tick;
+    last_hit_slot = evict_idx;
 
     return use_hw_clut ? 2 : 1;
 }
