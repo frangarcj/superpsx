@@ -406,9 +406,13 @@ static inline __attribute__((always_inline)) void decode_adpcm_block(SPU_Voice *
 /* ---- Process Key On for all set bits ---- */
 static void process_key_on(uint32_t kon)
 {
-    int i;
-    for (i = 0; i < SPU_NUM_VOICES; i++) {
-        if (kon & (1 << i)) {
+    /* Bit-scan loop: skip directly to set bits instead of iterating all 24.
+     * For typical KOFF values with 1-4 bits set, this is 20x fewer iterations. */
+    while (kon) {
+        int i = __builtin_ctz(kon);
+        kon &= kon - 1;  /* clear lowest set bit */
+        if (i >= SPU_NUM_VOICES) break;
+        {
             SPU_Voice *v = &voices[i];
             v->active = 1;
             v->current_addr = (uint32_t)v->start_addr << 3;
@@ -432,9 +436,11 @@ static void process_key_on(uint32_t kon)
 /* ---- Process Key Off for all set bits ---- */
 static void process_key_off(uint32_t koff)
 {
-    int i;
-    for (i = 0; i < SPU_NUM_VOICES; i++) {
-        if (koff & (1 << i)) {
+    while (koff) {
+        int i = __builtin_ctz(koff);
+        koff &= koff - 1;
+        if (i >= SPU_NUM_VOICES) break;
+        {
             SPU_Voice *v = &voices[i];
             if (v->active) {
                 /* Transition to Release phase (do not stop immediately) */
