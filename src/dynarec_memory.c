@@ -7,9 +7,9 @@
  */
 #include "dynarec.h"
 #include "scheduler.h"
-#include "psx_sio.h"      /* SIO_Write/SIO_Read + extern sio_* vars */
+#include "psx_sio.h" /* SIO_Write/SIO_Read + extern sio_* vars */
 
-/* Only need gpu_state.h for GPU_ReadStatus inline — silence LOG_TAG redef */
+/* gpu_state.h needed for const-address GPU_ReadStatus inline — silence LOG_TAG redef */
 #undef LOG_TAG
 #include "gpu_state.h"
 #undef LOG_TAG
@@ -38,7 +38,7 @@ void emit_flush_partial_cycles(void)
     uint32_t addr = (uint32_t)&partial_block_cycles;
     uint16_t lo = addr & 0xFFFF;
     uint16_t hi = (addr + 0x8000) >> 16;
-    uint32_t val  = emit_cycle_offset;
+    uint32_t val = emit_cycle_offset;
     EMIT_LUI(REG_AT, hi);
     EMIT_ADDIU(REG_T1, REG_ZERO, (int16_t)val);
     EMIT_SW(REG_T1, (int16_t)lo, REG_AT);
@@ -168,11 +168,11 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         {
             /* Check gpu_busy_until == 0 (both halves) */
             emit_load_imm32(REG_T2, (uint32_t)&gpu_busy_until);
-            EMIT_LW(REG_T1, 0, REG_T2);         /* t1 = low 32 bits  */
-            EMIT_LW(REG_T2, 4, REG_T2);         /* t2 = high 32 bits */
-            EMIT_OR(REG_T1, REG_T1, REG_T2);    /* t1 = low | high   */
+            EMIT_LW(REG_T1, 0, REG_T2);      /* t1 = low 32 bits  */
+            EMIT_LW(REG_T2, 4, REG_T2);      /* t2 = high 32 bits */
+            EMIT_OR(REG_T1, REG_T1, REG_T2); /* t1 = low | high   */
             uint32_t *gbu_slow = code_ptr;
-            EMIT_BNE(REG_T1, REG_ZERO, 0);      /* bne t1, $0, @slow */
+            EMIT_BNE(REG_T1, REG_ZERO, 0); /* bne t1, $0, @slow */
             EMIT_NOP();
 
             /* Fast path: v0 = gpu_stat | forced_bits (including dynamic bit 25) */
@@ -181,13 +181,13 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
             /* Compute bit 25 (DMA data request) from dma_dir (bits 29-30).
              * Per psx-spx: dir=0→0, dir=1/2→1, dir=3→bit27.
              * Simplified: (dma_dir != 0) → 1.  Games poll this before DMA. */
-            emit(MK_R(0, 0, REG_V0, REG_T1, 29, 0x02));   /* srl t1, v0, 29  */
-            emit(MK_I(0x0C, REG_T1, REG_T1, 3));           /* andi t1, t1, 3  */
+            emit(MK_R(0, 0, REG_V0, REG_T1, 29, 0x02));       /* srl t1, v0, 29  */
+            emit(MK_I(0x0C, REG_T1, REG_T1, 3));              /* andi t1, t1, 3  */
             emit(MK_R(0, REG_ZERO, REG_T1, REG_T1, 0, 0x2B)); /* sltu t1, $0, t1 */
-            emit(MK_R(0, 0, REG_T1, REG_T1, 25, 0x00));   /* sll t1, t1, 25  */
+            emit(MK_R(0, 0, REG_T1, REG_T1, 25, 0x00));       /* sll t1, t1, 25  */
             EMIT_LUI(REG_T2, 0x1400);
             EMIT_ORI(REG_T2, REG_T2, 0x2000);
-            EMIT_OR(REG_T2, REG_T2, REG_T1);               /* t2 = 0x14002000 | bit25 */
+            EMIT_OR(REG_T2, REG_T2, REG_T1); /* t2 = 0x14002000 | bit25 */
             EMIT_OR(REG_V0, REG_V0, REG_T2);
 
             if (!dynarec_load_defer)
@@ -257,7 +257,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
          * BNE reads T1 before the delay slot SRL overwrites it. */
         emit(MK_I(0x0C, REG_T0, REG_T1, size - 1)); /* andi  t1, t0, size-1 */
         align_branch = code_ptr;
-        emit(MK_I(0x05, REG_T1, REG_ZERO, 0)); /* bne   t1, zero, @slow */
+        emit(MK_I(0x05, REG_T1, REG_ZERO, 0));      /* bne   t1, zero, @slow */
         emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* [delay] srl  t1, t0, 16 */
     }
     else
@@ -267,10 +267,10 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     }
 
     /* LUT lookup (64KB pages, virtual address based, S3 = mem_lut) */
-    emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00));  /* sll  t1, t1, 2        (byte offset)  */
-    EMIT_ADDU(REG_T1, REG_T1, REG_S3);          /* addu t1, t1, s3       (&lut[page])   */
-    EMIT_LW(REG_T1, 0, REG_T1);                 /* lw   t1, 0(t1)        (host base)    */
-    emit(MK_I(0x0C, REG_T0, REG_T2, 0xFFFF));   /* andi t2, t0, 0xFFFF   (page offset)  */
+    emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00)); /* sll  t1, t1, 2        (byte offset)  */
+    EMIT_ADDU(REG_T1, REG_T1, REG_S3);         /* addu t1, t1, s3       (&lut[page])   */
+    EMIT_LW(REG_T1, 0, REG_T1);                /* lw   t1, 0(t1)        (host base)    */
+    emit(MK_I(0x0C, REG_T0, REG_T2, 0xFFFF));  /* andi t2, t0, 0xFFFF   (page offset)  */
     uint32_t *lut_branch = code_ptr;
     emit(MK_I(0x04, REG_T1, REG_ZERO, 0)); /* beq  t1, zero, @slow                 */
     /* Delay slot: compute host addr.  BEQ already captured t1 (null check).
@@ -281,14 +281,14 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     else if (size == 2)
     {
         if (is_signed)
-            EMIT_LH(REG_V0, 0, REG_T1);   /* native signed halfword load */
+            EMIT_LH(REG_V0, 0, REG_T1); /* native signed halfword load */
         else
             EMIT_LHU(REG_V0, 0, REG_T1);
     }
     else
     {
         if (is_signed)
-            EMIT_LB(REG_V0, 0, REG_T1);   /* native signed byte load */
+            EMIT_LB(REG_V0, 0, REG_T1); /* native signed byte load */
         else
             EMIT_LBU(REG_V0, 0, REG_T1);
     }
@@ -298,128 +298,44 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     EMIT_NOP();
 
     /*
-     * Scratchpad inline check (LUT miss path):
-     * When mem_lut[page] is NULL, check if this is a scratchpad access
-     * (physical 0x1F800000-0x1F8003FF) before falling through to the
-     * expensive C helper call.  Scratchpad shares the 0x1F80 64KB page
-     * with I/O registers, so the LUT cannot map it directly.
+     * @slow: LUT miss goes directly to C helper.
+     * Scratchpad (0x1F800000-0x1F8003FF) is handled by the C ReadWord/
+     * ReadHalf/ReadByte functions, so no inline check needed.
+     * This saves ~15 words per non-const memory read.
      */
-    /* @sp_check: lut_branch lands here */
     int32_t soff_lut = (int32_t)(code_ptr - lut_branch - 1);
     *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff_lut & 0xFFFF);
 
-    /* phys = vaddr & 0x1FFFFFFF */
-    emit(MK_I(0x0F, 0, REG_T1, 0x1FFF));         /* lui  t1, 0x1FFF          */
-    emit(MK_I(0x0D, REG_T1, REG_T1, 0xFFFF));    /* ori  t1, t1, 0xFFFF      */
-    emit(MK_R(0, REG_T0, REG_T1, REG_T1, 0, 0x24)); /* and  t1, t0, t1  (phys) */
-    emit(MK_I(0x0F, 0, REG_T2, 0xE080));         /* lui  t2, 0xE080 (-0x1F800000) */
-    EMIT_ADDU(REG_T1, REG_T1, REG_T2);           /* addu t1, t1, t2 (phys - 0x1F800000) */
-    emit(MK_I(0x0B, REG_T1, REG_T1, 0x400));     /* sltiu t1, t1, 0x400      */
-    uint32_t *sp_miss = code_ptr;
-    emit(MK_I(0x04, REG_T1, REG_ZERO, 0));       /* beq  t1, zero, @slow     */
-    EMIT_NOP();
-
-    /* Scratchpad fast path: load from scratchpad_buf + (addr & 0x3FF) */
-    emit_load_imm32(REG_T1, (uint32_t)scratchpad_buf);
-    emit(MK_I(0x0C, REG_T0, REG_T2, 0x3FF));    /* andi t2, t0, 0x3FF       */
-    EMIT_ADDU(REG_T1, REG_T1, REG_T2);
-    if (size == 4)
-        EMIT_LW(REG_V0, 0, REG_T1);
-    else if (size == 2)
-    {
-        if (is_signed)
-            EMIT_LH(REG_V0, 0, REG_T1);
-        else
-            EMIT_LHU(REG_V0, 0, REG_T1);
-    }
-    else
-    {
-        if (is_signed)
-            EMIT_LB(REG_V0, 0, REG_T1);
-        else
-            EMIT_LBU(REG_V0, 0, REG_T1);
-    }
-    uint32_t *sp_done = code_ptr;
-    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0));     /* b @done */
-    EMIT_NOP();
-
     /*
-     * Dynamic GPU_ReadStatus fast-path (phys == 0x1F801814).
-     * Typical DrawSync loops read from a register offset: lw t0, 0x1814(t1)
-     * We can catch this right before falling into the expensive C-call slow path
-     * to avoid a huge performance penalty when polling GPUSTAT.
+     * @slow: C helper call for I/O, unmapped, misaligned, scratchpad, etc.
+     * GPU_ReadStatus (0x1F801814) is already handled optimally in the
+     * const-address path above.  Dynamic GPUSTAT polling is rare and
+     * the const path covers the typical LUI+ORI pattern used by games.
+     * Removing the inline dynamic GPUSTAT check saves ~28 words per LW.
      */
-    uint32_t *gpustat_check_branch = code_ptr;
-    emit(MK_I(0x0C, REG_T0, REG_A0, 0xFFFF));       /* andi a0, t0, 0xFFFF */
-    emit(MK_I(0x0E, REG_A0, REG_A0, 0x1814));       /* xori a0, a0, 0x1814 */
-    emit(MK_I(0x05, REG_A0, REG_ZERO, 0));          /* bne a0, zero, @slow_real */
-    EMIT_NOP();
-
-    /* Ensure it's HW page (phys >= 0x1F800000 && < 0x20000000) */
-    emit(MK_R(0, 0, REG_T1, REG_A0, 16, 0x02));     /* srl a0, t1, 16 (t1 was set to phys above) */
-    emit(MK_I(0x0E, REG_A0, REG_A0, 0x1F80));       /* xori a0, a0, 0x1F80 */
-    uint32_t *gpustat_check_hw = code_ptr;
-    emit(MK_I(0x05, REG_A0, REG_ZERO, 0));          /* bne a0, zero, @slow_real */
-    EMIT_NOP();
-
-    /* Fast path: Check gpu_busy_until == 0 */
-    emit_load_imm32(REG_A0, (uint32_t)&gpu_busy_until);
-    EMIT_LW(REG_A1, 0, REG_A0);                     /* a1 = low 32 bits  */
-    EMIT_LW(REG_A0, 4, REG_A0);                     /* a0 = high 32 bits */
-    EMIT_OR(REG_A0, REG_A1, REG_A0);                /* a0 = low | high   */
-    uint32_t *gpustat_busy_branch = code_ptr;
-    EMIT_BNE(REG_A0, REG_ZERO, 0);                  /* bne a0, zero, @slow_real */
-    EMIT_NOP();
-
-    /* Fast path execution: v0 = gpu_stat | forced_bits (including dynamic bit 25) */
-    emit_load_imm32(REG_A0, (uint32_t)&gpu_stat);
-    EMIT_LW(REG_V0, 0, REG_A0);
-    /* Compute bit 25 (DMA data request) from dma_dir (bits 29-30) */
-    emit(MK_R(0, 0, REG_V0, REG_A1, 29, 0x02));   /* srl a1, v0, 29  */
-    emit(MK_I(0x0C, REG_A1, REG_A1, 3));           /* andi a1, a1, 3  */
-    emit(MK_R(0, REG_ZERO, REG_A1, REG_A1, 0, 0x2B)); /* sltu a1, $0, a1 */
-    emit(MK_R(0, 0, REG_A1, REG_A1, 25, 0x00));   /* sll a1, a1, 25  */
-    EMIT_LUI(REG_A0, 0x1400);
-    EMIT_ORI(REG_A0, REG_A0, 0x2000);
-    EMIT_OR(REG_A0, REG_A0, REG_A1);               /* a0 = 0x14002000 | bit25 */
-    EMIT_OR(REG_V0, REG_V0, REG_A0);
-    
-    uint32_t *gpustat_done = code_ptr;
-    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0));        /* b @done */
-    EMIT_NOP();
-
-
-    /* @slow_real: Actual slow path C helper call */
-    int32_t soff_gpustat = (int32_t)(code_ptr - gpustat_check_branch - 1);
-    *gpustat_check_branch = (*gpustat_check_branch & 0xFFFF0000) | ((uint32_t)soff_gpustat & 0xFFFF);
-    int32_t soff_gpustat_hw = (int32_t)(code_ptr - gpustat_check_hw - 1);
-    *gpustat_check_hw = (*gpustat_check_hw & 0xFFFF0000) | ((uint32_t)soff_gpustat_hw & 0xFFFF);
-    int32_t soff_gpustat_busy = (int32_t)(code_ptr - gpustat_busy_branch - 1);
-    *gpustat_busy_branch = (*gpustat_busy_branch & 0xFFFF0000) | ((uint32_t)soff_gpustat_busy & 0xFFFF);
-
-    /* Slow path: C helper call (I/O, unmapped, etc.) */
-    /* @slow: alignment branch and sp_miss land before GPUSTAT check, now they just skip it */
+    /* Route alignment-miss branch to @slow */
     if (align_branch)
     {
-        int32_t soff1 = (int32_t)(gpustat_check_branch - align_branch);
+        int32_t soff1 = (int32_t)(code_ptr - align_branch - 1);
         *align_branch = (*align_branch & 0xFFFF0000) | ((uint32_t)soff1 & 0xFFFF);
     }
-    int32_t soff_sp = (int32_t)(gpustat_check_branch - sp_miss);
-    *sp_miss = (*sp_miss & 0xFFFF0000) | ((uint32_t)soff_sp & 0xFFFF);
 
-    emit_load_imm32(REG_T2, emit_current_psx_pc);
-    EMIT_SW(REG_T2, CPU_CURRENT_PC, REG_S0);
+    /* Use shared mem_slow_trampoline: A0=addr, T0=func, T2=psx_pc, T1=cycle_off */
     EMIT_MOVE(REG_A0, REG_T0);
-
-    uint32_t func_addr;
-    if (size == 4)
-        func_addr = (uint32_t)ReadWord;
-    else if (size == 2)
-        func_addr = (uint32_t)ReadHalf;
-    else
-        func_addr = (uint32_t)ReadByte;
-    emit_flush_partial_cycles();
-    emit_call_c_lite(func_addr);
+    {
+        uint32_t func_addr;
+        if (size == 4)
+            func_addr = (uint32_t)ReadWord;
+        else if (size == 2)
+            func_addr = (uint32_t)ReadHalf;
+        else
+            func_addr = (uint32_t)ReadByte;
+        emit_load_imm32(REG_T0, func_addr);
+    }
+    emit_load_imm32(REG_T2, emit_current_psx_pc);
+    EMIT_ADDIU(REG_T1, REG_ZERO, (int16_t)emit_cycle_offset);
+    EMIT_JAL_ABS((uint32_t)mem_slow_trampoline_addr);
+    EMIT_NOP();
 
     if (size >= 2)
         emit_abort_check(); /* AdEL on misaligned addr */
@@ -432,15 +348,9 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         emit(MK_R(0, 0, REG_V0, REG_V0, shift, 0x03)); /* SRA */
     }
 
-    /* @done: patch all forward branches */
+    /* @done: patch forward branch */
     int32_t doff = (int32_t)(code_ptr - fast_done - 1);
     *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
-    int32_t doff_sp = (int32_t)(code_ptr - sp_done - 1);
-    *sp_done = (*sp_done & 0xFFFF0000) | ((uint32_t)doff_sp & 0xFFFF);
-    if (size == 4) {
-        int32_t doff_gpu = (int32_t)(code_ptr - gpustat_done - 1);
-        *gpustat_done = (*gpustat_done & 0xFFFF0000) | ((uint32_t)doff_gpu & 0xFFFF);
-    }
 
     if (!dynarec_load_defer)
         emit_store_psx_reg(rt_psx, REG_V0);
@@ -511,9 +421,9 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         if (phys == 0x1F801070 && size == 4) /* I_STAT */
         {
             int data_reg = emit_use_reg(rt_psx, REG_T2);
-            EMIT_LW(REG_T1, CPU_I_STAT, REG_S0);                   /* t1 = cpu.i_stat */
-            emit(MK_R(0, REG_T1, data_reg, REG_T1, 0, 0x24));      /* and t1, t1, data */
-            EMIT_SW(REG_T1, CPU_I_STAT, REG_S0);                    /* cpu.i_stat = t1 */
+            EMIT_LW(REG_T1, CPU_I_STAT, REG_S0);              /* t1 = cpu.i_stat */
+            emit(MK_R(0, REG_T1, data_reg, REG_T1, 0, 0x24)); /* and t1, t1, data */
+            EMIT_SW(REG_T1, CPU_I_STAT, REG_S0);              /* cpu.i_stat = t1 */
             return;
         }
         if (phys == 0x1F801074 && size == 4) /* I_MASK */
@@ -538,16 +448,16 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
             emit_load_imm32(REG_T1, (uint32_t)&sio_selected);
             EMIT_LW(REG_T1, 0, REG_T1);
             uint32_t *sio_slow = code_ptr;
-            EMIT_BNE(REG_T1, REG_ZERO, 0);        /* bne t1, zero, @slow_sio */
+            EMIT_BNE(REG_T1, REG_ZERO, 0); /* bne t1, zero, @slow_sio */
             EMIT_NOP();
 
             /* Fast path: !sio_selected → 2 stores, no C call */
             emit_load_imm32(REG_T1, (uint32_t)&sio_data);
             EMIT_ORI(REG_T2, REG_ZERO, 0xFF);
-            EMIT_SW(REG_T2, 0, REG_T1);           /* sio_data = 0xFF */
+            EMIT_SW(REG_T2, 0, REG_T1); /* sio_data = 0xFF */
             emit_load_imm32(REG_T1, (uint32_t)&sio_tx_pending);
             EMIT_ORI(REG_T2, REG_ZERO, 1);
-            EMIT_SW(REG_T2, 0, REG_T1);           /* sio_tx_pending = 1 */
+            EMIT_SW(REG_T2, 0, REG_T1); /* sio_tx_pending = 1 */
             uint32_t *sio_fast_done = code_ptr;
             emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
             EMIT_NOP();
@@ -612,7 +522,7 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
          * BNE reads T1 before the delay slot SRL overwrites it. */
         emit(MK_I(0x0C, REG_T0, REG_T1, size - 1)); /* andi  t1, t0, size-1 */
         align_branch = code_ptr;
-        emit(MK_I(0x05, REG_T1, REG_ZERO, 0)); /* bne   t1, zero, @slow */
+        emit(MK_I(0x05, REG_T1, REG_ZERO, 0));      /* bne   t1, zero, @slow */
         emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* [delay] srl  t1, t0, 16 */
     }
     else
@@ -622,10 +532,10 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     }
 
     /* LUT lookup (64KB virtual pages, S3 = mem_lut base) */
-    emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00));  /* sll  t1, t1, 2        (byte offset)  */
-    EMIT_ADDU(REG_T1, REG_T1, REG_S3);          /* addu t1, t1, s3       (&lut[page])   */
-    EMIT_LW(REG_T1, 0, REG_T1);                 /* lw   t1, 0(t1)        (host base)    */
-    emit(MK_I(0x0C, REG_T0, REG_A0, 0xFFFF));   /* andi a0, t0, 0xFFFF   (page offset)  */
+    emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00)); /* sll  t1, t1, 2        (byte offset)  */
+    EMIT_ADDU(REG_T1, REG_T1, REG_S3);         /* addu t1, t1, s3       (&lut[page])   */
+    EMIT_LW(REG_T1, 0, REG_T1);                /* lw   t1, 0(t1)        (host base)    */
+    emit(MK_I(0x0C, REG_T0, REG_A0, 0xFFFF));  /* andi a0, t0, 0xFFFF   (page offset)  */
     uint32_t *range_branch = code_ptr;
     emit(MK_I(0x04, REG_T1, REG_ZERO, 0)); /* beq  t1, zero, @slow                 */
     /* Delay slot: compute host addr.  BEQ already captured t1 (null check). */
@@ -642,42 +552,13 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     EMIT_NOP();
 
     /*
-     * Scratchpad inline check (LUT miss on write path):
-     * Same logic as read path — check if physical address is in
-     * scratchpad range before falling through to expensive C helper.
-     * Registers: t0 = vaddr, t2 = data, t1 = 0 (LUT null), a0 = page offset
+     * @slow: LUT miss goes directly to C helper.
+     * Scratchpad is handled by C WriteWord/WriteHalf/WriteByte.
      */
-    /* @sp_check: range_branch lands here */
     int32_t soff_range = (int32_t)(code_ptr - range_branch - 1);
     *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff_range & 0xFFFF);
 
-    /* phys = vaddr & 0x1FFFFFFF */
-    emit(MK_I(0x0F, 0, REG_T1, 0x1FFF));         /* lui  t1, 0x1FFF          */
-    emit(MK_I(0x0D, REG_T1, REG_T1, 0xFFFF));    /* ori  t1, t1, 0xFFFF      */
-    emit(MK_R(0, REG_T0, REG_T1, REG_T1, 0, 0x24)); /* and  t1, t0, t1  (phys) */
-    emit(MK_I(0x0F, 0, REG_A0, 0xE080));         /* lui  a0, 0xE080 (-0x1F800000) */
-    EMIT_ADDU(REG_T1, REG_T1, REG_A0);           /* addu t1, t1, a0 (phys - 0x1F800000) */
-    emit(MK_I(0x0B, REG_T1, REG_T1, 0x400));     /* sltiu t1, t1, 0x400      */
-    uint32_t *sp_miss = code_ptr;
-    emit(MK_I(0x04, REG_T1, REG_ZERO, 0));       /* beq  t1, zero, @slow     */
-    EMIT_NOP();
-
-    /* Scratchpad fast path: store to scratchpad_buf + (addr & 0x3FF) */
-    emit_load_imm32(REG_T1, (uint32_t)scratchpad_buf);
-    emit(MK_I(0x0C, REG_T0, REG_A0, 0x3FF));    /* andi a0, t0, 0x3FF       */
-    EMIT_ADDU(REG_T1, REG_T1, REG_A0);
-    if (size == 4)
-        EMIT_SW(REG_T2, 0, REG_T1);
-    else if (size == 2)
-        EMIT_SH(REG_T2, 0, REG_T1);
-    else
-        EMIT_SB(REG_T2, 0, REG_T1);
-    uint32_t *sp_done = code_ptr;
-    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0));     /* b @done */
-    EMIT_NOP();
-
-    /* Slow path: C helper call (I/O, cache ctrl, etc.) */
-    /* @slow: isc_branch, align_branch, and sp_miss land here */
+    /* @slow: isc_branch, align_branch land here */
     int32_t soff0 = (int32_t)(code_ptr - isc_branch - 1);
     *isc_branch = (*isc_branch & 0xFFFF0000) | ((uint32_t)soff0 & 0xFFFF);
     if (align_branch)
@@ -685,32 +566,31 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         int32_t soff1 = (int32_t)(code_ptr - align_branch - 1);
         *align_branch = (*align_branch & 0xFFFF0000) | ((uint32_t)soff1 & 0xFFFF);
     }
-    int32_t soff_sp = (int32_t)(code_ptr - sp_miss - 1);
-    *sp_miss = (*sp_miss & 0xFFFF0000) | ((uint32_t)soff_sp & 0xFFFF);
 
-    emit_load_imm32(REG_A1, emit_current_psx_pc); /* reuse a1 temp */
-    EMIT_SW(REG_A1, CPU_CURRENT_PC, REG_S0);
+    /* Use shared mem_slow_trampoline: A0=addr, A1=data, T0=func, T2=psx_pc, T1=cycle_off */
     EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
     EMIT_MOVE(REG_A1, REG_T2); /* a1 = data */
-
-    uint32_t func_addr;
-    if (size == 4)
-        func_addr = (uint32_t)WriteWord;
-    else if (size == 2)
-        func_addr = (uint32_t)WriteHalf;
-    else
-        func_addr = (uint32_t)WriteByte;
-    emit_flush_partial_cycles();
-    emit_call_c_lite(func_addr);
+    {
+        uint32_t func_addr;
+        if (size == 4)
+            func_addr = (uint32_t)WriteWord;
+        else if (size == 2)
+            func_addr = (uint32_t)WriteHalf;
+        else
+            func_addr = (uint32_t)WriteByte;
+        emit_load_imm32(REG_T0, func_addr);
+    }
+    emit_load_imm32(REG_T2, emit_current_psx_pc);
+    EMIT_ADDIU(REG_T1, REG_ZERO, (int16_t)emit_cycle_offset);
+    EMIT_JAL_ABS((uint32_t)mem_slow_trampoline_addr);
+    EMIT_NOP();
 
     if (size >= 2)
         emit_abort_check(); /* AdES on misaligned addr */
 
-    /* @done: patch all forward branches */
+    /* @done: patch forward branch */
     int32_t doff = (int32_t)(code_ptr - fast_done - 1);
     *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
-    int32_t doff_sp = (int32_t)(code_ptr - sp_done - 1);
-    *sp_done = (*sp_done & 0xFFFF0000) | ((uint32_t)doff_sp & 0xFFFF);
 }
 
 /*
@@ -741,9 +621,9 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
     EMIT_LW(REG_T1, 0, REG_T1);                 /* lw   t1, 0(t1)        */
     emit(MK_I(0x0C, REG_T0, REG_T2, 0xFFFF));   /* andi t2, t0, 0xFFFF   */
     uint32_t *lut_branch = code_ptr;
-    emit(MK_I(0x04, REG_T1, REG_ZERO, 0));      /* beq  t1, zero, @slow  */
+    emit(MK_I(0x04, REG_T1, REG_ZERO, 0)); /* beq  t1, zero, @slow  */
     /* Delay slot: compute host addr (BEQ already captured t1) */
-    EMIT_ADDU(REG_T1, REG_T1, REG_T2);          /* [delay] addu t1, t1, t2 */
+    EMIT_ADDU(REG_T1, REG_T1, REG_T2); /* [delay] addu t1, t1, t2 */
 
     /* Fast path: native lwl/lwr on host address */
     if (is_left)
@@ -755,46 +635,22 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
     emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
     EMIT_NOP();
 
-    /* Scratchpad inline check for LWL/LWR */
+    /* @slow: LUT miss → C helper handles scratchpad too */
     int32_t soff_lut = (int32_t)(code_ptr - lut_branch - 1);
     *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff_lut & 0xFFFF);
 
-    emit(MK_I(0x0F, 0, REG_T1, 0x1FFF));             /* lui  t1, 0x1FFF          */
-    emit(MK_I(0x0D, REG_T1, REG_T1, 0xFFFF));        /* ori  t1, t1, 0xFFFF      */
-    emit(MK_R(0, REG_T0, REG_T1, REG_T1, 0, 0x24)); /* and  t1, t0, t1  (phys)  */
-    emit(MK_I(0x0F, 0, REG_T2, 0xE080));             /* lui  t2, 0xE080          */
-    EMIT_ADDU(REG_T1, REG_T1, REG_T2);               /* addu t1, phys-0x1F800000 */
-    emit(MK_I(0x0B, REG_T1, REG_T1, 0x400));         /* sltiu t1, t1, 0x400      */
-    uint32_t *sp_miss = code_ptr;
-    emit(MK_I(0x04, REG_T1, REG_ZERO, 0));           /* beq  t1, zero, @slow     */
-    EMIT_NOP();
-
-    /* Scratchpad fast path */
-    emit_load_imm32(REG_T1, (uint32_t)scratchpad_buf);
-    emit(MK_I(0x0C, REG_T0, REG_T2, 0x3FF));        /* andi t2, t0, 0x3FF       */
-    EMIT_ADDU(REG_T1, REG_T1, REG_T2);
-    if (is_left)
-        EMIT_LWL(REG_V0, 0, REG_T1);
-    else
-        EMIT_LWR(REG_V0, 0, REG_T1);
-    uint32_t *sp_done = code_ptr;
-    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0));         /* b @done */
-    EMIT_NOP();
-
-    /* Slow path: call C helper */
-    int32_t soff_sp = (int32_t)(code_ptr - sp_miss - 1);
-    *sp_miss = (*sp_miss & 0xFFFF0000) | ((uint32_t)soff_sp & 0xFFFF);
-
+    /* Use shared mem_slow_trampoline: A0=addr, A1=cur_rt, T0=func, T2=psx_pc, T1=cycle_off */
     EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
     EMIT_MOVE(REG_A1, REG_V0); /* a1 = cur_rt */
-    emit_flush_partial_cycles();
-    emit_call_c_lite(is_left ? (uint32_t)Helper_LWL : (uint32_t)Helper_LWR);
+    emit_load_imm32(REG_T0, is_left ? (uint32_t)Helper_LWL : (uint32_t)Helper_LWR);
+    emit_load_imm32(REG_T2, emit_current_psx_pc);
+    EMIT_ADDIU(REG_T1, REG_ZERO, (int16_t)emit_cycle_offset);
+    EMIT_JAL_ABS((uint32_t)mem_slow_trampoline_addr);
+    EMIT_NOP();
 
-    /* @done: patch forward branches */
+    /* @done: patch forward branch */
     int32_t doff2 = (int32_t)(code_ptr - fast_done - 1);
     *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff2 & 0xFFFF);
-    int32_t doff_sp = (int32_t)(code_ptr - sp_done - 1);
-    *sp_done = (*sp_done & 0xFFFF0000) | ((uint32_t)doff_sp & 0xFFFF);
 
     if (!dynarec_load_defer)
     {
@@ -824,7 +680,7 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02)); /* srl  a0, a0, 16 */
     emit(MK_I(0x0C, REG_A0, REG_A0, 1));        /* andi a0, a0, 1 */
     uint32_t *isc_branch = code_ptr;
-    emit(MK_I(0x05, REG_A0, REG_ZERO, 0));      /* bne  a0, zero, @slow */
+    emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne  a0, zero, @slow */
     EMIT_NOP();
 
     /* LUT lookup */
@@ -834,9 +690,9 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     EMIT_LW(REG_T1, 0, REG_T1);                 /* lw   t1, 0(t1)        */
     emit(MK_I(0x0C, REG_T0, REG_A0, 0xFFFF));   /* andi a0, t0, 0xFFFF   */
     uint32_t *lut_branch = code_ptr;
-    emit(MK_I(0x04, REG_T1, REG_ZERO, 0));      /* beq  t1, zero, @slow  */
+    emit(MK_I(0x04, REG_T1, REG_ZERO, 0)); /* beq  t1, zero, @slow  */
     /* Delay slot: compute host addr (BEQ already captured t1) */
-    EMIT_ADDU(REG_T1, REG_T1, REG_A0);          /* [delay] addu t1, t1, a0 */
+    EMIT_ADDU(REG_T1, REG_T1, REG_A0); /* [delay] addu t1, t1, a0 */
 
     /* Fast path: native swl/swr on host address */
     if (is_left)
@@ -848,47 +704,24 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
     EMIT_NOP();
 
-    /* Scratchpad inline check for SWL/SWR */
+    /* @slow: LUT miss → C helper handles scratchpad too */
     int32_t soff_lut = (int32_t)(code_ptr - lut_branch - 1);
     *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff_lut & 0xFFFF);
-
-    /* phys = vaddr & 0x1FFFFFFF; check (phys - 0x1F800000) < 0x400 */
-    emit(MK_I(0x0F, 0, REG_T1, 0x1FFF));             /* lui  t1, 0x1FFF          */
-    emit(MK_I(0x0D, REG_T1, REG_T1, 0xFFFF));        /* ori  t1, t1, 0xFFFF      */
-    emit(MK_R(0, REG_T0, REG_T1, REG_T1, 0, 0x24)); /* and  t1, t0, t1  (phys)  */
-    emit(MK_I(0x0F, 0, REG_A0, 0xE080));             /* lui  a0, 0xE080          */
-    EMIT_ADDU(REG_T1, REG_T1, REG_A0);               /* addu t1, phys-0x1F800000 */
-    emit(MK_I(0x0B, REG_T1, REG_T1, 0x400));         /* sltiu t1, t1, 0x400      */
-    uint32_t *sp_miss = code_ptr;
-    emit(MK_I(0x04, REG_T1, REG_ZERO, 0));           /* beq  t1, zero, @slow     */
-    EMIT_NOP();
-
-    /* Scratchpad fast path */
-    emit_load_imm32(REG_T1, (uint32_t)scratchpad_buf);
-    emit(MK_I(0x0C, REG_T0, REG_A0, 0x3FF));        /* andi a0, t0, 0x3FF       */
-    EMIT_ADDU(REG_T1, REG_T1, REG_A0);
-    if (is_left)
-        EMIT_SWL(REG_T2, 0, REG_T1);
-    else
-        EMIT_SWR(REG_T2, 0, REG_T1);
-    uint32_t *sp_done = code_ptr;
-    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0));         /* b @done */
-    EMIT_NOP();
 
     /* Slow path */
     int32_t soff0 = (int32_t)(code_ptr - isc_branch - 1);
     *isc_branch = (*isc_branch & 0xFFFF0000) | ((uint32_t)soff0 & 0xFFFF);
-    int32_t soff_sp = (int32_t)(code_ptr - sp_miss - 1);
-    *sp_miss = (*sp_miss & 0xFFFF0000) | ((uint32_t)soff_sp & 0xFFFF);
 
+    /* Use shared mem_slow_trampoline: A0=addr, A1=data, T0=func, T2=psx_pc, T1=cycle_off */
     EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
     EMIT_MOVE(REG_A1, REG_T2); /* a1 = rt_val */
-    emit_flush_partial_cycles();
-    emit_call_c_lite(is_left ? (uint32_t)Helper_SWL : (uint32_t)Helper_SWR);
+    emit_load_imm32(REG_T0, is_left ? (uint32_t)Helper_SWL : (uint32_t)Helper_SWR);
+    emit_load_imm32(REG_T2, emit_current_psx_pc);
+    EMIT_ADDIU(REG_T1, REG_ZERO, (int16_t)emit_cycle_offset);
+    EMIT_JAL_ABS((uint32_t)mem_slow_trampoline_addr);
+    EMIT_NOP();
 
-    /* @done: patch forward branches */
+    /* @done: patch forward branch */
     int32_t doff2 = (int32_t)(code_ptr - fast_done - 1);
     *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff2 & 0xFFFF);
-    int32_t doff_sp = (int32_t)(code_ptr - sp_done - 1);
-    *sp_done = (*sp_done & 0xFFFF0000) | ((uint32_t)doff_sp & 0xFFFF);
 }

@@ -12,6 +12,7 @@
 #include <time.h>
 #include "dynarec.h"
 #include "spu.h"
+#include "scheduler.h"
 #undef LOG_TAG
 #include "gpu_state.h"
 #undef LOG_TAG
@@ -40,6 +41,7 @@ uint32_t *code_ptr;
 uint32_t *abort_trampoline_addr;
 uint32_t *call_c_trampoline_addr = NULL;
 uint32_t *call_c_trampoline_lite_addr = NULL;
+uint32_t *mem_slow_trampoline_addr = NULL;
 
 /* Hash table for fast JR/JALR dispatch */
 JitHTEntry jit_ht[JIT_HT_SIZE] __attribute__((aligned(64)));
@@ -339,7 +341,34 @@ void Init_Dynarec(void)
         *p++ = 0; /* delay: nop */
     }
 
-    code_ptr = code_buffer + 128;
+    /* ---- Memory slow-path trampoline at code_buffer[128] ----
+     * Shared by all non-const memory reads/writes.
+     * Entry: A0 = addr (reads) or A0 = addr, A1 = data (writes)
+     *        T0 = C function pointer (ReadWord/WriteHalf/etc.)
+     *        T2 = psx_pc (to store in cpu.current_pc)
+     *        T1 = cycle offset (for partial_block_cycles)
+     * Saves block RA, stores psx_pc, flushes partial cycles,
+     * saves cycles_left, calls lite trampoline, returns to block. */
+    mem_slow_trampoline_addr = &code_buffer[128];
+    {
+        uint32_t *p = &code_buffer[128];
+        uint32_t pbc_addr = (uint32_t)&partial_block_cycles;
+        uint16_t pbc_lo = pbc_addr & 0xFFFF;
+        uint16_t pbc_hi = (pbc_addr + 0x8000) >> 16;
+
+        *p++ = MK_I(0x2B, REG_SP, REG_RA, 64);          /* sw ra, 64(sp) */
+        *p++ = MK_I(0x2B, REG_S0, REG_T2, CPU_CURRENT_PC); /* sw t2, cpu.current_pc */
+        *p++ = MK_I(0x0F, 0, REG_AT, pbc_hi);            /* lui at, hi(&pbc) */
+        *p++ = MK_I(0x2B, REG_AT, REG_T1, (int16_t)pbc_lo); /* sw t1, lo(&pbc) */
+        *p++ = MK_I(0x2B, REG_S0, REG_S2, CPU_CYCLES_LEFT); /* sw s2, cpu.cycles_left */
+        *p++ = MK_J(3, (uint32_t)call_c_trampoline_lite_addr >> 2); /* jal lite_tramp */
+        *p++ = 0; /* delay: nop */
+        *p++ = MK_I(0x23, REG_SP, REG_RA, 64);           /* lw ra, 64(sp) */
+        *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08);          /* jr ra */
+        *p++ = 0; /* delay: nop */
+    }
+
+    code_ptr = code_buffer + 144;
 
     printf("  Code buffer at %p (%u KB)\n", code_buffer, CODE_BUFFER_SIZE / 1024);
     printf("  Page Table (L1) initialized: %u + %u entries\n", JIT_L1_RAM_PAGES, JIT_L1_BIOS_PAGES);

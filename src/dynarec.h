@@ -127,6 +127,7 @@ extern uint32_t *code_ptr;
 extern uint32_t *abort_trampoline_addr;
 extern uint32_t *call_c_trampoline_addr;
 extern uint32_t *call_c_trampoline_lite_addr;
+extern uint32_t *mem_slow_trampoline_addr;
 
 /* ================================================================
  *  Shared state — Page Table (Lookup)
