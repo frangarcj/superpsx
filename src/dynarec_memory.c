@@ -234,8 +234,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
      *   lw     t1, 0(t1)          # host page base (or NULL)
      *   andi   t2, t0, 0xFFFF     # offset within 64KB page
      *   beq    t1, zero, @slow
-     *   nop
-     *   addu   t1, t1, t2         # host address
+     *   addu   t1, t1, t2         # [delay] host address (safe: BEQ captured t1)
      *   lw/lhu/lbu v0, 0(t1)
      *   b      @done
      *   nop
@@ -246,25 +245,29 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     uint32_t *align_branch = NULL;
     if (size > 1)
     {
-        /* Alignment check */
+        /* Alignment check — use delay slot for first LUT instruction.
+         * BNE reads T1 before the delay slot SRL overwrites it. */
         emit(MK_I(0x0C, REG_T0, REG_T1, size - 1)); /* andi  t1, t0, size-1 */
         align_branch = code_ptr;
         emit(MK_I(0x05, REG_T1, REG_ZERO, 0)); /* bne   t1, zero, @slow */
-        EMIT_NOP();
+        emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* [delay] srl  t1, t0, 16 */
+    }
+    else
+    {
+        /* No alignment check for byte loads — emit SRL normally */
+        emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* srl  t1, t0, 16       (page index)   */
     }
 
     /* LUT lookup (64KB pages, virtual address based, S3 = mem_lut) */
-    emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* srl  t1, t0, 16       (page index)   */
     emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00));  /* sll  t1, t1, 2        (byte offset)  */
     EMIT_ADDU(REG_T1, REG_T1, REG_S3);          /* addu t1, t1, s3       (&lut[page])   */
     EMIT_LW(REG_T1, 0, REG_T1);                 /* lw   t1, 0(t1)        (host base)    */
     emit(MK_I(0x0C, REG_T0, REG_T2, 0xFFFF));   /* andi t2, t0, 0xFFFF   (page offset)  */
     uint32_t *lut_branch = code_ptr;
     emit(MK_I(0x04, REG_T1, REG_ZERO, 0)); /* beq  t1, zero, @slow                 */
-    EMIT_NOP();
-
-    /* Fast path: direct access via LUT */
-    EMIT_ADDU(REG_T1, REG_T1, REG_T2); /* addu t1, t1, t2       (host addr)    */
+    /* Delay slot: compute host addr.  BEQ already captured t1 (null check).
+     * If branch taken (t1=0): t1 = 0 + t2 = t2 (harmless — slow path overwrites t1). */
+    EMIT_ADDU(REG_T1, REG_T1, REG_T2); /* [delay] addu t1, t1, t2  (host addr) */
     if (size == 4)
         EMIT_LW(REG_V0, 0, REG_T1);
     else if (size == 2)
@@ -591,25 +594,28 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     uint32_t *align_branch = NULL;
     if (size > 1)
     {
-        /* Alignment check */
+        /* Alignment check — use delay slot for first LUT instruction.
+         * BNE reads T1 before the delay slot SRL overwrites it. */
         emit(MK_I(0x0C, REG_T0, REG_T1, size - 1)); /* andi  t1, t0, size-1 */
         align_branch = code_ptr;
         emit(MK_I(0x05, REG_T1, REG_ZERO, 0)); /* bne   t1, zero, @slow */
-        EMIT_NOP();
+        emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* [delay] srl  t1, t0, 16 */
+    }
+    else
+    {
+        /* No alignment check for byte stores — emit SRL normally */
+        emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* srl  t1, t0, 16       (page index)   */
     }
 
     /* LUT lookup (64KB virtual pages, S3 = mem_lut base) */
-    emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* srl  t1, t0, 16       (page index)   */
     emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00));  /* sll  t1, t1, 2        (byte offset)  */
     EMIT_ADDU(REG_T1, REG_T1, REG_S3);          /* addu t1, t1, s3       (&lut[page])   */
     EMIT_LW(REG_T1, 0, REG_T1);                 /* lw   t1, 0(t1)        (host base)    */
     emit(MK_I(0x0C, REG_T0, REG_A0, 0xFFFF));   /* andi a0, t0, 0xFFFF   (page offset)  */
     uint32_t *range_branch = code_ptr;
     emit(MK_I(0x04, REG_T1, REG_ZERO, 0)); /* beq  t1, zero, @slow                 */
-    EMIT_NOP();
-
-    /* Fast path: direct store via LUT */
-    EMIT_ADDU(REG_T1, REG_T1, REG_A0); /* addu t1, t1, a0       (host addr)    */
+    /* Delay slot: compute host addr.  BEQ already captured t1 (null check). */
+    EMIT_ADDU(REG_T1, REG_T1, REG_A0); /* [delay] addu t1, t1, a0  (host addr) */
     if (size == 4)
         EMIT_SW(REG_T2, 0, REG_T1);
     else if (size == 2)
@@ -722,10 +728,10 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
     emit(MK_I(0x0C, REG_T0, REG_T2, 0xFFFF));   /* andi t2, t0, 0xFFFF   */
     uint32_t *lut_branch = code_ptr;
     emit(MK_I(0x04, REG_T1, REG_ZERO, 0));      /* beq  t1, zero, @slow  */
-    EMIT_NOP();
+    /* Delay slot: compute host addr (BEQ already captured t1) */
+    EMIT_ADDU(REG_T1, REG_T1, REG_T2);          /* [delay] addu t1, t1, t2 */
 
     /* Fast path: native lwl/lwr on host address */
-    EMIT_ADDU(REG_T1, REG_T1, REG_T2);
     if (is_left)
         EMIT_LWL(REG_V0, 0, REG_T1);
     else
@@ -815,10 +821,10 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     emit(MK_I(0x0C, REG_T0, REG_A0, 0xFFFF));   /* andi a0, t0, 0xFFFF   */
     uint32_t *lut_branch = code_ptr;
     emit(MK_I(0x04, REG_T1, REG_ZERO, 0));      /* beq  t1, zero, @slow  */
-    EMIT_NOP();
+    /* Delay slot: compute host addr (BEQ already captured t1) */
+    EMIT_ADDU(REG_T1, REG_T1, REG_A0);          /* [delay] addu t1, t1, a0 */
 
     /* Fast path: native swl/swr on host address */
-    EMIT_ADDU(REG_T1, REG_T1, REG_A0);
     if (is_left)
         EMIT_SWL(REG_T2, 0, REG_T1);
     else

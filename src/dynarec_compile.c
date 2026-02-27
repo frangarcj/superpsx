@@ -327,6 +327,9 @@ uint32_t *compile_block(uint32_t psx_pc)
             jit_ht[i].psx_pc = 0xFFFFFFFF;
             jit_ht[i].native = NULL;
         }
+        /* Full flush on buffer reset: all old icache lines are stale */
+        FlushCache(0);
+        FlushCache(2);
     }
 
     uint32_t *block_start = code_ptr;
@@ -805,8 +808,8 @@ uint32_t *compile_block(uint32_t psx_pc)
             DLOG_RAW("  ... (%d more)\n", num_words - 32);
     }
 
-    FlushCache(0);
-    FlushCache(2);
+    /* Cache flush moved to run_jit_chain: targeted flush_jit_code()
+     * replaces full FlushCache(0)+FlushCache(2) for much less icache damage. */
 
     blocks_compiled++;
 

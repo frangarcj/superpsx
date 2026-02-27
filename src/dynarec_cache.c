@@ -84,7 +84,9 @@ void emit_direct_link(uint32_t target_psx_pc)
     EMIT_NOP();
 }
 
-/* apply_pending_patches: back-patch all J stubs waiting for target_psx_pc. */
+/* apply_pending_patches: back-patch all J stubs waiting for target_psx_pc.
+ * Each patched word is flushed individually via flush_jit_word() to avoid
+ * a full FlushCache(0)+FlushCache(2) that would nuke the entire icache. */
 void apply_pending_patches(uint32_t target_psx_pc, uint32_t *native_addr)
 {
     int i, j;
@@ -95,6 +97,7 @@ void apply_pending_patches(uint32_t target_psx_pc, uint32_t *native_addr)
         {
             uint32_t j_target = ((uint32_t)(native_addr + DYNAREC_PROLOGUE_WORDS) >> 2) & 0x03FFFFFF;
             *ps->site_word = MK_J(2, j_target);
+            flush_jit_word(ps->site_word);
 #ifdef ENABLE_DYNAREC_STATS
             stat_dbl_patches++;
 #endif

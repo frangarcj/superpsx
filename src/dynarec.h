@@ -362,6 +362,9 @@ uint32_t *get_psx_code_ptr(uint32_t psx_pc);
 BlockEntry *cache_block(uint32_t psx_pc, uint32_t *native);
 void Free_PageTable(void);
 
+/* Targeted cache flush for a single patched instruction word */
+void flush_jit_word(void *addr);
+
 /* ================================================================
  *  Function prototypes — dynarec_memory.c
  * ================================================================ */
