@@ -151,8 +151,7 @@ void DumpVRAM(const char *filename) { (void)filename; }
 
 /* ── gpu_texture.c interface ────────────────────────────────────────── */
 
-uint32_t Apply_Tex_Window_U(uint32_t u) { return u; }
-uint32_t Apply_Tex_Window_V(uint32_t v) { return v; }
+/* Apply_Tex_Window_U/V are now static inline in gpu_state.h */
 
 int Decode_CLUT4_Texture(int clut_x, int clut_y, int tex_x, int tex_y,
                          int u0, int v0, int tw, int th)

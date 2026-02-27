@@ -261,8 +261,18 @@ void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uin
 void DumpVRAM(const char *filename);
 
 /* gpu_texture.c — CLUT texture decode + page-level cache */
-uint32_t Apply_Tex_Window_U(uint32_t u);
-uint32_t Apply_Tex_Window_V(uint32_t v);
+static inline uint32_t Apply_Tex_Window_U(uint32_t u) {
+    if (tex_win_mask_x == 0) return u;
+    uint32_t mask = tex_win_mask_x * 8;
+    uint32_t off = (tex_win_off_x & tex_win_mask_x) * 8;
+    return (u & ~mask) | off;
+}
+static inline uint32_t Apply_Tex_Window_V(uint32_t v) {
+    if (tex_win_mask_y == 0) return v;
+    uint32_t mask = tex_win_mask_y * 8;
+    uint32_t off = (tex_win_off_y & tex_win_mask_y) * 8;
+    return (v & ~mask) | off;
+}
 extern uint32_t vram_gen_counter;
 int Decode_CLUT4_Texture(int clut_x, int clut_y, int tex_x, int tex_y,
                          int u0, int v0, int tw, int th);

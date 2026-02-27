@@ -424,6 +424,12 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                         if (emit_tex0)  { Push_GIF_Data(want_tex0, GS_REG_TEX0); Push_GIF_Data(0, GS_REG_TEXFLUSH); }
                         if (emit_test)  Push_GIF_Data(want_test, GS_REG_TEST_1);
                         /* Update lazy tracking */
+                        if (!gs_state.valid) {
+                            /* Transitioning from unknown: sentinel for unemitted regs
+                             * so stale values can't accidentally match future prims */
+                            if (!is_textured)  { gs_state.tex0 = ~0ULL; gs_state.test = ~0ULL; }
+                            if (!is_semi_trans) gs_state.alpha = ~0ULL;
+                        }
                         gs_state.dthe = want_dthe;
                         if (is_semi_trans) gs_state.alpha = want_alpha;
                         if (is_textured) { gs_state.tex0 = want_tex0; gs_state.test = want_test; }
@@ -566,6 +572,11 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
             if (e_test)  Push_GIF_Data(tw_test, GS_REG_TEST_1);
 
             /* Update lazy tracking */
+            if (!gs_state.valid) {
+                /* Transitioning from unknown: sentinel for unemitted regs */
+                if (!is_textured)      { gs_state.tex0 = ~0ULL; gs_state.test = ~0ULL; }
+                if (!is_semi_trans_tri) gs_state.alpha = ~0ULL;
+            }
             gs_state.dthe = tw_dthe;
             if (is_semi_trans_tri) gs_state.alpha = tw_alpha;
             if (is_textured) { gs_state.tex0 = tw_tex0; gs_state.test = tw_test; }

@@ -655,9 +655,12 @@ void GPU_WriteGP0(uint32_t data)
         gpu_stat = (gpu_stat & ~0x1800) | (mask_set_bit << 11) | (mask_check_bit << 12);
         // GS: FBA_1 forces bit 15 on all written pixels (mask_set_bit)
         // GS: DATE+DATM in TEST_1 prevents writing to pixels with bit 15 set (mask_check_bit)
-        Push_GIF_Tag(GIF_TAG_LO(2, 1, 0, 0, 0, 1), GIF_REG_AD);
-        Push_GIF_Data(GS_SET_FBA(mask_set_bit), GS_REG_FBA_1); // FBA_1 via SDK macro
-        Push_GIF_Data(Get_Base_TEST(), GS_REG_TEST_1);        // TEST_1 (now composed via GS_SET_TEST)
+        {
+            Push_GIF_Tag(GIF_TAG_LO(2, 1, 0, 0, 0, 1), GIF_REG_AD);
+            Push_GIF_Data(GS_SET_FBA(mask_set_bit), GS_REG_FBA_1); // FBA_1 via SDK macro
+            Push_GIF_Data(Get_Base_TEST(), GS_REG_TEST_1);        // TEST_1 (now composed via GS_SET_TEST)
+        }
+        Prim_InvalidateGSState();
         break;
     case 0x1F: // GPU IRQ Request (edge-triggered)
         /* Per psx-spx: I_STAT bits are edge-triggered — they get set ONLY
