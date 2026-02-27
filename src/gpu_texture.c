@@ -151,6 +151,7 @@ typedef struct
 static TexPageCacheEntry tex_page_cache[TEX_CACHE_SLOTS];
 static uint32_t tex_cache_tick = 0;
 static int last_hit_slot = 0;  /* MRU shortcut — last cache hit index */
+static uint32_t last_mru_vram_gen = 0; /* vram_gen_counter at last MRU hit */
 
 /* SW decode slot layout — Y=512+ (v4 layout) */
 static inline void tex_cache_get_sw_slot_pos(int slot, int *x, int *y)
@@ -561,14 +562,16 @@ int Decode_TexPage_Cached(int tex_format,
      * 15BPP always uses SW path. */
     int use_hw_clut = (tex_format <= 1 && tex_win_mask_x == 0 && tex_win_mask_y == 0);
 
-    /* Compute current combined generation for this texture+CLUT region */
-    uint32_t current_gen = get_tex_combined_gen(tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
-
     /* ── MRU shortcut: check last-hit slot before full scan ──── */
+    /* Fast path: if vram_gen_counter hasn't changed since last MRU hit,
+     * no VRAM was modified → combined_gen is unchanged, skip the
+     * expensive get_tex_combined_gen() multi-block scan (~365K calls). */
+    int vram_unchanged = (vram_gen_counter == last_mru_vram_gen);
+    uint32_t current_gen;
+
     {
         TexPageCacheEntry *e = &tex_page_cache[last_hit_slot];
         if (e->valid &&
-            e->combined_gen == current_gen &&
             e->tex_format == tex_format &&
             e->tex_page_x == tex_page_x &&
             e->tex_page_y == tex_page_y &&
@@ -579,20 +582,49 @@ int Decode_TexPage_Cached(int tex_format,
             e->tw_off_x == tex_win_off_x &&
             e->tw_off_y == tex_win_off_y)
         {
-            tex_stats.page_hits++;
-            tex_stats.pixels_saved += 256 * 256;
-            e->lru_tick = tex_cache_tick;
-            if (e->is_hw_clut)
+            /* Parameters match — check generation validity */
+            if (vram_unchanged)
             {
-                *out_slot_x = e->hw_tbp0;
-                *out_slot_y = e->hw_cbp;
-                return 2;
+                /* No VRAM changes → cached gen still correct */
+                tex_stats.page_hits++;
+                tex_stats.pixels_saved += 256 * 256;
+                e->lru_tick = tex_cache_tick;
+                if (e->is_hw_clut)
+                {
+                    *out_slot_x = e->hw_tbp0;
+                    *out_slot_y = e->hw_cbp;
+                    return 2;
+                }
+                *out_slot_x = e->slot_x;
+                *out_slot_y = e->slot_y - CLUT_DECODED_Y;
+                return 1;
             }
-            *out_slot_x = e->slot_x;
-            *out_slot_y = e->slot_y - CLUT_DECODED_Y;
-            return 1;
+            /* VRAM changed — recompute gen and compare */
+            current_gen = get_tex_combined_gen(tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
+            if (e->combined_gen == current_gen)
+            {
+                tex_stats.page_hits++;
+                tex_stats.pixels_saved += 256 * 256;
+                e->lru_tick = tex_cache_tick;
+                last_mru_vram_gen = vram_gen_counter;
+                if (e->is_hw_clut)
+                {
+                    *out_slot_x = e->hw_tbp0;
+                    *out_slot_y = e->hw_cbp;
+                    return 2;
+                }
+                *out_slot_x = e->slot_x;
+                *out_slot_y = e->slot_y - CLUT_DECODED_Y;
+                return 1;
+            }
         }
     }
+
+    /* current_gen is needed for the linear scan below.  The fast path
+     * (unchanged VRAM + MRU param match) already returned above.
+     * It may have been computed in the MRU block (vram changed + params
+     * matched); recompute unconditionally to cover all fall-through cases. */
+    current_gen = get_tex_combined_gen(tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
 
     /* ── Search for matching entry ─────────────────────────────── */
     for (int i = 0; i < TEX_CACHE_SLOTS; i++)
@@ -615,6 +647,7 @@ int Decode_TexPage_Cached(int tex_format,
             tex_stats.pixels_saved += 256 * 256;
             e->lru_tick = tex_cache_tick;
             last_hit_slot = i;
+            last_mru_vram_gen = vram_gen_counter;
 
             if (e->is_hw_clut)
             {
@@ -714,6 +747,7 @@ int Decode_TexPage_Cached(int tex_format,
     e->combined_gen = current_gen;
     e->lru_tick = tex_cache_tick;
     last_hit_slot = evict_idx;
+    last_mru_vram_gen = vram_gen_counter;
 
     return use_hw_clut ? 2 : 1;
 }

@@ -112,6 +112,7 @@ void Update_GS_Display(void) {}
 /* ── gpu_gif.c interface ────────────────────────────────────────────── */
 
 void Flush_GIF(void) {}
+void Flush_GIF_Sync(void) {}
 
 uint64_t Get_Alpha_Reg(int mode)   { (void)mode; return 0; }
 uint64_t Get_Base_TEST(void)       { return 0; }

@@ -60,17 +60,28 @@ void Flush_GIF(void)
          * SyncDCache writes back only dirty lines in the range. */
         SyncDCache(base, (void *)((uintptr_t)base + (uint32_t)qwc * 16));
 
-        // Send current buffer to GIF (Channel 2)
+        /* Async double-buffer: wait for PREVIOUS DMA to finish, then
+         * start THIS buffer's DMA and swap immediately.  The CPU can
+         * fill the other buffer while this DMA runs in parallel.
+         * On the first call the channel is idle → dma_wait_fast returns
+         * instantly.  Saves ~85K×500 cycles/sec of idle CPU stalls. */
+        dma_wait_fast();
         dma_channel_send_normal(DMA_CHANNEL_GIF, base, qwc, 0, 0);
 
-        // Wait for the PREVIOUS transfer on this channel to complete
-        dma_wait_fast();
-
-        // Switch to the other buffer for next writes
+        // Swap to other buffer — safe because dma_wait ensured it's done
         current_buffer ^= 1;
         fast_gif_ptr = (gif_qword_t *)&gif_packet_buf[current_buffer][0];
         gif_buffer_end_safe = fast_gif_ptr + (GIF_BUFFER_SIZE - 1024);
     }
+}
+
+/* Synchronous flush: drain GIF buffer AND wait for DMA completion.
+ * Required before directly using the GIF DMA channel (e.g. VRAM readback)
+ * or when GS must have processed all prior commands. */
+void Flush_GIF_Sync(void)
+{
+    Flush_GIF();
+    dma_wait_fast();
 }
 
 

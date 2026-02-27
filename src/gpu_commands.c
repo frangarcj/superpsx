@@ -359,7 +359,7 @@ void GPU_WriteGP0(uint32_t data)
                     uint16_t *tbuf = (uint16_t *)memalign(64, buf_qwc * 16);
                     if (tbuf)
                     {
-                        Flush_GIF();
+                        Flush_GIF_Sync();  /* Must wait: direct GIF channel use follows */
 
                         unsigned __int128 rb_packet[8] __attribute__((aligned(16)));
                         uint64_t *rp = (uint64_t *)rb_packet;

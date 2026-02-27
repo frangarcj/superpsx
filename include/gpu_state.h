@@ -186,6 +186,7 @@ extern int buf_image_ptr;
 
 /* gpu_gif.c — GIF buffer management */
 void Flush_GIF(void);
+void Flush_GIF_Sync(void);
 
 #define GIF_TAG_LO(nloop, eop, pre, prim, flg, nreg) \
     (((uint64_t)(nloop) & 0x7FFF) |                  \
