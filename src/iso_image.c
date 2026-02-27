@@ -8,18 +8,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+#include "superpsx.h"
 #include "iso_image.h"
 
 #define LOG_TAG "ISO"
-
-#ifdef ENABLE_DEBUG_LOG
-#define DLOG(fmt, ...) printf("[" LOG_TAG "] " fmt, ##__VA_ARGS__)
-#else
-#define DLOG(...) \
-    do            \
-    {             \
-    } while (0)
-#endif
 
 /* ---- Internal state ---- */
 static struct
@@ -107,7 +99,7 @@ int ISO_Open(const char *path)
         iso_state.sector_size = ISO_SECTOR_SIZE;
         iso_state.data_offset = 0;
         iso_state.total_sectors = (uint32_t)(file_size / ISO_SECTOR_SIZE);
-        printf("[ISO] Detected ISO format: %u sectors\n", iso_state.total_sectors);
+        printf("[ISO] Detected ISO format: %" PRIu32 " sectors\n", iso_state.total_sectors);
     }
     else
     {
@@ -150,7 +142,7 @@ int ISO_ReadSector(uint32_t lba, uint8_t *buf)
     size_t read = fread(buf, 1, ISO_SECTOR_SIZE, iso_state.fp);
     if (read != ISO_SECTOR_SIZE)
     {
-        DLOG("ReadSector: Short read at LBA %u: got %zu bytes\n", lba, read);
+        DLOG("ReadSector: Short read at LBA %" PRIu32 ": got %zu bytes\n", lba, read);
         /* Zero-fill remaining bytes */
         if (read < ISO_SECTOR_SIZE)
             memset(buf + read, 0, ISO_SECTOR_SIZE - read);
