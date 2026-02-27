@@ -115,7 +115,7 @@ void Flush_GIF(void) {}
 void Flush_GIF_Sync(void) {}
 
 uint64_t Get_Alpha_Reg(int mode)   { (void)mode; return 0; }
-uint64_t Get_Base_TEST(void)       { return 0; }
+/* Get_Base_TEST() is now static inline in gpu_state.h */
 void     Setup_GS_Environment(void) {}
 
 /* ── gpu_vram.c interface ───────────────────────────────────────────── */
@@ -207,6 +207,8 @@ void Tex_Cache_DirtyRegion(int x, int y, int w, int h)
 /* ── gpu_primitives.c interface ─────────────────────────────────────── */
 
 void Translate_GP0_to_GS(uint32_t *psx_cmd) { (void)psx_cmd; }
+void Prim_InvalidateGSState(void) {}
+void Prim_InvalidateTexCache(void) {}
 
 void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
                           int16_t x1, int16_t y1, uint32_t color1,

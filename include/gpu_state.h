@@ -213,7 +213,7 @@ static inline void Push_GIF_Data(uint64_t d0, uint64_t d1)
 
 void Setup_GS_Environment(void);
 uint64_t Get_Alpha_Reg(int mode);
-uint64_t Get_Base_TEST(void);
+static inline uint64_t Get_Base_TEST(void) { return cached_base_test; }
 
 /* gpu_vram.c — VRAM transfer operations */
 void Start_VRAM_Transfer(int x, int y, int w, int h);
@@ -250,6 +250,8 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd);
 void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
                           int16_t x1, int16_t y1, uint32_t color1,
                           int is_shaded, int is_semi_trans);
+void Prim_InvalidateGSState(void);
+void Prim_InvalidateTexCache(void);
 
 /* gpu_commands.c — GP0/GP1 command processing */
 int GPU_GetCommandSize(uint32_t cmd);

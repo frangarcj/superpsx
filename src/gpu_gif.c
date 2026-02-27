@@ -13,11 +13,7 @@
  * (GP0 E6h or GPU reset).  Eliminates per-primitive function call. */
 uint64_t cached_base_test = 0;
 
-// Return precomputed base TEST register value
-uint64_t Get_Base_TEST(void)
-{
-    return cached_base_test;
-}
+/* Get_Base_TEST() is now static inline in gpu_state.h */
 
 /* ── Alpha blending register helpers ─────────────────────────────── */
 
