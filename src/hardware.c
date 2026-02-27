@@ -125,8 +125,6 @@ void WriteHardware(uint32_t phys, uint32_t data, int size)
             cpu.i_stat &= data;
             /* Inline SIO IRQ check: if SIO IRQ was pending and bit 7 is now
              * cleared, fire the SIO interrupt immediately. */
-            extern int sio_irq_pending;
-            extern volatile uint64_t sio_irq_delay_cycle;
             if (sio_irq_pending && !(data & (1 << 7)))
             {
                 sio_irq_pending = 0;

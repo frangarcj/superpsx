@@ -7,20 +7,20 @@
 
 #define LOG_TAG "SIO"
 
-/* Joypad/Memcard interface */
-static uint32_t sio_data = 0xFF;       /* RX Data register */
-static uint32_t sio_stat = 0x00000005; /* TX Ready 1+2 */
+/* Joypad/Memcard interface — non-static for JIT inline fast paths */
+uint32_t sio_data = 0xFF;              /* RX Data register */
+uint32_t sio_stat = 0x00000005;        /* TX Ready 1+2 */
 static uint16_t sio_mode = 0;
 static uint16_t sio_ctrl = 0;
 static uint16_t sio_baud = 0;
-static int sio_tx_pending = 0; /* 1 = RX data available */
+int sio_tx_pending = 0;                /* 1 = RX data available */
 
-/* Controller protocol state machine */
-static int sio_state = 0;        /* Current byte index in protocol */
-static uint8_t sio_response[20]; /* Pre-built response buffer */
-static int sio_response_len = 0; /* Number of valid bytes in sio_response */
-static int sio_selected = 0;     /* 1 = JOY SELECT is asserted */
-static int sio_port = 0;         /* 0 = PSX port 1, 1 = PSX port 2 */
+/* Controller protocol state machine — partially exposed for JIT */
+int sio_state = 0;                     /* Current byte index in protocol */
+static uint8_t sio_response[20];       /* Pre-built response buffer */
+int sio_response_len = 0;              /* Number of valid bytes in sio_response */
+int sio_selected = 0;                  /* 1 = JOY SELECT is asserted */
+static int sio_port = 0;               /* 0 = PSX port 1, 1 = PSX port 2 */
 
 /* SIO Serial Port (0x1F801050-0x1F80105E) */
 static uint16_t serial_mode = 0;

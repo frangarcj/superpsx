@@ -7,6 +7,7 @@
  */
 #include "dynarec.h"
 #include "scheduler.h"
+#include "psx_sio.h"      /* SIO_Write/SIO_Read + extern sio_* vars */
 
 /* Only need gpu_state.h for GPU_ReadStatus inline — silence LOG_TAG redef */
 #undef LOG_TAG
@@ -200,6 +201,21 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
             /* Patch fast-path branch */
             int32_t soff_fast = (int32_t)(code_ptr - fast_skip - 1);
             *fast_skip = (*fast_skip & 0xFFFF0000) | ((uint32_t)soff_fast & 0xFFFF);
+            return;
+        }
+
+        /*
+         * SIO register read (0x1F801040-0x1F80105E):
+         * Call SIO_Read directly, skipping ReadWord/ReadHalf → ReadHardware.
+         * This eliminates two dispatch levels for the SIO polling hot path.
+         */
+        if (phys >= 0x1F801040 && phys <= 0x1F80105E)
+        {
+            emit_load_imm32(REG_A0, phys);
+            emit_flush_partial_cycles();
+            emit_call_c_lite((uint32_t)SIO_Read);
+            if (!dynarec_load_defer)
+                emit_store_psx_reg(rt_psx, REG_V0);
             return;
         }
     }
@@ -489,6 +505,69 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
             emit_load_imm32(REG_T1, 0xFFFF07FF);
             emit(MK_R(0, REG_T2, REG_T1, REG_T2, 0, 0x24)); /* and t2, t2, t1 */
             EMIT_SW(REG_T2, CPU_I_MASK, REG_S0);
+            return;
+        }
+
+        /*
+         * SIO_DATA write fast-path (0x1F801040):
+         * When !sio_selected (controller not asserted), the handler is
+         * just sio_data=0xFF, sio_tx_pending=1.  Inline this to avoid
+         * the full WriteByte→WriteHardware→SIO_Write call chain.
+         * Fall to direct SIO_Write call when sio_selected (protocol active).
+         */
+        if (phys == 0x1F801040)
+        {
+            /* Check sio_selected == 0 */
+            emit_load_imm32(REG_T1, (uint32_t)&sio_selected);
+            EMIT_LW(REG_T1, 0, REG_T1);
+            uint32_t *sio_slow = code_ptr;
+            EMIT_BNE(REG_T1, REG_ZERO, 0);        /* bne t1, zero, @slow_sio */
+            EMIT_NOP();
+
+            /* Fast path: !sio_selected → 2 stores, no C call */
+            emit_load_imm32(REG_T1, (uint32_t)&sio_data);
+            EMIT_ORI(REG_T2, REG_ZERO, 0xFF);
+            EMIT_SW(REG_T2, 0, REG_T1);           /* sio_data = 0xFF */
+            emit_load_imm32(REG_T1, (uint32_t)&sio_tx_pending);
+            EMIT_ORI(REG_T2, REG_ZERO, 1);
+            EMIT_SW(REG_T2, 0, REG_T1);           /* sio_tx_pending = 1 */
+            uint32_t *sio_fast_done = code_ptr;
+            emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
+            EMIT_NOP();
+
+            /* @slow_sio: direct SIO_Write call (skip WriteWord+WriteHardware) */
+            int32_t soff = (int32_t)(code_ptr - sio_slow - 1);
+            *sio_slow = (*sio_slow & 0xFFFF0000) | ((uint32_t)soff & 0xFFFF);
+
+            emit_load_imm32(REG_A0, phys);
+            {
+                int data_reg = emit_use_reg(rt_psx, REG_A1);
+                if (data_reg != REG_A1)
+                    EMIT_MOVE(REG_A1, data_reg);
+            }
+            emit_flush_partial_cycles();
+            emit_call_c_lite((uint32_t)SIO_Write);
+
+            /* @done: patch fast-path branch */
+            int32_t doff = (int32_t)(code_ptr - sio_fast_done - 1);
+            *sio_fast_done = (*sio_fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
+            return;
+        }
+
+        /*
+         * Other SIO register writes (0x1F801048-0x1F80105E):
+         * Call SIO_Write directly, skipping WriteByte/WriteHalf→WriteHardware.
+         */
+        if (phys >= 0x1F801040 && phys <= 0x1F80105E)
+        {
+            emit_load_imm32(REG_A0, phys);
+            {
+                int data_reg = emit_use_reg(rt_psx, REG_A1);
+                if (data_reg != REG_A1)
+                    EMIT_MOVE(REG_A1, data_reg);
+            }
+            emit_flush_partial_cycles();
+            emit_call_c_lite((uint32_t)SIO_Write);
             return;
         }
     }
