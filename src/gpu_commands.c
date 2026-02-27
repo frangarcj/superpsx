@@ -696,7 +696,7 @@ void GPU_WriteGP0(uint32_t data)
             draw_cmd_count++;
             if (draw_cmd_count <= 20 || (draw_cmd_count % 10000 == 0))
             {
-                DLOG("GP0 draw cmd %02Xh (size=%d) #%d\n", cmd, size, draw_cmd_count);
+                DLOG("GP0 draw cmd %02Xh (size=%d) #%d\n", (unsigned)cmd, size, draw_cmd_count);
             }
             gpu_cmd_buffer[0] = data;
             gpu_cmd_ptr = 1;

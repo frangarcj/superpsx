@@ -231,7 +231,7 @@ void Update_GS_Display(void)
     }
     int psx_h = (disp_range_y2 - disp_range_y1) * (disp_vres + 1);
 
-    DLOG("Update_GS_Display: disp_range_y1=%d, disp_range_y2=%d, psx_h=%d\n, disp_vres=%d",
+    DLOG("Update_GS_Display: disp_range_y1=%d, disp_range_y2=%d, psx_h=%d\n, disp_vres=%" PRIu32 "",
          disp_range_y1, disp_range_y2, psx_h, disp_vres);
 
     /* 2. Calculate MAGH to fill a TV line (~2560 cycles) */

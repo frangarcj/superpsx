@@ -16,17 +16,9 @@
 #include <inttypes.h>
 #include "iso_fs.h"
 #include "iso_image.h"
+#include "superpsx.h"
 
 #define LOG_TAG "ISOFS"
-
-#ifdef ENABLE_DEBUG_LOG
-#define DLOG(fmt, ...) printf("[" LOG_TAG "] " fmt, ##__VA_ARGS__)
-#else
-#define DLOG(...) \
-    do            \
-    {             \
-    } while (0)
-#endif
 
 /* ---- Internal state ---- */
 static struct
