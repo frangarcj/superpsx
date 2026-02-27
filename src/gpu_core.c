@@ -183,6 +183,22 @@ uint32_t GPU_ReadStatus(void)
      * Note: bit 28 should ideally depend on DMA direction, but the BIOS kernel
      * expects it set during GPU initialization regardless. */
     uint32_t final_stat = gpu_stat | 0x14002000;
+
+    /* Bit 25: DMA data request — dynamic, depends on GP1(04h) direction.
+     * Per psx-spx: Dir=0→0, Dir=1→FIFO_not_full(=1), Dir=2→same_as_bit28,
+     * Dir=3→same_as_bit27.  Games (and BIOS kernel functions like gpu_send_dma)
+     * poll this bit before starting GPU DMA.  Must be set correctly or DMA
+     * transfers never start → game hangs. */
+    {
+        uint32_t dma_dir = (final_stat >> 29) & 3;
+        if (dma_dir == 1)
+            final_stat |= 0x02000000;                           /* FIFO always ready */
+        else if (dma_dir == 2)
+            final_stat |= 0x02000000;                           /* Mirror bit 28 (forced 1) */
+        else if (dma_dir == 3 && (final_stat & 0x08000000))
+            final_stat |= 0x02000000;                           /* Mirror bit 27 */
+    }
+
     return final_stat;
 }
 

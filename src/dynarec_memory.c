@@ -175,11 +175,19 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
             EMIT_BNE(REG_T1, REG_ZERO, 0);      /* bne t1, $0, @slow */
             EMIT_NOP();
 
-            /* Fast path: v0 = gpu_stat | 0x14002000 */
+            /* Fast path: v0 = gpu_stat | forced_bits (including dynamic bit 25) */
             emit_load_imm32(REG_T2, (uint32_t)&gpu_stat);
             EMIT_LW(REG_V0, 0, REG_T2);
+            /* Compute bit 25 (DMA data request) from dma_dir (bits 29-30).
+             * Per psx-spx: dir=0→0, dir=1/2→1, dir=3→bit27.
+             * Simplified: (dma_dir != 0) → 1.  Games poll this before DMA. */
+            emit(MK_R(0, 0, REG_V0, REG_T1, 29, 0x02));   /* srl t1, v0, 29  */
+            emit(MK_I(0x0C, REG_T1, REG_T1, 3));           /* andi t1, t1, 3  */
+            emit(MK_R(0, REG_ZERO, REG_T1, REG_T1, 0, 0x2B)); /* sltu t1, $0, t1 */
+            emit(MK_R(0, 0, REG_T1, REG_T1, 25, 0x00));   /* sll t1, t1, 25  */
             EMIT_LUI(REG_T2, 0x1400);
             EMIT_ORI(REG_T2, REG_T2, 0x2000);
+            EMIT_OR(REG_T2, REG_T2, REG_T1);               /* t2 = 0x14002000 | bit25 */
             EMIT_OR(REG_V0, REG_V0, REG_T2);
 
             if (!dynarec_load_defer)
@@ -363,11 +371,17 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     EMIT_BNE(REG_A0, REG_ZERO, 0);                  /* bne a0, zero, @slow_real */
     EMIT_NOP();
 
-    /* Fast path execution: v0 = gpu_stat | 0x14002000 */
+    /* Fast path execution: v0 = gpu_stat | forced_bits (including dynamic bit 25) */
     emit_load_imm32(REG_A0, (uint32_t)&gpu_stat);
     EMIT_LW(REG_V0, 0, REG_A0);
+    /* Compute bit 25 (DMA data request) from dma_dir (bits 29-30) */
+    emit(MK_R(0, 0, REG_V0, REG_A1, 29, 0x02));   /* srl a1, v0, 29  */
+    emit(MK_I(0x0C, REG_A1, REG_A1, 3));           /* andi a1, a1, 3  */
+    emit(MK_R(0, REG_ZERO, REG_A1, REG_A1, 0, 0x2B)); /* sltu a1, $0, a1 */
+    emit(MK_R(0, 0, REG_A1, REG_A1, 25, 0x00));   /* sll a1, a1, 25  */
     EMIT_LUI(REG_A0, 0x1400);
     EMIT_ORI(REG_A0, REG_A0, 0x2000);
+    EMIT_OR(REG_A0, REG_A0, REG_A1);               /* a0 = 0x14002000 | bit25 */
     EMIT_OR(REG_V0, REG_V0, REG_A0);
     
     uint32_t *gpustat_done = code_ptr;

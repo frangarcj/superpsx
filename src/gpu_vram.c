@@ -288,7 +288,7 @@ void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uin
 
             if (buf_image_ptr >= 1000)
             {
-                Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 1, 0, 0, 2, 0), 0); // IMAGE mode
+                Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 0, 0, 0, 2, 0), 0); // IMAGE mode, EOP=0 (intermediate)
                 for (int j = 0; j < buf_image_ptr; j++)
                 {
                     uint64_t *p = (uint64_t *)&buf_image[j];
