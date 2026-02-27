@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "superpsx.h"
+#include "psx_sio.h"
 
 #define LOG_TAG "MEM"
 
@@ -285,6 +286,14 @@ void WriteByte(uint32_t addr, uint8_t data)
 
     uint32_t phys = translate_addr(addr);
 
+    /* SIO early dispatch: skip RAM/SP/WriteHardware chain for the
+     * hottest I/O path (controller polling via SB to 0x1F801040). */
+    if (phys >= 0x1F801040 && phys <= 0x1F80105E)
+    {
+        SIO_Write(phys, data);
+        return;
+    }
+
     if (phys < PSX_RAM_SIZE)
     {
         psx_ram[phys] = data;
@@ -322,6 +331,14 @@ void WriteHalf(uint32_t addr, uint16_t data)
     }
 
     uint32_t phys = translate_addr(addr);
+
+    /* SIO early dispatch: skip RAM/SP/WriteHardware for SIO halfword writes
+     * (SIO_CTRL, SIO_MODE, SIO_BAUD are all 16-bit registers). */
+    if (phys >= 0x1F801040 && phys <= 0x1F80105E)
+    {
+        SIO_Write(phys, data);
+        return;
+    }
 
     if (phys < PSX_RAM_SIZE)
     {
