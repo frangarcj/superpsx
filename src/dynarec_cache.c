@@ -27,7 +27,6 @@ uint64_t stat_dbl_patches = 0;
 /* ---- Temp buffer for IO code execution ---- */
 static uint32_t io_code_buffer[64];
 
-
 /*
  * emit_direct_link: at the end of a block epilogue, emit a J to the
  * native code of target_psx_pc.  If not compiled yet, emit a J to the
@@ -84,9 +83,7 @@ void emit_direct_link(uint32_t target_psx_pc)
     EMIT_NOP();
 }
 
-/* apply_pending_patches: back-patch all J stubs waiting for target_psx_pc.
- * Each patched word is flushed individually via flush_jit_word() to avoid
- * a full FlushCache(0)+FlushCache(2) that would nuke the entire icache. */
+/* apply_pending_patches: back-patch all J stubs waiting for target_psx_pc. */
 void apply_pending_patches(uint32_t target_psx_pc, uint32_t *native_addr)
 {
     int i, j;
@@ -97,7 +94,6 @@ void apply_pending_patches(uint32_t target_psx_pc, uint32_t *native_addr)
         {
             uint32_t j_target = ((uint32_t)(native_addr + DYNAREC_PROLOGUE_WORDS) >> 2) & 0x03FFFFFF;
             *ps->site_word = MK_J(2, j_target);
-            flush_jit_word(ps->site_word);
 #ifdef ENABLE_DYNAREC_STATS
             stat_dbl_patches++;
 #endif
@@ -143,7 +139,6 @@ uint32_t *get_psx_code_ptr(uint32_t psx_pc)
     return NULL;
 }
 
-
 BlockEntry *cache_block(uint32_t psx_pc, uint32_t *native)
 {
     uint32_t phys = psx_pc & 0x1FFFFFFF;
@@ -161,17 +156,19 @@ BlockEntry *cache_block(uint32_t psx_pc, uint32_t *native)
         l1_idx = (phys - 0x1FC00000) >> 12;
     }
 
-    if (!l1_table) return NULL;
+    if (!l1_table)
+        return NULL;
 
     /* Allocate L2 page if needed */
     if (l1_table[l1_idx] == NULL)
     {
-        l1_table[l1_idx] = calloc(1, sizeof(BlockEntry*) * JIT_L2_ENTRIES);
-        if (!l1_table[l1_idx]) return NULL;
+        l1_table[l1_idx] = calloc(1, sizeof(BlockEntry *) * JIT_L2_ENTRIES);
+        if (!l1_table[l1_idx])
+            return NULL;
     }
 
     l2_idx = (phys >> 2) & (JIT_L2_ENTRIES - 1);
-    
+
     /* Allocate or reuse BlockEntry */
     BlockEntry *be = (*l1_table[l1_idx])[l2_idx];
     if (!be)

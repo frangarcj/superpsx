@@ -123,55 +123,6 @@ void dynarec_print_stats(void)
 }
 
 /* ================================================================
- *  Targeted JIT Code Cache Flush
- * ================================================================
- *
- * Replace full FlushCache(0)+FlushCache(2) — which invalidate the
- * ENTIRE 8KB dcache + 16KB icache — with targeted cache-line ops
- * on just the newly compiled/patched code range.
- *
- * On R5900 (EE):
- *   DHWBIN (cache 0x18): D-cache Hit Writeback INvalidate
- *     → writes back dirty dcache line to memory, then invalidates it.
- *   IXIN  (cache 0x07): I-cache Index INvalidate
- *     → invalidates icache set by index (both ways).
- *
- * For a typical 200-word block (~800 bytes, ~13 cache lines), this
- * touches only 13 lines instead of flushing 384 lines total.
- * Preserves hot icache contents for previously compiled blocks.
- */
-static void flush_jit_code(void *start, void *end)
-{
-    uintptr_t s = (uintptr_t)start & ~63UL;   /* align down to 64-byte cache line */
-    uintptr_t e = ((uintptr_t)end + 63UL) & ~63UL;
-
-    /* Phase 1: Writeback dirty dcache lines to main memory */
-    for (uintptr_t a = s; a < e; a += 64) {
-        __asm__ volatile("cache 0x18, 0(%0)" : : "r"(a) : "memory"); /* DHWBIN */
-    }
-    __asm__ volatile("sync.l" ::: "memory");
-
-    /* Phase 2: Invalidate icache lines so CPU fetches fresh code */
-    for (uintptr_t a = s; a < e; a += 64) {
-        __asm__ volatile("cache 0x07, 0(%0)" : : "r"(a) : "memory"); /* IXIN */
-    }
-    __asm__ volatile("sync.p" ::: "memory");
-}
-
-/* Flush a single patched instruction word (one cache line). */
-void flush_jit_word(void *addr)
-{
-    uintptr_t a = (uintptr_t)addr & ~63UL;
-    __asm__ volatile(
-        "cache 0x18, 0(%0)\n"   /* DHWBIN */
-        "sync.l\n"
-        "cache 0x07, 0(%0)\n"   /* IXIN */
-        "sync.p\n"
-        : : "r"(a) : "memory"
-    );
-}
-
-/* ================================================================
  *  Dynarec Core Life Cycle
  * ================================================================ */
 
@@ -677,12 +628,10 @@ static inline int run_jit_chain(uint64_t deadline)
             return RUN_RES_NORMAL;
         }
         be = lookup_block(pc);
-        /* Targeted flush: only the newly compiled code range.
-         * Much faster than FlushCache(0)+FlushCache(2) which nuke
-         * the entire 8KB dcache + 16KB icache on every compilation. */
-        flush_jit_code(block, code_ptr);
         apply_pending_patches(pc, block);
         jit_ht_add(pc, block);
+        FlushCache(0);
+        FlushCache(2);
     }
 
     /* Execute block / chain */

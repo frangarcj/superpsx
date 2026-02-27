@@ -41,7 +41,7 @@ typedef struct BlockEntry
     uint32_t is_idle;        /* 1 = idle loop (self-jump, no side effects) */
     struct BlockEntry *next; /* Collision chain pointer */
     uint32_t code_hash;      /* XOR hash of PSX block opcodes (legacy, unused) */
-    uint8_t  page_gen;       /* Page generation at compile time (SMC fast check) */
+    uint8_t page_gen;        /* Page generation at compile time (SMC fast check) */
 } BlockEntry;
 
 typedef struct
@@ -75,7 +75,7 @@ typedef int32_t (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios, int3
 /* ================================================================
  *  Hardware register IDs used in generated code
  * ================================================================ */
-#define REG_AT 1  /* Assembler temporary */
+#define REG_AT 1 /* Assembler temporary */
 #define REG_S0 16
 #define REG_S1 17
 #define REG_S2 18
@@ -100,7 +100,7 @@ typedef int32_t (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios, int3
 #define REG_A3 7
 #define REG_V0 2
 #define REG_V1 3
-#define REG_FP 30  /* $fp/$s8 — callee-saved, available for future use */
+#define REG_FP 30 /* $fp/$s8 — callee-saved, available for future use */
 #define REG_RA 31
 #define REG_SP 29
 #define REG_ZERO 0
@@ -180,13 +180,13 @@ extern uint64_t stat_dbl_patches;
  *  Instead of exiting to C on every JR $ra, the JIT does an inline
  *  hash lookup in ~14 R5900 instructions.  Inspired by pcsx-rearmed.
  * ================================================================ */
-#define JIT_HT_SIZE 4096  /* Must be power of 2 */
+#define JIT_HT_SIZE 4096 /* Must be power of 2 */
 #define JIT_HT_MASK (JIT_HT_SIZE - 1)
 
 typedef struct
 {
-    uint32_t psx_pc;    /* PSX virtual address */
-    uint32_t *native;   /* Pointer to compiled native code (past prologue) */
+    uint32_t psx_pc;  /* PSX virtual address */
+    uint32_t *native; /* Pointer to compiled native code (past prologue) */
 } JitHTEntry;
 
 extern JitHTEntry jit_ht[JIT_HT_SIZE];
@@ -361,9 +361,6 @@ void apply_pending_patches(uint32_t target_psx_pc, uint32_t *native_addr);
 uint32_t *get_psx_code_ptr(uint32_t psx_pc);
 BlockEntry *cache_block(uint32_t psx_pc, uint32_t *native);
 void Free_PageTable(void);
-
-/* Targeted cache flush for a single patched instruction word */
-void flush_jit_word(void *addr);
 
 /* ================================================================
  *  Function prototypes — dynarec_memory.c
