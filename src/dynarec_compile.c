@@ -808,8 +808,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             DLOG_RAW("  ... (%d more)\n", num_words - 32);
     }
 
-    /* Cache flush moved to run_jit_chain: targeted flush_jit_code()
-     * replaces full FlushCache(0)+FlushCache(2) for much less icache damage. */
+    /* Cache flush done in run_jit_chain after apply_pending_patches. */
 
     blocks_compiled++;
 
