@@ -579,6 +579,7 @@ void GPU_WriteGP0(uint32_t data)
 
             Push_GIF_Data(Get_Alpha_Reg(trans_mode), GS_REG_ALPHA_1);
 
+            Prim_InvalidateGSState();
             // Flush_GIF(); <-- Removed: batching register changes
         }
     }
@@ -706,6 +707,8 @@ void GPU_WriteGP1(uint32_t data)
     {
     case 0x00: // Reset GPU
         clear_gpu_param_cache();
+        Prim_InvalidateGSState();
+        Prim_InvalidateTexCache();
         gpu_stat = 0x14802000;
         gpu_read = 0;
         draw_offset_x = 0;
