@@ -53,8 +53,12 @@ void Flush_GIF(void)
 
     if (qwc > 0)
     {
-        // Flush CPU cache to RAM so DMA sees the data
-        FlushCache(0);
+        /* Targeted dcache writeback: only flush the GIF buffer region.
+         * FlushCache(0) would invalidate the ENTIRE 8KB L1 dcache,
+         * destroying hot JIT data (cpu struct, psx_ram, LUT) and
+         * causing ~300+ cycles of dcache misses per call.
+         * SyncDCache writes back only dirty lines in the range. */
+        SyncDCache(base, (void *)((uintptr_t)base + (uint32_t)qwc * 16));
 
         // Send current buffer to GIF (Channel 2)
         dma_channel_send_normal(DMA_CHANNEL_GIF, base, qwc, 0, 0);
