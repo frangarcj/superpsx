@@ -270,7 +270,15 @@ void emit_block_prologue(void)
     EMIT_SW(REG_S6, 56, REG_SP);
     EMIT_SW(REG_S7, 60, REG_SP);
     EMIT_MOVE(REG_S0, REG_A0); /* S0 = &cpu           */
-    EMIT_MOVE(REG_S1, REG_A1); /* S1 = psx_ram        */
+    /* S1 = TLB-mapped VA base (0x20000000) if TLB active, else psx_ram */
+    if (psx_tlb_base)
+    {
+        EMIT_LUI(REG_S1, psx_tlb_base >> 16);
+    }
+    else
+    {
+        EMIT_MOVE(REG_S1, REG_A1); /* S1 = psx_ram */
+    }
     EMIT_MOVE(REG_S2, REG_A3); /* S2 = cycles_left    */
     /* Load physical address mask into S3: 0x1FFFFFFF */
     EMIT_LUI(REG_S3, 0x1FFF);
@@ -345,6 +353,7 @@ uint32_t *compile_block(uint32_t psx_pc)
         block_node_pool_idx = 0;
         patch_sites_count = 0;
         blocks_compiled = 0;
+        tlb_bp_map_count = 0;
         /* Clear hash table — all native pointers are now stale */
         for (int i = 0; i < JIT_HT_SIZE; i++)
         {
@@ -926,6 +935,10 @@ uint32_t *compile_block(uint32_t psx_pc)
 
     /* Emit all deferred (cold) slow paths at the end of the block */
     cold_slow_emit_all();
+
+    /* Emit TLB backpatch stubs (range-checked cold paths for TLB misses) */
+    if (psx_tlb_base)
+        tlb_patch_emit_all();
 
     if (blocks_compiled < 5)
     {

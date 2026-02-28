@@ -79,11 +79,13 @@ extern uint8_t *psx_ram;
 extern uint8_t *psx_bios;
 extern uint8_t scratchpad_buf[];
 extern uint8_t **mem_lut;
+extern uint32_t psx_tlb_base;  /* 0x20000000 if TLB active, 0 otherwise */
 
 #define MEM_LUT_SIZE 65536
 
 void Init_Memory(void);
 void Init_MemoryLUT(void);
+void Setup_PSX_TLB(void);
 int Load_BIOS(const char *filename);
 uint32_t ReadWord(uint32_t addr);
 uint16_t ReadHalf(uint32_t addr);

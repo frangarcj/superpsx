@@ -23,7 +23,7 @@
 
 uint8_t *psx_ram;
 uint8_t *psx_bios;
-uint8_t scratchpad_buf[1024] __attribute__((aligned(128)));
+uint8_t scratchpad_buf[1024] __attribute__((aligned(8192)));
 
 /*
  * Memory LUT: 64KB virtual address pages.
@@ -102,7 +102,7 @@ void Init_Memory(void)
 
     /* Allocate PSX RAM and BIOS dynamically to avoid ELF overlap */
     psx_ram = (uint8_t *)memalign(128, PSX_RAM_SIZE);
-    psx_bios = (uint8_t *)memalign(128, PSX_BIOS_SIZE);
+    psx_bios = (uint8_t *)memalign(262144, PSX_BIOS_SIZE);  /* 256KB align for TLB */
 
     if (!psx_ram || !psx_bios)
     {
@@ -119,6 +119,9 @@ void Init_Memory(void)
     printf("  BIOS: %p (512KB)\n", psx_bios);
 
     Init_MemoryLUT();
+
+    /* Set up TLB mapping for JIT fast-path (psx_ram @ VA 0x20000000) */
+    Setup_PSX_TLB();
 }
 
 #include <dirent.h>

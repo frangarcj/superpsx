@@ -73,9 +73,202 @@ typedef struct {
 static ColdSlowEntry cold_queue[MAX_COLD_SLOW];
 static int cold_count = 0;
 
+/* Forward declaration — defined below with TLB backpatch infrastructure */
+static int tlb_bp_count;
+
 void cold_slow_reset(void)
 {
     cold_count = 0;
+    tlb_bp_count = 0;
+}
+
+/* ================================================================
+ *  TLB Backpatch Slots
+ *
+ *  When TLB is active, each memory access emits a 3-insn fast path
+ *  (and, addu, lw/sw).  If a TLB miss occurs at runtime, we backpatch
+ *  the 'addu' to branch to a cold stub that does a range check first.
+ *
+ *  The stub tries the TLB fast path for RAM (range check pass) or
+ *  falls through to the C helper for I/O.  Once patched, that JIT
+ *  instruction never causes an exception again.
+ *
+ *  Layout of the global lookup table:
+ *    tlb_bp_map[i].fault_insn  = EPC of the faulting lw/sw
+ *    tlb_bp_map[i].addu_insn   = 'addu' to patch → 'b @stub'
+ *    tlb_bp_map[i].stub        = address of the cold stub
+ *
+ *  The exception handler binary-searches this table by fault_insn.
+ * ================================================================ */
+
+/* Global lookup table (persists across blocks, grows monotonically
+ * within the JIT code cache — reset when the cache is flushed). */
+#define MAX_TLB_BP_MAP 4096
+typedef struct {
+    uint32_t fault_insn_addr;   /* EPC: address of the lw/sw instruction */
+    uint32_t addu_insn_addr;    /* address of the 'addu' to patch */
+    uint32_t stub_addr;         /* address of the cold patch stub */
+} TLBBPMapEntry;
+TLBBPMapEntry tlb_bp_map[MAX_TLB_BP_MAP];
+int tlb_bp_map_count = 0;
+
+/* Per-block queue of pending TLB backpatch entries (emitted at block end) */
+#define MAX_TLB_BP 256
+typedef struct {
+    uint32_t *addu_insn;    /* Address of 'addu t1, t1, s1' in fast path */
+    uint32_t *fault_insn;   /* Address of lw/sw in fast path */
+    uint32_t *return_point; /* Instruction after fast path store-result */
+    uint32_t  func_addr;    /* ReadWord/WriteWord/etc. */
+    uint32_t  psx_pc;       /* PSX PC for cycle tracking */
+    int16_t   cycle_offset; /* emit_cycle_offset at emit time */
+    uint8_t   type;         /* 0=read, 1=write */
+    uint8_t   size;         /* 1/2/4 */
+    uint8_t   is_signed;    /* Sign extension needed? */
+    uint8_t   load_defer;   /* dynarec_load_defer at emit time */
+    int       rt_psx;       /* PSX register for read result store */
+} TLBBPEntry;
+static TLBBPEntry tlb_bp_queue[MAX_TLB_BP];
+static int tlb_bp_count = 0;
+
+void tlb_patch_emit_all(void)
+{
+    int i;
+    for (i = 0; i < tlb_bp_count; i++)
+    {
+        TLBBPEntry *e = &tlb_bp_queue[i];
+        uint32_t *stub_start = code_ptr;
+
+        /* Register the stub address in the global map */
+        if (tlb_bp_map_count < MAX_TLB_BP_MAP)
+        {
+            TLBBPMapEntry *m = &tlb_bp_map[tlb_bp_map_count++];
+            m->fault_insn_addr = (uint32_t)e->fault_insn;
+            m->addu_insn_addr  = (uint32_t)e->addu_insn;
+            m->stub_addr       = (uint32_t)stub_start;
+        }
+
+        /* --- Range-checked fast path (RAM via TLB) --- */
+        /* t1 already has phys = vaddr & 0x1FFFFFFF (computed by 'and' still in the hot path) */
+        emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02));     /* srl  a0, t1, 21      */
+        uint32_t *io_branch = code_ptr;
+        emit(MK_I(0x05, REG_A0, REG_ZERO, 0));           /* bne  a0, zero, @io   */
+        EMIT_ADDU(REG_T1, REG_T1, REG_S1);               /* [delay] addu t1,t1,s1 */
+
+        /* TLB RAM fast path: inline load/store */
+        if (e->type == 0) /* read */
+        {
+            if (e->size == 4)
+                EMIT_LW(REG_V0, 0, REG_T1);
+            else if (e->size == 2)
+            {
+                if (e->is_signed) EMIT_LH(REG_V0, 0, REG_T1);
+                else              EMIT_LHU(REG_V0, 0, REG_T1);
+            }
+            else
+            {
+                if (e->is_signed) EMIT_LB(REG_V0, 0, REG_T1);
+                else              EMIT_LBU(REG_V0, 0, REG_T1);
+            }
+            /* Store result same as fast path */
+            if (!e->load_defer)
+                emit_store_psx_reg(e->rt_psx, REG_V0);
+        }
+        else /* write */
+        {
+            if (e->size == 4)      EMIT_SW(REG_T2, 0, REG_T1);
+            else if (e->size == 2) EMIT_SH(REG_T2, 0, REG_T1);
+            else                   EMIT_SB(REG_T2, 0, REG_T1);
+        }
+
+        /* Branch back to return point */
+        {
+            int32_t ret_off = (int32_t)(e->return_point - code_ptr - 1);
+            emit(MK_I(0x04, REG_ZERO, REG_ZERO, (uint16_t)(ret_off & 0xFFFF)));
+            EMIT_NOP();
+        }
+
+        /* --- I/O slow path: call C helper --- */
+        {
+            int32_t io_off = (int32_t)(code_ptr - io_branch - 1);
+            *io_branch = (*io_branch & 0xFFFF0000) | ((uint32_t)io_off & 0xFFFF);
+        }
+
+        EMIT_MOVE(REG_A0, REG_T0);
+        if (e->type == 1) /* write */
+            EMIT_MOVE(REG_A1, REG_T2);
+
+        /* Flush partial cycles */
+        emit_load_imm32(REG_T0, e->func_addr);
+        emit_load_imm32(REG_T2, e->psx_pc);
+        EMIT_ADDIU(REG_T1, REG_ZERO, (int16_t)e->cycle_offset);
+        EMIT_JAL_ABS((uint32_t)mem_slow_trampoline_addr);
+        EMIT_NOP();
+
+        if (e->type == 0 && e->size >= 2)
+            emit_abort_check();
+
+        /* Sign extension for signed loads */
+        if (e->type == 0 && e->is_signed && e->size < 4)
+        {
+            int shift = (e->size == 1) ? 24 : 16;
+            emit(MK_R(0, 0, REG_V0, REG_V0, shift, 0x00)); /* SLL */
+            emit(MK_R(0, 0, REG_V0, REG_V0, shift, 0x03)); /* SRA */
+        }
+
+        if (e->type == 0 && !e->load_defer)
+            emit_store_psx_reg(e->rt_psx, REG_V0);
+
+        /* Branch back to return point */
+        {
+            int32_t ret_off = (int32_t)(e->return_point - code_ptr - 1);
+            emit(MK_I(0x04, REG_ZERO, REG_ZERO, (uint16_t)(ret_off & 0xFFFF)));
+            EMIT_NOP();
+        }
+    }
+
+    tlb_bp_count = 0;
+}
+
+/*
+ * TLB_Backpatch: Called from the TLB trampoline after handling an I/O access.
+ *
+ * Patches the JIT code so that the faulting instruction pair (addu + lw/sw)
+ * is replaced by a branch to the range-checked cold stub.  After patching,
+ * future executions of that instruction will use the stub instead of
+ * causing another TLB exception.
+ *
+ * Patching:
+ *   addu t1,t1,s1  →  b @stub   (branch to range-checked stub)
+ *   lw/sw          →  nop       (becomes delay slot of the branch)
+ *
+ * Returns 1 if patched, 0 if entry not found.
+ */
+int TLB_Backpatch(uint32_t epc)
+{
+    int i;
+    for (i = 0; i < tlb_bp_map_count; i++)
+    {
+        if (tlb_bp_map[i].fault_insn_addr == epc)
+        {
+            uint32_t *addu_p = (uint32_t *)tlb_bp_map[i].addu_insn_addr;
+            uint32_t *fault_p = (uint32_t *)epc;
+            uint32_t stub = tlb_bp_map[i].stub_addr;
+
+            /* Patch addu → b @stub */
+            int32_t offset = (int32_t)((stub - (uint32_t)addu_p - 4) >> 2);
+            *addu_p = 0x10000000 | ((uint32_t)offset & 0xFFFF);
+
+            /* Patch fault insn → nop (becomes delay slot of the branch) */
+            *fault_p = 0x00000000;
+
+            /* Flush caches so patched code takes effect */
+            FlushCache(0);  /* writeback D-cache */
+            FlushCache(2);  /* invalidate I-cache */
+
+            return 1;
+        }
+    }
+    return 0;
 }
 
 void cold_slow_emit_all(void)
@@ -358,11 +551,17 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3  (phys) */
     }
 
-    /* Range check: phys < 2MB (srl by 21 gives 0 for addresses in [0, 2MB)) */
-    emit(MK_R(0, 0, REG_T1, REG_T2, 21, 0x02));  /* srl  t2, t1, 21      */
-    uint32_t *range_branch = code_ptr;
-    emit(MK_I(0x05, REG_T2, REG_ZERO, 0));        /* bne  t2, zero, @cold */
-    EMIT_ADDU(REG_T1, REG_T1, REG_S1);            /* [delay] addu t1, t1, s1 (host addr) */
+    /* Range check: skip if TLB is active (TLB handles non-RAM via exception) */
+    uint32_t *range_branch = NULL;
+    if (!psx_tlb_base)
+    {
+        emit(MK_R(0, 0, REG_T1, REG_T2, 21, 0x02));  /* srl  t2, t1, 21      */
+        range_branch = code_ptr;
+        emit(MK_I(0x05, REG_T2, REG_ZERO, 0));        /* bne  t2, zero, @cold */
+    }
+    uint32_t *bp_addu = code_ptr;  /* record for TLB backpatch */
+    EMIT_ADDU(REG_T1, REG_T1, REG_S1);            /* [delay/inline] addu t1, t1, s1 */
+    uint32_t *bp_fault = code_ptr; /* record: the load that may TLB-miss */
     if (size == 4)
         EMIT_LW(REG_V0, 0, REG_T1);
     else if (size == 2)
@@ -384,13 +583,34 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     if (!dynarec_load_defer)
         emit_store_psx_reg(rt_psx, REG_V0);
 
-    /* Defer slow path to end of block */
+    /* Queue TLB backpatch entry when TLB is active (for runtime patching on miss) */
+    if (psx_tlb_base && tlb_bp_count < MAX_TLB_BP)
+    {
+        TLBBPEntry *p = &tlb_bp_queue[tlb_bp_count++];
+        p->addu_insn   = bp_addu;
+        p->fault_insn  = bp_fault;
+        p->return_point = code_ptr;
+        p->func_addr = (size == 4) ? (uint32_t)ReadWord
+                     : (size == 2) ? (uint32_t)ReadHalf
+                                   : (uint32_t)ReadByte;
+        p->psx_pc       = emit_current_psx_pc;
+        p->cycle_offset = (int16_t)emit_cycle_offset;
+        p->type         = 0; /* read */
+        p->size         = (uint8_t)size;
+        p->is_signed    = (uint8_t)is_signed;
+        p->load_defer   = (uint8_t)dynarec_load_defer;
+        p->rt_psx       = rt_psx;
+    }
+
+    /* Defer slow path to end of block (alignment miss only when TLB active) */
+    if (align_branch || range_branch)
     {
         ColdSlowEntry *e = &cold_queue[cold_count++];
         e->num_branches = 0;
         if (align_branch)
             e->branches[e->num_branches++] = align_branch;
-        e->branches[e->num_branches++] = range_branch;
+        if (range_branch)
+            e->branches[e->num_branches++] = range_branch;
         e->return_point = code_ptr;
         e->func_addr = (size == 4) ? (uint32_t)ReadWord
                      : (size == 2) ? (uint32_t)ReadHalf
@@ -584,11 +804,17 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3  (phys) */
     }
 
-    /* Range check: phys < 2MB */
-    emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02)); /* srl  a0, t1, 21      */
-    uint32_t *range_branch = code_ptr;
-    emit(MK_I(0x05, REG_A0, REG_ZERO, 0));       /* bne  a0, zero, @cold */
-    EMIT_ADDU(REG_T1, REG_T1, REG_S1);           /* [delay] addu t1, t1, s1 (host addr) */
+    /* Range check: skip if TLB active */
+    uint32_t *range_branch = NULL;
+    if (!psx_tlb_base)
+    {
+        emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02)); /* srl  a0, t1, 21      */
+        range_branch = code_ptr;
+        emit(MK_I(0x05, REG_A0, REG_ZERO, 0));       /* bne  a0, zero, @cold */
+    }
+    uint32_t *bp_addu_w = code_ptr;  /* record for TLB backpatch */
+    EMIT_ADDU(REG_T1, REG_T1, REG_S1);           /* [delay/inline] addu t1, t1, s1 */
+    uint32_t *bp_fault_w = code_ptr; /* record: the store that may TLB-miss */
     if (size == 4)
         EMIT_SW(REG_T2, 0, REG_T1);
     else if (size == 2)
@@ -598,6 +824,25 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
 
     /* Fast path falls through — no b @done needed */
 
+    /* Queue TLB backpatch entry when TLB is active */
+    if (psx_tlb_base && tlb_bp_count < MAX_TLB_BP)
+    {
+        TLBBPEntry *p = &tlb_bp_queue[tlb_bp_count++];
+        p->addu_insn   = bp_addu_w;
+        p->fault_insn  = bp_fault_w;
+        p->return_point = code_ptr;
+        p->func_addr = (size == 4) ? (uint32_t)WriteWord
+                     : (size == 2) ? (uint32_t)WriteHalf
+                                   : (uint32_t)WriteByte;
+        p->psx_pc       = emit_current_psx_pc;
+        p->cycle_offset = (int16_t)emit_cycle_offset;
+        p->type         = 1; /* write */
+        p->size         = (uint8_t)size;
+        p->is_signed    = 0;
+        p->load_defer   = 0;
+        p->rt_psx       = 0;
+    }
+
     /* Defer slow path to end of block */
     {
         ColdSlowEntry *e = &cold_queue[cold_count++];
@@ -605,7 +850,8 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         e->branches[e->num_branches++] = isc_branch;
         if (align_branch)
             e->branches[e->num_branches++] = align_branch;
-        e->branches[e->num_branches++] = range_branch;
+        if (range_branch)
+            e->branches[e->num_branches++] = range_branch;
         e->return_point = code_ptr;
         e->func_addr = (size == 4) ? (uint32_t)WriteWord
                      : (size == 2) ? (uint32_t)WriteHalf
@@ -645,12 +891,16 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
     /* Flush lazy consts before conditional fast/slow split */
     flush_dirty_consts();
 
-    /* Direct address fast path: S3 = 0x1FFFFFFF, S1 = psx_ram */
+    /* Direct address fast path: S3 = 0x1FFFFFFF, S1 = psx_ram or TLB base */
     emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3 (phys) */
-    emit(MK_R(0, 0, REG_T1, REG_T2, 21, 0x02));         /* srl  t2, t1, 21 (range check) */
-    uint32_t *range_branch = code_ptr;
-    emit(MK_I(0x05, REG_T2, REG_ZERO, 0));              /* bne  t2, zero, @cold */
-    EMIT_ADDU(REG_T1, REG_T1, REG_S1);                  /* [delay] addu t1, t1, s1 (host) */
+    uint32_t *range_branch = NULL;
+    if (!psx_tlb_base)
+    {
+        emit(MK_R(0, 0, REG_T1, REG_T2, 21, 0x02));    /* srl  t2, t1, 21 (range) */
+        range_branch = code_ptr;
+        emit(MK_I(0x05, REG_T2, REG_ZERO, 0));          /* bne  t2, zero, @cold */
+    }
+    EMIT_ADDU(REG_T1, REG_T1, REG_S1);                  /* [delay/inline] addu t1, t1, s1 */
 
     /* Fast path: native lwl/lwr on host address */
     if (is_left)
@@ -666,7 +916,8 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
         emit_store_psx_reg(rt_psx, REG_V0);
     }
 
-    /* Defer slow path to end of block */
+    /* Defer slow path to end of block (only if range check exists) */
+    if (range_branch)
     {
         ColdSlowEntry *e = &cold_queue[cold_count++];
         e->num_branches = 0;
@@ -710,12 +961,16 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne  a0, zero, @slow */
     EMIT_NOP();
 
-    /* Direct address fast path (S3 = 0x1FFFFFFF, S1 = psx_ram) */
+    /* Direct address fast path (S3 = 0x1FFFFFFF, S1 = TLB base or psx_ram) */
     emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3 (phys) */
-    emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02));         /* srl  a0, t1, 21 (range) */
-    uint32_t *range_branch = code_ptr;
-    emit(MK_I(0x05, REG_A0, REG_ZERO, 0));              /* bne  a0, zero, @cold */
-    EMIT_ADDU(REG_T1, REG_T1, REG_S1);                  /* [delay] addu t1, t1, s1 */
+    uint32_t *range_branch = NULL;
+    if (!psx_tlb_base)
+    {
+        emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02));    /* srl  a0, t1, 21 (range) */
+        range_branch = code_ptr;
+        emit(MK_I(0x05, REG_A0, REG_ZERO, 0));          /* bne  a0, zero, @cold */
+    }
+    EMIT_ADDU(REG_T1, REG_T1, REG_S1);                  /* [delay/inline] addu t1, t1, s1 */
 
     /* Fast path: native swl/swr on host address */
     if (is_left)
@@ -730,7 +985,8 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
         ColdSlowEntry *e = &cold_queue[cold_count++];
         e->num_branches = 0;
         e->branches[e->num_branches++] = isc_branch;
-        e->branches[e->num_branches++] = range_branch;
+        if (range_branch)
+            e->branches[e->num_branches++] = range_branch;
         e->return_point = code_ptr;
         e->func_addr = is_left ? (uint32_t)Helper_SWL : (uint32_t)Helper_SWR;
         e->psx_pc = emit_current_psx_pc;

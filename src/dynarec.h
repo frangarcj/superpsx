@@ -376,6 +376,9 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
 void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset);
 void cold_slow_reset(void);
 void cold_slow_emit_all(void);
+void tlb_patch_emit_all(void);
+int  TLB_Backpatch(uint32_t epc);
+extern int tlb_bp_map_count;
 
 /* ================================================================
  *  Function prototypes — dynarec_compile.c

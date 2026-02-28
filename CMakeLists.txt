@@ -71,6 +71,7 @@ set(SUPERPSX_SOURCES
     src/iso_image.c
     src/iso_fs.c
     src/profiler.c
+    src/tlb_handler.c
 )
 
 # ============================================================================
