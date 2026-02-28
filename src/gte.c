@@ -12,17 +12,14 @@
 #include "superpsx.h"
 #include <stdio.h>
 #include <string.h>
+#include "dynarec.h"
 
 #ifdef ENABLE_HOST_LOG
-extern FILE *host_log_file;
-#define DBG(...)                                 \
-    do                                           \
-    {                                            \
-        if (host_log_file)                       \
-        {                                        \
-            fprintf(host_log_file, __VA_ARGS__); \
-            fflush(host_log_file);               \
-        }                                        \
+#define DBG(...)                    \
+    do                              \
+    {                               \
+        host_log_printf(__VA_ARGS__); \
+        host_log_flush();            \
     } while (0)
 #else
 #define DBG(...)

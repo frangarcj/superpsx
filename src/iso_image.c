@@ -8,6 +8,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <stdlib.h>
+#include <errno.h>
 #include "superpsx.h"
 #include "iso_image.h"
 
@@ -16,7 +21,7 @@
 /* ---- Internal state ---- */
 static struct
 {
-    FILE *fp;               /* Open file handle */
+    int fd;                 /* POSIX file descriptor */
     uint32_t total_sectors; /* Total number of user-data sectors */
     uint32_t sector_size;   /* 2048 or 2352 */
     uint32_t data_offset;   /* Offset to user data within each raw sector */
@@ -31,36 +36,40 @@ int ISO_Open(const char *path)
         ISO_Close();
 
     memset(&iso_state, 0, sizeof(iso_state));
+    iso_state.fd = -1;
 
     printf("[ISO] Opening image: %s\n", path);
 
-    iso_state.fp = fopen(path, "rb");
-    if (!iso_state.fp)
+    iso_state.fd = open(path, O_RDONLY);
+    if (iso_state.fd < 0)
     {
-        printf("[ISO] ERROR: Cannot open file: %s\n", path);
+        printf("[ISO] ERROR: Cannot open file: %s (%s)\n", path, strerror(errno));
         return -1;
     }
 
-    /* Determine file size */
-    fseek(iso_state.fp, 0, SEEK_END);
-    long file_size = ftell(iso_state.fp);
-    fseek(iso_state.fp, 0, SEEK_SET);
-
-    if (file_size <= 0)
+    /* Determine file size via fstat */
+    struct stat st;
+    if (fstat(iso_state.fd, &st) != 0 || st.st_size <= 0)
     {
-        printf("[ISO] ERROR: Invalid file size: %ld\n", file_size);
-        fclose(iso_state.fp);
-        iso_state.fp = NULL;
+        printf("[ISO] ERROR: Invalid file size for %s\n", path);
+        close(iso_state.fd);
+        iso_state.fd = -1;
         return -2;
     }
+    long file_size = (long)st.st_size;
 
     /* Detect format: 2048-byte ISO vs 2352-byte raw/BIN */
     if ((file_size % RAW_SECTOR_SIZE) == 0)
     {
         /* Check for sync pattern at offset 0 to confirm raw format */
         uint8_t sync[12];
-        fread(sync, 1, 12, iso_state.fp);
-        fseek(iso_state.fp, 0, SEEK_SET);
+        if (lseek(iso_state.fd, 0, SEEK_SET) < 0 || read(iso_state.fd, sync, 12) != 12)
+        {
+            printf("[ISO] ERROR: Failed to read sync bytes\n");
+            close(iso_state.fd);
+            iso_state.fd = -1;
+            return -3;
+        }
 
         /* CD-ROM sync pattern: 00 FF FF FF FF FF FF FF FF FF FF 00 */
         static const uint8_t cd_sync[12] = {
@@ -72,9 +81,8 @@ int ISO_Open(const char *path)
             iso_state.sector_size = RAW_SECTOR_SIZE;
             /* Check mode byte at offset 15 to determine data offset */
             uint8_t mode_byte;
-            fseek(iso_state.fp, 15, SEEK_SET);
-            fread(&mode_byte, 1, 1, iso_state.fp);
-            fseek(iso_state.fp, 0, SEEK_SET);
+            if (lseek(iso_state.fd, 15, SEEK_SET) < 0 || read(iso_state.fd, &mode_byte, 1) != 1)
+                mode_byte = 0;
 
             if (mode_byte == 2)
                 iso_state.data_offset = RAW_DATA_OFFSET; /* Mode 2: sync(12)+header(4)+subheader(8) = 24 */
@@ -120,7 +128,7 @@ int ISO_Open(const char *path)
 
 int ISO_ReadSector(uint32_t lba, uint8_t *buf)
 {
-    if (!iso_state.loaded || !iso_state.fp)
+    if (!iso_state.loaded || iso_state.fd < 0)
         return -1;
 
     if (lba >= iso_state.total_sectors)
@@ -131,21 +139,15 @@ int ISO_ReadSector(uint32_t lba, uint8_t *buf)
     }
 
     /* Calculate file offset */
-    long offset = (long)lba * iso_state.sector_size + iso_state.data_offset;
-
-    if (fseek(iso_state.fp, offset, SEEK_SET) != 0)
-    {
-        DLOG("ReadSector: fseek failed for LBA %" PRIu32 " (offset %ld)\n", lba, offset);
+    off_t offset = (off_t)lba * iso_state.sector_size + iso_state.data_offset;
+    if (lseek(iso_state.fd, offset, SEEK_SET) < 0)
         return -1;
-    }
-
-    size_t read = fread(buf, 1, ISO_SECTOR_SIZE, iso_state.fp);
-    if (read != ISO_SECTOR_SIZE)
+    ssize_t got = read(iso_state.fd, buf, ISO_SECTOR_SIZE);
+    if (got != ISO_SECTOR_SIZE)
     {
-        DLOG("ReadSector: Short read at LBA %" PRIu32 ": got %zu bytes\n", lba, read);
-        /* Zero-fill remaining bytes */
-        if (read < ISO_SECTOR_SIZE)
-            memset(buf + read, 0, ISO_SECTOR_SIZE - read);
+        DLOG("ReadSector: Short read at LBA %" PRIu32 ": got %zd bytes\n", lba, got);
+        if (got > 0 && got < ISO_SECTOR_SIZE)
+            memset(buf + got, 0, ISO_SECTOR_SIZE - got);
         return -1;
     }
 
@@ -155,21 +157,47 @@ int ISO_ReadSector(uint32_t lba, uint8_t *buf)
 /* ---- CUE sheet parser ---- */
 int ISO_OpenCue(const char *cue_path)
 {
-    FILE *cue = fopen(cue_path, "r");
-    if (!cue)
+    int cue_fd = open(cue_path, O_RDONLY);
+    if (cue_fd < 0)
     {
-        printf("[ISO] ERROR: Cannot open CUE file: %s\n", cue_path);
+        printf("[ISO] ERROR: Cannot open CUE file: %s (%s)\n", cue_path, strerror(errno));
         return -1;
     }
 
     printf("[ISO] Parsing CUE sheet: %s\n", cue_path);
 
-    char bin_filename[256] = {0};
-    char line[512];
-
-    while (fgets(line, sizeof(line), cue))
+    struct stat st;
+    if (fstat(cue_fd, &st) != 0 || st.st_size <= 0)
     {
-        /* Look for: FILE "filename.bin" BINARY */
+        close(cue_fd);
+        printf("[ISO] ERROR: Empty or invalid CUE file: %s\n", cue_path);
+        return -1;
+    }
+
+    /* Read CUE into a stack buffer (avoid dynamic allocation) */
+    char cue_buf[8192];
+    ssize_t r = read(cue_fd, cue_buf, sizeof(cue_buf) - 1);
+    close(cue_fd);
+    if (r <= 0)
+    {
+        printf("[ISO] ERROR: Failed to read CUE file: %s\n", cue_path);
+        return -1;
+    }
+    if ((size_t)r >= sizeof(cue_buf) - 1)
+    {
+        printf("[ISO] WARNING: CUE file truncated to %zu bytes\n", sizeof(cue_buf) - 1);
+        r = sizeof(cue_buf) - 1;
+    }
+    cue_buf[r] = '\0';
+
+    char bin_filename[256] = {0};
+    char *line = cue_buf;
+    while (line && *line)
+    {
+        char *next = strchr(line, '\n');
+        if (next)
+            *next = '\0';
+
         char *p = line;
         while (*p == ' ' || *p == '\t')
             p++;
@@ -180,7 +208,6 @@ int ISO_OpenCue(const char *cue_path)
             while (*p == ' ' || *p == '\t')
                 p++;
 
-            /* Extract filename (may be quoted) */
             if (*p == '"')
             {
                 p++;
@@ -196,7 +223,6 @@ int ISO_OpenCue(const char *cue_path)
             }
             else
             {
-                /* Unquoted: take until space */
                 char *end = p;
                 while (*end && *end != ' ' && *end != '\t' && *end != '\r' && *end != '\n')
                     end++;
@@ -206,10 +232,15 @@ int ISO_OpenCue(const char *cue_path)
                 memcpy(bin_filename, p, len);
                 bin_filename[len] = '\0';
             }
-            break; /* Use the first FILE directive */
+            break;
         }
+
+        if (!next)
+            break;
+        line = next + 1;
     }
-    fclose(cue);
+
+    /* cue_buf is stack-allocated */
 
     if (bin_filename[0] == '\0')
     {
@@ -256,10 +287,10 @@ uint32_t ISO_GetSectorCount(void)
 
 void ISO_Close(void)
 {
-    if (iso_state.fp)
+    if (iso_state.fd >= 0)
     {
-        fclose(iso_state.fp);
-        iso_state.fp = NULL;
+        close(iso_state.fd);
+        iso_state.fd = -1;
     }
     iso_state.loaded = 0;
     iso_state.total_sectors = 0;

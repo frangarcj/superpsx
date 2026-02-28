@@ -45,10 +45,10 @@ int BIOS_HLE_A(void)
         char c = (char)(cpu.regs[4] & 0xFF);
         printf("%c", c);
 #ifdef ENABLE_HOST_LOG
-        if (host_log_file)
+        if (host_log_fd >= 0)
         {
-            fputc(c, host_log_file);
-            fflush(host_log_file);
+            host_log_putc(c);
+            host_log_flush();
         }
 #endif
         cpu.regs[2] = cpu.regs[4];
@@ -72,10 +72,10 @@ int BIOS_HLE_B(void)
         char c = (char)(cpu.regs[4] & 0xFF);
         printf("%c", c);
 #ifdef ENABLE_HOST_LOG
-        if (host_log_file)
+        if (host_log_fd >= 0)
         {
-            fputc(c, host_log_file);
-            fflush(host_log_file);
+            host_log_putc(c);
+            host_log_flush();
         }
 #endif
         cpu.regs[2] = cpu.regs[4];
@@ -87,10 +87,10 @@ int BIOS_HLE_B(void)
         char c = (char)(cpu.regs[4] & 0xFF);
         printf("%c", c);
 #ifdef ENABLE_HOST_LOG
-        if (host_log_file)
+        if (host_log_fd >= 0)
         {
-            fputc(c, host_log_file);
-            fflush(host_log_file);
+            host_log_putc(c);
+            host_log_flush();
         }
 #endif
         cpu.regs[2] = 1;
