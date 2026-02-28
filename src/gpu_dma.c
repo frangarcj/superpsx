@@ -7,6 +7,7 @@
  */
 #include "gpu_state.h"
 #include "scheduler.h"
+#include "profiler.h"
 
 /* ── GPU rendering busy tracking ─────────────────────────────────────── */
 /* gpu_busy_until: global_cycles value until which the GPU is "busy".
@@ -39,6 +40,8 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
     uint32_t addr = madr & 0x1FFFFC;
     if ((chcr & 0x01000000) == 0)
         return;
+
+    PROF_PUSH(PROF_GPU_DMA);
 
     /* Reset pixel accumulator for this DMA batch */
     gpu_estimated_pixels = 0;
@@ -126,6 +129,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                     Scheduler_DispatchEvents(global_cycles);
             }
         }
+        PROF_POP(PROF_GPU_DMA);
         return;
     }
 
@@ -279,4 +283,5 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                 Scheduler_DispatchEvents(global_cycles);
         }
     }
+    PROF_POP(PROF_GPU_DMA);
 }

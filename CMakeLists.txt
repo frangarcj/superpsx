@@ -26,6 +26,7 @@ option(ENABLE_STUCK_DETECTION "Enable stuck detection" ON)
 option(ENABLE_PROFILING "Build with gprof instrumentation (libprofglue)" OFF)
 option(ENABLE_LTO "Enable Link-Time Optimization" OFF)
 option(ENABLE_DYNAREC_STATS "Enable dynarec execution statistics" OFF)
+option(ENABLE_SUBSYSTEM_PROFILER "Enable per-subsystem wall-clock profiler" ON)
 option(HEADLESS "Build without GPU/video output (no-op GPU stubs)" OFF)
 
 # ============================================================================
@@ -69,6 +70,7 @@ set(SUPERPSX_SOURCES
     src/scheduler.c
     src/iso_image.c
     src/iso_fs.c
+    src/profiler.c
 )
 
 # ============================================================================
@@ -101,6 +103,10 @@ endif()
 
 if(ENABLE_DYNAREC_STATS)
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_DYNAREC_STATS)
+endif()
+
+if(ENABLE_SUBSYSTEM_PROFILER)
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_SUBSYSTEM_PROFILER)
 endif()
 
 if(HEADLESS)
@@ -221,6 +227,7 @@ message(STATUS "  ENABLE_PROFILING:      ${ENABLE_PROFILING}")
 message(STATUS "  ENABLE_LTO:            ${ENABLE_LTO}")
 message(STATUS "  ENABLE_UNLIMITED_SPEED: ${ENABLE_UNLIMITED_SPEED}")
 message(STATUS "  ENABLE_DYNAREC_STATS:  ${ENABLE_DYNAREC_STATS}")
+message(STATUS "  ENABLE_SUBSYSTEM_PROFILER: ${ENABLE_SUBSYSTEM_PROFILER}")
 message(STATUS "  HEADLESS:              ${HEADLESS}")
 message(STATUS "")
 message(STATUS "  Usage:")

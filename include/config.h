@@ -16,6 +16,8 @@ typedef struct {
     int  audio_enabled;       /* default 1 */
     int  controllers_enabled; /* default 1 */
     int  region_pal;          /* 0 = NTSC (default), 1 = PAL */
+    int  disable_audio;       /* 1 = skip SPU processing (profiling) */
+    int  disable_gpu;         /* 1 = skip GS rendering (profiling) */
 } PSXConfig;
 
 extern PSXConfig psx_config;

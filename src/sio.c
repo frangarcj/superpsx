@@ -4,6 +4,7 @@
 #include "scheduler.h"
 #include "joystick.h"
 #include "psx_sio.h"
+#include "profiler.h"
 
 #define LOG_TAG "SIO"
 
@@ -51,7 +52,7 @@ static inline void sio_cancel_irq(void)
     Scheduler_RemoveEvent(SCHED_EVENT_SIO_IRQ);
 }
 
-uint32_t SIO_Read(uint32_t phys) /* caller passes physical addr */
+static inline uint32_t SIO_Read_Inner(uint32_t phys)
 {
     switch (phys - 0x1F801040)
     {
@@ -92,7 +93,15 @@ uint32_t SIO_Read(uint32_t phys) /* caller passes physical addr */
     }
 }
 
-void SIO_Write(uint32_t phys, uint32_t data) /* caller passes physical addr */
+uint32_t SIO_Read(uint32_t phys) /* caller passes physical addr */
+{
+    PROF_PUSH(PROF_SIO);
+    uint32_t result = SIO_Read_Inner(phys);
+    PROF_POP(PROF_SIO);
+    return result;
+}
+
+static inline void SIO_Write_Inner(uint32_t phys, uint32_t data)
 {
     switch (phys - 0x1F801040)
     {
@@ -245,4 +254,11 @@ void SIO_Write(uint32_t phys, uint32_t data) /* caller passes physical addr */
         serial_baud = (uint16_t)data;
         return;
     }
+}
+
+void SIO_Write(uint32_t phys, uint32_t data) /* caller passes physical addr */
+{
+    PROF_PUSH(PROF_SIO);
+    SIO_Write_Inner(phys, data);
+    PROF_POP(PROF_SIO);
 }

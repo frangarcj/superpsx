@@ -6,6 +6,7 @@
  * GS register initialisation (Setup_GS_Environment).
  */
 #include "gpu_state.h"
+#include "profiler.h"
 
 /* ── TEST register helpers ───────────────────────────────────────── */
 
@@ -24,6 +25,18 @@ void Flush_GIF(void)
 
     if (qwc > 0)
     {
+        /* When GPU rendering is disabled, discard the buffer contents
+         * without sending to GS.  Still swap buffers to keep the
+         * double-buffer state consistent. */
+        if (prof_disable_gpu_render)
+        {
+            current_buffer ^= 1;
+            fast_gif_ptr = (gif_qword_t *)&gif_packet_buf[current_buffer][0];
+            gif_buffer_end_safe = fast_gif_ptr + (GIF_BUFFER_SIZE - 1024);
+            return;
+        }
+
+        PROF_PUSH(PROF_GPU_FLUSH);
         /* Targeted dcache writeback: only flush the GIF buffer region.
          * FlushCache(0) would invalidate the ENTIRE 8KB L1 dcache,
          * destroying hot JIT data (cpu struct, psx_ram, LUT) and
@@ -43,6 +56,7 @@ void Flush_GIF(void)
         current_buffer ^= 1;
         fast_gif_ptr = (gif_qword_t *)&gif_packet_buf[current_buffer][0];
         gif_buffer_end_safe = fast_gif_ptr + (GIF_BUFFER_SIZE - 1024);
+        PROF_POP(PROF_GPU_FLUSH);
     }
 }
 

@@ -5,6 +5,7 @@
 #include "superpsx.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
@@ -37,6 +38,8 @@ int load_config_file(void)
     psx_config.controllers_enabled = 1;
     psx_config.region_pal          = 0;
     psx_config.boot_bios_only      = 0;
+    psx_config.disable_audio       = 0;
+    psx_config.disable_gpu         = 0;
     strncpy(psx_config.bios_path, BIOS_PATH_DEFAULT, sizeof(psx_config.bios_path) - 1);
     psx_config.bios_path[sizeof(psx_config.bios_path) - 1] = '\0';
 
@@ -103,6 +106,16 @@ int load_config_file(void)
         {
             psx_config.region_pal = (strcasecmp(val, "pal") == 0);
             printf("CONFIG: region = %s\n", psx_config.region_pal ? "pal" : "ntsc");
+        }
+        else if (strcasecmp(key, "disable_audio") == 0)
+        {
+            psx_config.disable_audio = (atoi(val) != 0 || strcasecmp(val, "true") == 0);
+            printf("CONFIG: disable_audio = %d\n", psx_config.disable_audio);
+        }
+        else if (strcasecmp(key, "disable_gpu") == 0)
+        {
+            psx_config.disable_gpu = (atoi(val) != 0 || strcasecmp(val, "true") == 0);
+            printf("CONFIG: disable_gpu = %d\n", psx_config.disable_gpu);
         }
     }
 

@@ -19,6 +19,7 @@
 #define LOG_TAG "DYNAREC"
 #include "loader.h"
 #include "config.h"
+#include "profiler.h"
 
 /* ================================================================
  *  Constants and Result Codes
@@ -524,6 +525,10 @@ static void Sched_HBlank_Callback(void)
     if (hblank_scanline >= SCANLINES_PER_FRAME)
     {
         hblank_scanline = 0;
+
+        /* Subsystem profiler: compute PSX cycles for this frame BEFORE resetting */
+        uint64_t frame_psx_cycles = global_cycles - hblank_frame_start_cycle;
+
         hblank_frame_start_cycle = global_cycles;
         GPU_VBlank();
         gpu_pending_vblank_flush = 1;
@@ -534,6 +539,8 @@ static void Sched_HBlank_Callback(void)
         perf_frame_count++;
         check_profiling_exit(perf_frame_count);
         handle_performance_report();
+
+        profiler_frame_end(frame_psx_cycles);
     }
 
     /* Re-schedule HBlank */
@@ -640,7 +647,10 @@ static inline int run_jit_chain(uint64_t deadline)
 
     if (!block)
     {
+        PROF_PUSH(PROF_JIT_COMPILE);
         block = compile_block(pc);
+        PROF_POP(PROF_JIT_COMPILE);
+        PROF_COUNT_COMPILE();
         if (!block)
         {
             DLOG("IBE at %08X\n", (unsigned)pc);
@@ -664,7 +674,10 @@ static inline int run_jit_chain(uint64_t deadline)
     cpu.cycles_left = cycles_left;
 
     psx_block_exception = 1;
+    PROF_PUSH(PROF_JIT_EXEC);
     int32_t remaining = ((block_func_t)block)(&cpu, psx_ram, psx_bios, cycles_left);
+    PROF_POP(PROF_JIT_EXEC);
+    PROF_COUNT_BLOCK();
     psx_block_exception = 0;
 
     if (__builtin_expect(cpu.block_aborted, 0))
@@ -734,6 +747,12 @@ void Run_CPU(void)
     Scheduler_ScheduleEvent(SCHED_EVENT_HBLANK, hblank_ideal_deadline, Sched_HBlank_Callback);
 
     Timer_ScheduleAll();
+
+    /* Subsystem profiler: apply config disable flags and init */
+    prof_disable_spu = psx_config.disable_audio;
+    prof_disable_gpu_render = psx_config.disable_gpu;
+    profiler_init();
+
     binary_loaded = 0;
     static uint32_t bios_trace_count = 0;
     static uint32_t bios_last_pc = 0;
@@ -803,7 +822,11 @@ void Run_CPU(void)
         }
 
         if (global_cycles >= scheduler_cached_earliest)
+        {
+            PROF_PUSH(PROF_SCHEDULER);
             Scheduler_DispatchEvents(global_cycles);
+            PROF_POP(PROF_SCHEDULER);
+        }
 
         sync_hardware_and_interrupts();
     }

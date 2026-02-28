@@ -7,6 +7,7 @@
 
 #include "superpsx.h"
 #include "spu.h"
+#include "profiler.h"
 
 #define LOG_TAG "SPU"
 
@@ -772,11 +773,16 @@ void SPU_GenerateChunk(int num_samples)
     if (!spu_initialized || num_samples <= 0)
         return;
 
+    PROF_PUSH(PROF_SPU_MIX);
+
     int offset = spu_samples_generated;
     if (offset + num_samples > SAMPLES_PER_FRAME)
         num_samples = SAMPLES_PER_FRAME - offset;
     if (num_samples <= 0)
+    {
+        PROF_POP(PROF_SPU_MIX);
         return;
+    }
 
     /* Clear the chunk region in mix buffers */
     memset(&mix_buf_l[offset], 0, num_samples * sizeof(int32_t));
@@ -850,6 +856,7 @@ void SPU_GenerateChunk(int num_samples)
     }
 
     spu_samples_generated += num_samples;
+    PROF_POP(PROF_SPU_MIX);
 }
 
 /* ---- Flush accumulated samples to audio hardware ---- */
@@ -858,10 +865,13 @@ void SPU_FlushAudio(void)
     if (!spu_initialized)
         return;
 
+    PROF_PUSH(PROF_SPU_FLUSH);
+
     int total = spu_samples_generated;
     if (total <= 0)
     {
         spu_samples_generated = 0;
+        PROF_POP(PROF_SPU_FLUSH);
         return;
     }
 
@@ -876,11 +886,19 @@ void SPU_FlushAudio(void)
     audsrv_play_audio((char *)mix_buffer, size);
 
     spu_samples_generated = 0;
+    PROF_POP(PROF_SPU_FLUSH);
 }
 
 /* ---- Legacy: generate full frame (backwards compat) ---- */
 void SPU_GenerateSamples(void)
 {
+    /* Profiling: skip SPU entirely when disabled */
+    if (prof_disable_spu)
+    {
+        spu_samples_generated = 0;
+        return;
+    }
+
     /* Generate any remaining samples for this frame */
     int remaining = SAMPLES_PER_FRAME - spu_samples_generated;
     if (remaining > 0)
