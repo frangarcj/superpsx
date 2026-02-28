@@ -391,22 +391,30 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         }
         case 0x2A: /* SLT */
         {
+            if (is_vreg_const(rs) && is_vreg_const(rt)) {
+                mark_vreg_const(rd, ((int32_t)get_vreg_const(rs) < (int32_t)get_vreg_const(rt)) ? 1 : 0);
+            } else {
+                mark_vreg_var(rd);
+            }
             int s1 = emit_use_reg(rs, REG_T0);
             int s2 = emit_use_reg(rt, REG_T1);
             int d = emit_dst_reg(rd, REG_T0);
             emit(MK_R(0, s1, s2, d, 0, 0x2A));
             emit_sync_reg(rd, d);
-            mark_vreg_var(rd);
             break;
         }
         case 0x2B: /* SLTU */
         {
+            if (is_vreg_const(rs) && is_vreg_const(rt)) {
+                mark_vreg_const(rd, (get_vreg_const(rs) < get_vreg_const(rt)) ? 1 : 0);
+            } else {
+                mark_vreg_var(rd);
+            }
             int s1 = emit_use_reg(rs, REG_T0);
             int s2 = emit_use_reg(rt, REG_T1);
             int d = emit_dst_reg(rd, REG_T0);
             emit(MK_R(0, s1, s2, d, 0, 0x2B));
             emit_sync_reg(rd, d);
-            mark_vreg_var(rd);
             break;
         }
         default:
