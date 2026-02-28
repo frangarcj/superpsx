@@ -678,7 +678,6 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
     }
     else if ((cmd & 0xE0) == 0x60)
     {                       // Rectangle (Sprite) - use GS SPRITE primitive for reliable rendering
-        gs_state.valid = 0; /* Rect path does unconditional state setup/restore */
         int is_textured = (cmd & 0x04) != 0;
         int is_var_size = (cmd & 0x18) == 0x00;
         int size_mode = (cmd >> 3) & 3;
@@ -849,11 +848,11 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     u_right_i = (int32_t)(u0_raw + w) + (int32_t)tex_page_x;
                 }
 
-                int nregs_tri = 15 + 2; // base(DTHE+PRIM+4*3vertices+DTHE_restore) + alpha test enable/restore
+                int nregs_tri = 15; // DTHE + TEST + PRIM + 4×3 vertices (no restore needed)
                 if (is_semi_trans)
                     nregs_tri += 1;
                 if (is_raw_texture)
-                    nregs_tri += 4;
+                    nregs_tri += 2; // TEX0 + TEXFLUSH only (no restore)
 
                 Push_GIF_Tag(GIF_TAG_LO(nregs_tri, 1, 0, 0, 0, 1), GIF_REG_AD);
                 Push_GIF_Data(GS_SET_DTHE(0), GS_REG_DTHE); // DTHE = 0
@@ -908,18 +907,35 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 Push_GIF_Data(rgbaq_q, GS_REG_RGBAQ);
                 Push_GIF_Data(GS_SET_XYZ(sgx1, sgy1, 0), GS_REG_XYZ2);
 
-                // Restore alpha test + TEX0
-                Push_GIF_Data(Get_Base_TEST(), GS_REG_TEST_1);
+                /* Update lazy state — no restore needed */
+                gs_state.dthe = 0;
+                if (is_semi_trans)
+                    gs_state.alpha = Get_Alpha_Reg(semi_trans_mode);
+                else if (!gs_state.valid)
+                    gs_state.alpha = ~0ULL;
+                {
+                    uint64_t flip_test = (uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST();
+                    gs_state.test = flip_test;
+                }
                 if (is_raw_texture)
                 {
-                    Push_GIF_Data(GS_SET_TEX0_SMALL(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9, 1, 0), GS_REG_TEX0);
-                    Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH);
+                    uint64_t flip_tex0 = 0;
+                    flip_tex0 |= (uint64_t)PSX_VRAM_FBW << 14;
+                    flip_tex0 |= (uint64_t)GS_PSM_16S << 20;
+                    flip_tex0 |= (uint64_t)10 << 26;
+                    flip_tex0 |= (uint64_t)9 << 30;
+                    flip_tex0 |= (uint64_t)1 << 34;
+                    flip_tex0 |= (uint64_t)1 << 35;
+                    gs_state.tex0 = flip_tex0;
                 }
-                Push_GIF_Data(GS_SET_DTHE(dither_enabled), GS_REG_DTHE);
+                else if (!gs_state.valid)
+                    gs_state.tex0 = ~0ULL;
+                gs_state.valid = 1;
             }
             else
             {
                 // --- SPRITE path for non-flip rects (precise rasterization) ---
+                // With lazy GS state tracking (matching polygon path)
                 uint64_t prim_reg = 6; // SPRITE
                 prim_reg |= (1 << 4);  // TME
                 prim_reg |= (1 << 8);  // FST
@@ -946,46 +962,91 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     u1_gs = tmp;
                 }
 
-                // nregs: DTHE + PRIM + 2*(UV+RGBAQ+XYZ) + alpha_test_en + alpha_test_restore + DTHE_restore
-                int nregs = 1 + 1 + 6 + 2 + 1; // = 11
-                if (is_semi_trans)
-                    nregs += 1;
-                if (clut_decoded || is_raw_texture)
-                    nregs += 4;
-
-                Push_GIF_Tag(GIF_TAG_LO(nregs, 1, 0, 0, 0, 1), GIF_REG_AD);
-                Push_GIF_Data(GS_SET_DTHE(0), GS_REG_DTHE); // DTHE = 0
-
-                if (is_semi_trans)
-                    Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), GS_REG_ALPHA_1);
-
+                /* ── Lazy GS state for SPRITE ── */
+                int want_dthe_r = 0; /* SPRITE: always disable dithering */
+                uint64_t want_alpha_r = is_semi_trans ? Get_Alpha_Reg(semi_trans_mode) : 0;
+                uint64_t want_test_r = (uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST();
+                uint64_t want_tex0_r = 0;
+                int need_texflush_r = 0;
                 if (clut_decoded || is_raw_texture)
                 {
-                    uint64_t tex0_before;
                     if (rect_hw_clut)
                     {
-                        /* HW CLUT: PSMT8/4 + CLUT */
-                        tex0_before = GS_SET_TEX0(rect_hw_tbp0, 4, (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8, 8, 8, 1, (is_raw_texture ? 1 : 0), rect_hw_cbp, GS_PSM_16, 0, 0, 1);
+                        int psm = (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8;
+                        want_tex0_r |= (uint64_t)rect_hw_tbp0;
+                        want_tex0_r |= (uint64_t)4 << 14;
+                        want_tex0_r |= (uint64_t)psm << 20;
+                        want_tex0_r |= (uint64_t)8 << 26;
+                        want_tex0_r |= (uint64_t)8 << 30;
+                        want_tex0_r |= (uint64_t)1 << 34;
+                        want_tex0_r |= (uint64_t)(is_raw_texture ? 1 : 0) << 35;
+                        want_tex0_r |= (uint64_t)rect_hw_cbp << 37;
+                        want_tex0_r |= (uint64_t)GS_PSM_16 << 51;
+                        want_tex0_r |= (uint64_t)1 << 61;
                     }
                     else if (clut_decoded)
                     {
-                        /* SW decode: CT16S cache at Y=512 → TBP0=4096 */
-                        tex0_before = GS_SET_TEX0_SMALL(4096, PSX_VRAM_FBW, GS_PSM_16S, 10, 10, 1, (is_raw_texture ? 1 : 0));
+                        want_tex0_r |= (uint64_t)4096;
+                        want_tex0_r |= (uint64_t)PSX_VRAM_FBW << 14;
+                        want_tex0_r |= (uint64_t)GS_PSM_16S << 20;
+                        want_tex0_r |= (uint64_t)10 << 26;
+                        want_tex0_r |= (uint64_t)10 << 30;
+                        want_tex0_r |= (uint64_t)1 << 34;
+                        want_tex0_r |= (uint64_t)(is_raw_texture ? 1 : 0) << 35;
                     }
                     else
                     {
-                        /* is_raw_texture only — direct VRAM read */
-                        tex0_before = GS_SET_TEX0_SMALL(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9, 1, 1);
+                        want_tex0_r |= (uint64_t)PSX_VRAM_FBW << 14;
+                        want_tex0_r |= (uint64_t)GS_PSM_16S << 20;
+                        want_tex0_r |= (uint64_t)10 << 26;
+                        want_tex0_r |= (uint64_t)9 << 30;
+                        want_tex0_r |= (uint64_t)1 << 34;
+                        want_tex0_r |= (uint64_t)1 << 35;
                     }
-                    Push_GIF_Data(tex0_before, GS_REG_TEX0);
-                    Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH);
+                    need_texflush_r = !gs_state.valid || gs_state.tex0 != want_tex0_r;
+                }
                 }
 
-                // Alpha test: skip transparent pixels (STP=0 → alpha=0)
+                int emit_dthe_r = (!gs_state.valid || gs_state.dthe != want_dthe_r);
+                int emit_alpha_r = (is_semi_trans && (!gs_state.valid || gs_state.alpha != want_alpha_r));
+                int emit_tex0_r = ((clut_decoded || is_raw_texture) &&
+                                   (!gs_state.valid || gs_state.tex0 != want_tex0_r || need_texflush_r));
+                int emit_test_r = (!gs_state.valid || gs_state.test != want_test_r);
+                int state_qws_r = emit_dthe_r + emit_alpha_r + emit_tex0_r * 2 + emit_test_r;
+
+                int nregs = 1 + 6 + state_qws_r; /* PRIM + 2×(UV+RGBAQ+XYZ) + state */
+
+                Push_GIF_Tag(GIF_TAG_LO(nregs, 1, 0, 0, 0, 1), GIF_REG_AD);
+
+                if (emit_dthe_r)
+                    Push_GIF_Data(0, GS_REG_DTHE);
+                if (emit_alpha_r)
+                    Push_GIF_Data(want_alpha_r, GS_REG_ALPHA_1);
+                if (emit_tex0_r)
                 {
-                    uint64_t test_at = (uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST();
-                    Push_GIF_Data(test_at, GS_REG_TEST_1);
+                    Push_GIF_Data(want_tex0_r, GS_REG_TEX0);
+                    Push_GIF_Data(0, GS_REG_TEXFLUSH);
                 }
+                if (emit_test_r)
+                    Push_GIF_Data(want_test_r, GS_REG_TEST_1);
+
+                /* Update lazy tracking */
+                if (!gs_state.valid)
+                {
+                    if (!is_semi_trans)
+                        gs_state.alpha = ~0ULL;
+                    if (!(clut_decoded || is_raw_texture))
+                    {
+                        gs_state.tex0 = ~0ULL;
+                    }
+                }
+                gs_state.dthe = want_dthe_r;
+                if (is_semi_trans)
+                    gs_state.alpha = want_alpha_r;
+                if (clut_decoded || is_raw_texture)
+                    gs_state.tex0 = want_tex0_r;
+                gs_state.test = want_test_r;
+                gs_state.valid = 1;
 
                 Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
 
@@ -998,21 +1059,12 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 Push_GIF_Data(GS_SET_XYZ(u1_gs << 4, v1_gs << 4, 0), GS_REG_UV);
                 Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
                 Push_GIF_Data(GS_SET_XYZ(sgx1, sgy1, 0), GS_REG_XYZ2);
-
-                if (clut_decoded || is_raw_texture)
-                {
-                    Push_GIF_Data(GS_SET_TEX0_SMALL(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9, 1, 0), GS_REG_TEX0);
-                    Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH);
-                }
-
-                // Restore alpha test (counted in nregs as alpha_test_restore)
-                Push_GIF_Data(Get_Base_TEST(), GS_REG_TEST_1);
-                Push_GIF_Data(GS_SET_DTHE(dither_enabled), GS_REG_DTHE);
+                /* No state restore — lazy tracking handles next primitive */
             }
         }
         else
         {
-            // Flat sprite using A+D mode
+            // Flat sprite using A+D mode — with lazy state tracking
 
             int32_t gx0 = ((int32_t)x + draw_offset_x + 2048) << 4;
             int32_t gy0 = ((int32_t)y + draw_offset_y + 2048) << 4;
@@ -1022,17 +1074,32 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             uint64_t rgbaq = GS_SET_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0x3F800000);
 
             int is_semi_trans = (cmd & 0x02) != 0;
-            int nregs = 5;
-            nregs += 2;
-            if (is_semi_trans)
-                nregs += 1;
+            int want_dthe_f = 0;
+            uint64_t want_alpha_f = is_semi_trans ? Get_Alpha_Reg(semi_trans_mode) : 0;
+            int emit_dthe_f = (!gs_state.valid || gs_state.dthe != want_dthe_f);
+            int emit_alpha_f = (is_semi_trans && (!gs_state.valid || gs_state.alpha != want_alpha_f));
+
+            int nregs = 1 + 4 + emit_dthe_f + emit_alpha_f; /* PRIM + 2×(RGBAQ+XYZ) + state */
 
             Push_GIF_Tag(GIF_TAG_LO(nregs, 1, 0, 0, 0, 1), GIF_REG_AD);
 
-            Push_GIF_Data(GS_SET_DTHE(0), GS_REG_DTHE);
+            if (emit_dthe_f)
+                Push_GIF_Data(0, GS_REG_DTHE);
+            if (emit_alpha_f)
+                Push_GIF_Data(want_alpha_f, GS_REG_ALPHA_1);
 
+            /* Update lazy tracking */
+            gs_state.dthe = want_dthe_f;
             if (is_semi_trans)
-                Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), GS_REG_ALPHA_1);
+                gs_state.alpha = want_alpha_f;
+            else if (!gs_state.valid)
+                gs_state.alpha = ~0ULL;
+            if (!gs_state.valid)
+            {
+                gs_state.tex0 = ~0ULL;
+                gs_state.test = ~0ULL;
+            }
+            gs_state.valid = 1;
 
             Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
 
@@ -1041,8 +1108,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
 
             Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
             Push_GIF_Data(GS_SET_XYZ(gx1, gy1, 0), GS_REG_XYZ2);
-
-            Push_GIF_Data(GS_SET_DTHE(dither_enabled), GS_REG_DTHE);
+            /* No state restore — lazy tracking handles next primitive */
         }
         return idx;
     }
