@@ -153,8 +153,10 @@ void Init_Dynarec(void)
     /* Clear hash table — set all entries to unmatchable */
     for (int i = 0; i < JIT_HT_SIZE; i++)
     {
-        jit_ht[i].psx_pc = 0xFFFFFFFF;
-        jit_ht[i].native = NULL;
+        jit_ht[i].psx_pc[0] = 0xFFFFFFFF;
+        jit_ht[i].psx_pc[1] = 0xFFFFFFFF;
+        jit_ht[i].native[0] = NULL;
+        jit_ht[i].native[1] = NULL;
     }
 
     block_node_pool_idx = 0;
@@ -309,8 +311,8 @@ void Init_Dynarec(void)
         *p++ = MK_R(0, REG_T1, REG_T0, REG_T1, 0, 0x26); /* xor  t1, t1, t0 */
         *p++ = MK_I(0x0C, REG_T1, REG_T1, JIT_HT_MASK);  /* andi t1, t1, MASK */
 
-        /* 3. Scale to byte offset: t1 <<= 3 (sizeof(JitHTEntry) = 8) */
-        *p++ = MK_R(0, 0, REG_T1, REG_T1, 3, 0x00); /* sll  t1, t1, 3 */
+        /* 3. Scale to byte offset: t1 <<= 4 (sizeof(JitHTEntry) = 16, 2-way) */
+        *p++ = MK_R(0, 0, REG_T1, REG_T1, 4, 0x00); /* sll  t1, t1, 4 */
 
         /* 4. Load hash table base: t2 = &jit_ht */
         uint32_t ht_addr = (uint32_t)&jit_ht[0];
@@ -320,22 +322,32 @@ void Init_Dynarec(void)
         /* 5. Index into table: t1 = &jit_ht[hash] */
         *p++ = MK_R(0, REG_T1, REG_T2, REG_T1, 0, 0x21); /* addu t1, t1, t2 */
 
-        /* 6. Load entry: t2 = ht[hash].psx_pc, at = ht[hash].native
-         *    NOTE: use AT ($1) instead of T3 ($11) for the native pointer
-         *    because T3 is pinned to PSX $a0 and must not be clobbered. */
-        *p++ = MK_I(0x23, REG_T1, REG_T2, 0); /* lw t2, 0(t1) = psx_pc */
-        *p++ = MK_I(0x23, REG_T1, REG_AT, 4); /* lw at, 4(t1) = native */
+        /* 6. Check slot 0: t2 = psx_pc[0], at = native[0]
+         *    Struct layout: { psx_pc[0]=+0, psx_pc[1]=+4, native[0]=+8, native[1]=+12 }
+         *    NOTE: use AT ($1) for native ptr — T3 ($11) is pinned to PSX $a0. */
+        *p++ = MK_I(0x23, REG_T1, REG_T2, 0);  /* lw t2, 0(t1) = psx_pc[0] */
+        *p++ = MK_I(0x23, REG_T1, REG_AT, 8);  /* lw at, 8(t1) = native[0] */
 
-        /* 7. Compare: if psx_pc != target, miss → abort */
-        *p++ = MK_I(0x05, REG_T2, REG_T0, 0); /* bne t2, t0, @miss (patched) */
+        /* 7. If slot 0 matches, jump to @hit */
+        *p++ = MK_I(0x04, REG_T2, REG_T0, 0);  /* beq t2, t0, @hit (patched) */
+        uint32_t *hit0_branch = p - 1;
+        *p++ = 0;                                /* delay: nop */
+
+        /* 8. Slot 0 miss — check slot 1 */
+        *p++ = MK_I(0x23, REG_T1, REG_T2, 4);  /* lw t2, 4(t1) = psx_pc[1] */
+        *p++ = MK_I(0x05, REG_T2, REG_T0, 0);  /* bne t2, t0, @miss (patched) */
         uint32_t *miss_branch = p - 1;
-        *p++ = 0; /* delay: nop */
+        *p++ = MK_I(0x23, REG_T1, REG_AT, 12); /* (delay) lw at, 12(t1) = native[1] */
 
-        /* 8. HIT: jump to native block directly! */
+        /* 9. @hit: jump to native block — at has native[0] or native[1] */
+        uint32_t *hit_target = p;
+        int32_t hit0_off = (int32_t)(hit_target - hit0_branch - 1);
+        *hit0_branch = (*hit0_branch & 0xFFFF0000) | ((uint32_t)hit0_off & 0xFFFF);
+
         *p++ = MK_R(0, REG_AT, 0, 0, 0, 0x08); /* jr at */
-        *p++ = 0;                              /* delay: nop */
+        *p++ = 0;                                /* delay: nop */
 
-        /* 9. @miss: fall through to abort trampoline */
+        /* 10. @miss: fall through to abort trampoline */
         uint32_t *miss_target = p;
         int32_t miss_off = (int32_t)(miss_target - miss_branch - 1);
         *miss_branch = (*miss_branch & 0xFFFF0000) | ((uint32_t)miss_off & 0xFFFF);
@@ -581,26 +593,13 @@ static inline int run_jit_chain(uint64_t deadline)
     {
 #ifdef ENABLE_JIT_HT_DEBUG
         uint32_t h = jit_ht_hash(pc);
-        uint32_t *ht_native = jit_ht[h].native;
-        uint32_t ht_pc = jit_ht[h].psx_pc;
-        if (ht_pc == pc && ht_native != NULL)
-        {
-            uint32_t *expected = block + DYNAREC_PROLOGUE_WORDS;
-            if (ht_native != expected)
-            {
+        uint32_t *expected = block + DYNAREC_PROLOGUE_WORDS;
+        int found = (jit_ht[h].psx_pc[0] == pc) || (jit_ht[h].psx_pc[1] == pc);
+        if (found) {
+            uint32_t *ht_native = (jit_ht[h].psx_pc[0] == pc) ? jit_ht[h].native[0] : jit_ht[h].native[1];
+            if (ht_native && ht_native != expected)
                 printf("[JIT_HT] STALE entry! PC=%08X slot=%u ht_native=%p expected=%p\n",
                        (unsigned)pc, h, (void *)ht_native, (void *)expected);
-            }
-        }
-        else if (ht_pc != pc && ht_pc != 0xFFFFFFFF)
-        {
-            /* Collision: a different PC occupies this slot */
-            static uint32_t ht_collision_count = 0;
-            if (++ht_collision_count <= 20)
-            {
-                printf("[JIT_HT] Collision: slot=%u old_pc=%08X new_pc=%08X\n",
-                       h, (unsigned)ht_pc, (unsigned)pc);
-            }
         }
 #endif
         jit_ht_add(pc, block);
@@ -627,12 +626,7 @@ static inline int run_jit_chain(uint64_t deadline)
                     be->native = NULL;
                     /* Clear stale hash table entry to prevent dispatch
                      * trampoline from jumping to invalidated code */
-                    uint32_t h = jit_ht_hash(pc);
-                    if (jit_ht[h].psx_pc == pc)
-                    {
-                        jit_ht[h].psx_pc = 0xFFFFFFFF;
-                        jit_ht[h].native = NULL;
-                    }
+                    jit_ht_remove(pc);
                     block = NULL;
                     be = NULL;
                 }
