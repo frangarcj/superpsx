@@ -186,9 +186,9 @@ extern uint64_t stat_dbl_patches;
 
 typedef struct
 {
-    uint32_t psx_pc;  /* PSX virtual address */
-    uint32_t *native; /* Pointer to compiled native code (past prologue) */
-} JitHTEntry;
+    uint32_t psx_pc[2];  /* PSX virtual address — 2-way set associative */
+    uint32_t *native[2]; /* Pointer to compiled native code (past prologue) */
+} JitHTEntry;  /* 16 bytes: psx_pc[0], psx_pc[1], native[0], native[1] */
 
 extern JitHTEntry jit_ht[JIT_HT_SIZE];
 extern uint32_t *jump_dispatch_trampoline_addr;
@@ -201,11 +201,41 @@ static inline uint32_t jit_ht_hash(uint32_t pc)
 static inline void jit_ht_add(uint32_t psx_pc, uint32_t *native)
 {
     uint32_t h = jit_ht_hash(psx_pc);
-    jit_ht[h].psx_pc = psx_pc;
-    /* Store entry point PAST prologue (same as DBL: native + DYNAREC_PROLOGUE_WORDS).
-     * The dispatch trampoline jumps here directly, reusing the caller's
-     * stack frame and pinned registers. */
-    jit_ht[h].native = native + DYNAREC_PROLOGUE_WORDS;
+    uint32_t *entry_native = native + DYNAREC_PROLOGUE_WORDS;
+    /* If already in slot 0, just update native pointer */
+    if (jit_ht[h].psx_pc[0] == psx_pc) {
+        jit_ht[h].native[0] = entry_native;
+        return;
+    }
+    /* If already in slot 1, promote to slot 0 (MRU) */
+    if (jit_ht[h].psx_pc[1] == psx_pc) {
+        jit_ht[h].psx_pc[1] = jit_ht[h].psx_pc[0];
+        jit_ht[h].native[1] = jit_ht[h].native[0];
+        jit_ht[h].psx_pc[0] = psx_pc;
+        jit_ht[h].native[0] = entry_native;
+        return;
+    }
+    /* New entry: shift slot 0 → slot 1, insert at slot 0 */
+    jit_ht[h].psx_pc[1] = jit_ht[h].psx_pc[0];
+    jit_ht[h].native[1] = jit_ht[h].native[0];
+    jit_ht[h].psx_pc[0] = psx_pc;
+    jit_ht[h].native[0] = entry_native;
+}
+
+/* Remove a specific PC from the hash table (both slots) */
+static inline void jit_ht_remove(uint32_t psx_pc)
+{
+    uint32_t h = jit_ht_hash(psx_pc);
+    if (jit_ht[h].psx_pc[0] == psx_pc) {
+        /* Promote slot 1 → slot 0 */
+        jit_ht[h].psx_pc[0] = jit_ht[h].psx_pc[1];
+        jit_ht[h].native[0] = jit_ht[h].native[1];
+        jit_ht[h].psx_pc[1] = 0xFFFFFFFF;
+        jit_ht[h].native[1] = NULL;
+    } else if (jit_ht[h].psx_pc[1] == psx_pc) {
+        jit_ht[h].psx_pc[1] = 0xFFFFFFFF;
+        jit_ht[h].native[1] = NULL;
+    }
 }
 
 /* ================================================================

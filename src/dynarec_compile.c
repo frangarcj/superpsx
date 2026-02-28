@@ -357,8 +357,10 @@ uint32_t *compile_block(uint32_t psx_pc)
         /* Clear hash table — all native pointers are now stale */
         for (int i = 0; i < JIT_HT_SIZE; i++)
         {
-            jit_ht[i].psx_pc = 0xFFFFFFFF;
-            jit_ht[i].native = NULL;
+            jit_ht[i].psx_pc[0] = 0xFFFFFFFF;
+            jit_ht[i].psx_pc[1] = 0xFFFFFFFF;
+            jit_ht[i].native[0] = NULL;
+            jit_ht[i].native[1] = NULL;
         }
         /* Full flush on buffer reset: all old icache lines are stale */
         FlushCache(0);
