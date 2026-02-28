@@ -610,6 +610,46 @@ uint32_t *compile_block(uint32_t psx_pc)
             int32_t offset = SIMM16(opcode) << 2;
             branch_target = cur_pc + 4 + offset;
 
+            /* --- Compile-time branch folding --- */
+            int folded = 0;
+            if (op == 0x04 || op == 0x05) {
+                /* BEQ / BNE: both rs and rt must be known */
+                if (is_vreg_const(rs) && is_vreg_const(rt)) {
+                    uint32_t vs = get_vreg_const(rs), vt = get_vreg_const(rt);
+                    int taken = (op == 0x04) ? (vs == vt) : (vs != vt);
+                    if (!taken) branch_target = cur_pc + 8; /* fall through */
+                    folded = 1;
+                }
+            } else if (op == 0x06 || op == 0x07) {
+                /* BLEZ / BGTZ: only rs */
+                if (is_vreg_const(rs)) {
+                    int32_t vs = (int32_t)get_vreg_const(rs);
+                    int taken = (op == 0x06) ? (vs <= 0) : (vs > 0);
+                    if (!taken) branch_target = cur_pc + 8;
+                    folded = 1;
+                }
+            }
+
+            if (folded) {
+                /* Resolved at compile time → unconditional branch */
+                branch_type = 1;
+                in_delay_slot = 1;
+                if (pending_load_reg != 0) {
+                    if (pending_load_apply_now) {
+                        EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
+                        emit_store_psx_reg(pending_load_reg, REG_T0);
+                        pending_load_reg = 0;
+                        pending_load_apply_now = 0;
+                    } else {
+                        pending_load_apply_now = 1;
+                    }
+                }
+                cur_pc += 4;
+                total_instructions++;
+                continue;
+            }
+
+            /* --- Runtime conditional branch --- */
             emit_load_psx_reg(REG_T0, rs);
             if (op == 0x04 || op == 0x05)
             {
@@ -658,6 +698,35 @@ uint32_t *compile_block(uint32_t psx_pc)
             int32_t offset = SIMM16(opcode) << 2;
             branch_target = cur_pc + 4 + offset;
 
+            /* --- Compile-time folding for BLTZ/BGEZ/BLTZAL/BGEZAL --- */
+            if (is_vreg_const(rs)) {
+                int32_t vs = (int32_t)get_vreg_const(rs);
+                int taken = ((rt & 1) == 0) ? (vs < 0) : (vs >= 0);
+                if (!taken) branch_target = cur_pc + 8;
+                /* Link variants still write $ra */
+                if (rt == 0x10 || rt == 0x11) {
+                    mark_vreg_const(31, cur_pc + 8);
+                    emit_load_imm32(REG_T1, cur_pc + 8);
+                    emit_store_psx_reg(31, REG_T1);
+                }
+                branch_type = 1;
+                in_delay_slot = 1;
+                if (pending_load_reg != 0) {
+                    if (pending_load_apply_now) {
+                        EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
+                        emit_store_psx_reg(pending_load_reg, REG_T0);
+                        pending_load_reg = 0;
+                        pending_load_apply_now = 0;
+                    } else {
+                        pending_load_apply_now = 1;
+                    }
+                }
+                cur_pc += 4;
+                total_instructions++;
+                continue;
+            }
+
+            /* --- Runtime path --- */
             emit_load_psx_reg(REG_T0, rs);
 
             if (rt == 0x10 || rt == 0x11)

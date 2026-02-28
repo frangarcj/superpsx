@@ -288,6 +288,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         }
         case 0x20: /* ADD (with overflow check) */
+            mark_vreg_var(rd);
             emit_load_psx_reg(REG_A0, rs);
             emit_load_psx_reg(REG_A1, rt);
             emit_load_imm32(6, rd);
@@ -310,6 +311,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         }
         case 0x22: /* SUB (with overflow check) */
+            mark_vreg_var(rd);
             emit_load_psx_reg(REG_A0, rs);
             emit_load_psx_reg(REG_A1, rt);
             emit_load_imm32(6, rd);
@@ -394,6 +396,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             int d = emit_dst_reg(rd, REG_T0);
             emit(MK_R(0, s1, s2, d, 0, 0x2A));
             emit_sync_reg(rd, d);
+            mark_vreg_var(rd);
             break;
         }
         case 0x2B: /* SLTU */
@@ -403,6 +406,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             int d = emit_dst_reg(rd, REG_T0);
             emit(MK_R(0, s1, s2, d, 0, 0x2B));
             emit_sync_reg(rd, d);
+            mark_vreg_var(rd);
             break;
         }
         default:
@@ -708,11 +712,13 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* LWL/LWR/SWL/SWR */
     case 0x22: /* LWL */
     {
+        mark_vreg_var(rt);
         emit_memory_lwx(1, rt, rs, imm, dynarec_lwx_pending);
         break;
     }
     case 0x26: /* LWR */
     {
+        mark_vreg_var(rt);
         emit_memory_lwx(0, rt, rs, imm, dynarec_lwx_pending);
         break;
     }
