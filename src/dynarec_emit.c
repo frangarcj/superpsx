@@ -32,6 +32,17 @@ void emit_load_psx_reg(int hwreg, int r)
     {
         EMIT_MOVE(hwreg, REG_ZERO); /* $0 is always 0 */
     }
+    else if (vregs[r].is_const && vregs[r].is_dirty)
+    {
+        /* Lazy const: materialize into hwreg */
+        emit_load_imm32(hwreg, vregs[r].value);
+        /* Also update the pinned reg / cpu.regs[] so future uses are fast */
+        if (psx_pinned_reg[r] && hwreg != psx_pinned_reg[r])
+            EMIT_MOVE(psx_pinned_reg[r], hwreg);
+        else if (!psx_pinned_reg[r])
+            EMIT_SW(hwreg, CPU_REG(r), REG_S0);
+        vregs[r].is_dirty = 0;
+    }
     else if (psx_pinned_reg[r])
     {
         if (hwreg != psx_pinned_reg[r]) /* avoid self-move */
@@ -45,15 +56,28 @@ void emit_load_psx_reg(int hwreg, int r)
 
 int emit_use_reg(int r, int scratch)
 {
-    if (r == 0) return REG_ZERO;
-    if (psx_pinned_reg[r]) return psx_pinned_reg[r];
+    if (r == 0)
+        return REG_ZERO;
+    if (vregs[r].is_const && vregs[r].is_dirty)
+    {
+        /* Lazy const: materialize into the canonical location */
+        int dst = psx_pinned_reg[r] ? psx_pinned_reg[r] : scratch;
+        emit_load_imm32(dst, vregs[r].value);
+        if (!psx_pinned_reg[r])
+            EMIT_SW(dst, CPU_REG(r), REG_S0);
+        vregs[r].is_dirty = 0;
+        return dst;
+    }
+    if (psx_pinned_reg[r])
+        return psx_pinned_reg[r];
     EMIT_LW(scratch, CPU_REG(r), REG_S0);
     return scratch;
 }
 
 int emit_dst_reg(int r, int scratch)
 {
-    if (r == 0) return REG_T2; /* Junk register if writing to $0 */
+    if (r == 0)
+        return REG_T2; /* Junk register if writing to $0 */
     return psx_pinned_reg[r] ? psx_pinned_reg[r] : scratch;
 }
 
@@ -73,8 +97,36 @@ void emit_store_psx_reg(int r, int hwreg)
 
 void emit_sync_reg(int r, int host_reg)
 {
-    if (r == 0 || psx_pinned_reg[r]) return;
+    if (r == 0 || psx_pinned_reg[r])
+        return;
     EMIT_SW(host_reg, CPU_REG(r), REG_S0);
+}
+
+/* Materialize all lazy (dirty) constants into native registers / cpu.regs[].
+ * Must be called before any block exit, C function call, or register-indirect
+ * jump to ensure the machine state is fully consistent. */
+/* Note: uses REG_AT as scratch for non-pinned registers to avoid
+ * clobbering REG_T0, which often holds the effective address in
+ * memory slow paths when flush_dirty_consts is called. */
+void flush_dirty_consts(void)
+{
+    int r;
+    for (r = 1; r < 32; r++)
+    {
+        if (vregs[r].is_const && vregs[r].is_dirty)
+        {
+            if (psx_pinned_reg[r])
+            {
+                emit_load_imm32(psx_pinned_reg[r], vregs[r].value);
+            }
+            else
+            {
+                emit_load_imm32(REG_AT, vregs[r].value);
+                EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
+            }
+            vregs[r].is_dirty = 0;
+        }
+    }
 }
 
 /* Flush pinned PSX registers to cpu struct before JAL to C helpers.
@@ -118,9 +170,11 @@ void emit_reload_pinned(void)
  * and reloads them after return (C code may have modified cpu.regs[]). */
 void emit_call_c(uint32_t func_addr)
 {
+    /* Materialize any lazy constants before the C call */
+    flush_dirty_consts();
     /* Flush S2 to memory so C code sees current cycles_left */
     EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
-    
+
     /* Use the shared trampoline to flush/reload pinned registers and provide ABI shadow space
      * without emitting 24 instructions per C-call. Target is passed in REG_T0. */
     emit_load_imm32(REG_T0, func_addr);
@@ -130,6 +184,8 @@ void emit_call_c(uint32_t func_addr)
 
 void emit_call_c_lite(uint32_t func_addr)
 {
+    /* Materialize any lazy constants before the C call */
+    flush_dirty_consts();
     /* Lightweight trampoline for C helpers that do NOT read/write cpu.regs[].
      * Only flushes/reloads caller-saved pinned regs (V1, T3-T9), saving 8
      * instructions vs the full trampoline.  Safe for memory R/W, LWL/LWR,
@@ -159,7 +215,7 @@ void emit_call_c_lite(uint32_t func_addr)
 void emit_abort_check(void)
 {
     EMIT_LW(REG_T0, CPU_BLOCK_ABORTED, REG_S0); /* t0 = cpu.block_aborted */
-    EMIT_BEQ(REG_T0, REG_ZERO, 4); /* skip next 3 instrs if zero */
+    EMIT_BEQ(REG_T0, REG_ZERO, 4);              /* skip next 3 instrs if zero */
     EMIT_NOP();
 
     /* Inside abort path: subtract cycles up to this instruction */
@@ -192,26 +248,60 @@ void emit_load_imm32(int hwreg, uint32_t val)
 
 void mark_vreg_const(int r, uint32_t val)
 {
-    if (r == 0) return;
+    if (r == 0)
+        return;
     vregs[r].is_const = 1;
     vregs[r].value = val;
+    vregs[r].is_dirty = 0;
+}
+
+/* Mark a register as const but dirty (native reg / cpu.regs[] not yet updated).
+ * The value will be materialized on demand by emit_use_reg/emit_load_psx_reg,
+ * or flushed by flush_dirty_consts at block exit / C call boundary. */
+void mark_vreg_const_lazy(int r, uint32_t val)
+{
+    if (r == 0)
+        return;
+    vregs[r].is_const = 1;
+    vregs[r].value = val;
+    vregs[r].is_dirty = 1;
 }
 
 void mark_vreg_var(int r)
 {
-    if (r == 0) return;
+    if (r == 0)
+        return;
+    /* If the register held a lazy (dirty) constant that was never
+     * materialized into the native pinned register or cpu.regs[],
+     * we must materialize it NOW before losing the value.  This
+     * covers rd==rs overlaps like ADDU $t0, $t0, $t1 where the
+     * destination is marked var before the source is read.
+     * Uses REG_AT as scratch to avoid clobbering REG_T0. */
+    if (vregs[r].is_const && vregs[r].is_dirty)
+    {
+        if (psx_pinned_reg[r])
+            emit_load_imm32(psx_pinned_reg[r], vregs[r].value);
+        else
+        {
+            emit_load_imm32(REG_AT, vregs[r].value);
+            EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
+        }
+    }
     vregs[r].is_const = 0;
+    vregs[r].is_dirty = 0;
 }
 
 int is_vreg_const(int r)
 {
-    if (r == 0) return 1; /* Zero register is always constant 0 */
+    if (r == 0)
+        return 1; /* Zero register is always constant 0 */
     return vregs[r].is_const;
 }
 
 uint32_t get_vreg_const(int r)
 {
-    if (r == 0) return 0;
+    if (r == 0)
+        return 0;
     return vregs[r].value;
 }
 

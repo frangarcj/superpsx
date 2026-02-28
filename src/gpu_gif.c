@@ -55,7 +55,6 @@ void Flush_GIF_Sync(void)
     dma_wait_fast();
 }
 
-
 /* ── GS Environment Setup ────────────────────────────────────────── */
 
 void Setup_GS_Environment(void)

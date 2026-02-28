@@ -145,7 +145,7 @@ extern int tex_flip_y;
 /* Mask bit state from GP0(E6) */
 extern int mask_set_bit;
 extern int mask_check_bit;
-extern uint64_t cached_base_test;  /* precomputed Get_Base_TEST() value */
+extern uint64_t cached_base_test; /* precomputed Get_Base_TEST() value */
 
 /* GP1(09h) - Allow 2MB VRAM */
 extern int gp1_allow_2mb;
@@ -157,10 +157,10 @@ extern uint32_t tex_win_off_x;
 extern uint32_t tex_win_off_y;
 
 /* Raw E-register values for GP1(10h) query responses */
-extern uint32_t raw_tex_window;     /* E2: bits 0-19 */
-extern uint32_t raw_draw_area_tl;   /* E3: bits 0-19 */
-extern uint32_t raw_draw_area_br;   /* E4: bits 0-19 */
-extern uint32_t raw_draw_offset;    /* E5: bits 0-21 */
+extern uint32_t raw_tex_window;   /* E2: bits 0-19 */
+extern uint32_t raw_draw_area_tl; /* E3: bits 0-19 */
+extern uint32_t raw_draw_area_br; /* E4: bits 0-19 */
+extern uint32_t raw_draw_offset;  /* E5: bits 0-21 */
 
 /* Immediate mode command buffer */
 extern int gpu_cmd_remaining;
@@ -261,14 +261,18 @@ void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uin
 void DumpVRAM(const char *filename);
 
 /* gpu_texture.c — CLUT texture decode + page-level cache */
-static inline uint32_t Apply_Tex_Window_U(uint32_t u) {
-    if (tex_win_mask_x == 0) return u;
+static inline uint32_t Apply_Tex_Window_U(uint32_t u)
+{
+    if (tex_win_mask_x == 0)
+        return u;
     uint32_t mask = tex_win_mask_x * 8;
     uint32_t off = (tex_win_off_x & tex_win_mask_x) * 8;
     return (u & ~mask) | off;
 }
-static inline uint32_t Apply_Tex_Window_V(uint32_t v) {
-    if (tex_win_mask_y == 0) return v;
+static inline uint32_t Apply_Tex_Window_V(uint32_t v)
+{
+    if (tex_win_mask_y == 0)
+        return v;
     uint32_t mask = tex_win_mask_y * 8;
     uint32_t off = (tex_win_off_y & tex_win_mask_y) * 8;
     return (v & ~mask) | off;

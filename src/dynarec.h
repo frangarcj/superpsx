@@ -305,10 +305,12 @@ void emit_abort_check(void);
 void emit_load_imm32(int hwreg, uint32_t val);
 
 void mark_vreg_const(int r, uint32_t val);
+void mark_vreg_const_lazy(int r, uint32_t val);
 void mark_vreg_var(int r);
 int is_vreg_const(int r);
 uint32_t get_vreg_const(int r);
 void reset_vregs(void);
+void flush_dirty_consts(void);
 
 /* ================================================================
  *  Function prototypes — dynarec_cache.c

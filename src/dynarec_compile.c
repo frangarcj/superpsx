@@ -122,29 +122,52 @@ static uint32_t gte_pipeline_cycles(uint32_t opcode)
     uint32_t gte_op = opcode & 0x3F;
     switch (gte_op)
     {
-    case 0x01: return 15; /* RTPS  */
-    case 0x06: return 8;  /* NCLIP */
-    case 0x0C: return 6;  /* OP    */
-    case 0x10: return 8;  /* DPCS  */
-    case 0x11: return 8;  /* INTPL */
-    case 0x12: return 8;  /* MVMVA */
-    case 0x13: return 19; /* NCDS  */
-    case 0x14: return 13; /* CDP   */
-    case 0x16: return 44; /* NCDT  */
-    case 0x1B: return 17; /* NCCS  */
-    case 0x1C: return 11; /* CC    */
-    case 0x1E: return 14; /* NCS   */
-    case 0x20: return 30; /* NCT   */
-    case 0x28: return 5;  /* SQR   */
-    case 0x29: return 8;  /* DCPL  */
-    case 0x2A: return 17; /* DPCT  */
-    case 0x2D: return 5;  /* AVSZ3 */
-    case 0x2E: return 6;  /* AVSZ4 */
-    case 0x30: return 23; /* RTPT  */
-    case 0x3D: return 5;  /* GPF   */
-    case 0x3E: return 5;  /* GPL   */
-    case 0x3F: return 39; /* NCCT  */
-    default:   return 8;  /* Unknown GTE */
+    case 0x01:
+        return 15; /* RTPS  */
+    case 0x06:
+        return 8; /* NCLIP */
+    case 0x0C:
+        return 6; /* OP    */
+    case 0x10:
+        return 8; /* DPCS  */
+    case 0x11:
+        return 8; /* INTPL */
+    case 0x12:
+        return 8; /* MVMVA */
+    case 0x13:
+        return 19; /* NCDS  */
+    case 0x14:
+        return 13; /* CDP   */
+    case 0x16:
+        return 44; /* NCDT  */
+    case 0x1B:
+        return 17; /* NCCS  */
+    case 0x1C:
+        return 11; /* CC    */
+    case 0x1E:
+        return 14; /* NCS   */
+    case 0x20:
+        return 30; /* NCT   */
+    case 0x28:
+        return 5; /* SQR   */
+    case 0x29:
+        return 8; /* DCPL  */
+    case 0x2A:
+        return 17; /* DPCT  */
+    case 0x2D:
+        return 5; /* AVSZ3 */
+    case 0x2E:
+        return 6; /* AVSZ4 */
+    case 0x30:
+        return 23; /* RTPT  */
+    case 0x3D:
+        return 5; /* GPF   */
+    case 0x3E:
+        return 5; /* GPL   */
+    case 0x3F:
+        return 39; /* NCCT  */
+    default:
+        return 8; /* Unknown GTE */
     }
 }
 
@@ -280,6 +303,9 @@ void emit_block_epilogue(void)
 
 void emit_branch_epilogue(uint32_t target_pc)
 {
+    /* Materialize any lazy constants before leaving the block */
+    flush_dirty_consts();
+
     /* Calculate remaining cycles after this block */
     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
 
@@ -323,7 +349,8 @@ uint32_t *compile_block(uint32_t psx_pc)
         patch_sites_count = 0;
         blocks_compiled = 0;
         /* Clear hash table — all native pointers are now stale */
-        for (int i = 0; i < JIT_HT_SIZE; i++) {
+        for (int i = 0; i < JIT_HT_SIZE; i++)
+        {
             jit_ht[i].psx_pc = 0xFFFFFFFF;
             jit_ht[i].native = NULL;
         }
@@ -434,8 +461,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             /* COP2 data transfer: any GTE register access (MFC2/CFC2/
              * MTC2/CTC2) while GTE is busy causes an interlock stall. */
             uint32_t rs = RS(opcode);
-            if ((rs == 0x00 || rs == 0x02 || rs == 0x04 || rs == 0x06)
-                && gte_stall_remaining > 0)
+            if ((rs == 0x00 || rs == 0x02 || rs == 0x04 || rs == 0x06) && gte_stall_remaining > 0)
             {
                 block_cycle_count += (uint32_t)(gte_stall_remaining + 1);
                 gte_stall_remaining = 0;
@@ -464,6 +490,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             /* Apply any pending load delay before the delay slot instruction */
             if (pending_load_reg != 0 && pending_load_apply_now)
             {
+                mark_vreg_var(pending_load_reg);
                 EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
                 emit_store_psx_reg(pending_load_reg, REG_T0);
                 pending_load_reg = 0;
@@ -488,6 +515,7 @@ uint32_t *compile_block(uint32_t psx_pc)
 
             if (pending_load_reg != 0)
             {
+                mark_vreg_var(pending_load_reg);
                 EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
                 emit_store_psx_reg(pending_load_reg, REG_T0);
                 pending_load_reg = 0;
@@ -507,6 +535,12 @@ uint32_t *compile_block(uint32_t psx_pc)
 
                 branch_opcode = (uint32_t)bp;
 
+                /* Save vreg state: flush_dirty_consts() inside
+                 * emit_branch_epilogue clears dirty flags at compile
+                 * time; we need the taken path to get its own flush. */
+                RegStatus saved_vregs[32];
+                memcpy(saved_vregs, vregs, sizeof(vregs));
+
                 /* Not taken: fall through PC */
                 emit_branch_epilogue(cur_pc);
 
@@ -514,17 +548,15 @@ uint32_t *compile_block(uint32_t psx_pc)
                 uint32_t *taken_addr = code_ptr;
                 int32_t offset = (int32_t)(taken_addr - bp - 1);
                 *bp = (*bp & 0xFFFF0000) | (offset & 0xFFFF);
+
+                /* Restore vreg state so taken path materializes its own consts */
+                memcpy(vregs, saved_vregs, sizeof(vregs));
                 emit_branch_epilogue(branch_target);
             }
             else if (branch_type == 3)
             {
-                /* Register jump (JR/JALR): Inline hash dispatch.
-                 * T0 = target PSX PC (stored in cpu.pc before delay slot).
-                 * Reload T0 from cpu.pc because the delay slot instruction
-                 * may have clobbered T0 as a scratch register.
-                 * Deduct block cycles, then jump to dispatch trampoline which
-                 * does inline hash table lookup.  Hit → direct jump to native.
-                 * Miss → falls through to abort trampoline (no regression). */
+                /* Register jump (JR/JALR): Inline hash dispatch. */
+                flush_dirty_consts();
                 EMIT_LW(REG_T0, CPU_PC, REG_S0);
                 EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
                 EMIT_J_ABS((uint32_t)jump_dispatch_trampoline_addr);
@@ -552,6 +584,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             {
                 if (pending_load_apply_now)
                 {
+                    mark_vreg_var(pending_load_reg);
                     EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
                     emit_store_psx_reg(pending_load_reg, REG_T0);
                     pending_load_reg = 0;
@@ -588,6 +621,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             {
                 if (pending_load_apply_now)
                 {
+                    mark_vreg_var(pending_load_reg);
                     EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
                     emit_store_psx_reg(pending_load_reg, REG_T0);
                     pending_load_reg = 0;
@@ -612,35 +646,48 @@ uint32_t *compile_block(uint32_t psx_pc)
 
             /* --- Compile-time branch folding --- */
             int folded = 0;
-            if (op == 0x04 || op == 0x05) {
+            if (op == 0x04 || op == 0x05)
+            {
                 /* BEQ / BNE: both rs and rt must be known */
-                if (is_vreg_const(rs) && is_vreg_const(rt)) {
+                if (is_vreg_const(rs) && is_vreg_const(rt))
+                {
                     uint32_t vs = get_vreg_const(rs), vt = get_vreg_const(rt);
                     int taken = (op == 0x04) ? (vs == vt) : (vs != vt);
-                    if (!taken) branch_target = cur_pc + 8; /* fall through */
+                    if (!taken)
+                        branch_target = cur_pc + 8; /* fall through */
                     folded = 1;
                 }
-            } else if (op == 0x06 || op == 0x07) {
+            }
+            else if (op == 0x06 || op == 0x07)
+            {
                 /* BLEZ / BGTZ: only rs */
-                if (is_vreg_const(rs)) {
+                if (is_vreg_const(rs))
+                {
                     int32_t vs = (int32_t)get_vreg_const(rs);
                     int taken = (op == 0x06) ? (vs <= 0) : (vs > 0);
-                    if (!taken) branch_target = cur_pc + 8;
+                    if (!taken)
+                        branch_target = cur_pc + 8;
                     folded = 1;
                 }
             }
 
-            if (folded) {
+            if (folded)
+            {
                 /* Resolved at compile time → unconditional branch */
                 branch_type = 1;
                 in_delay_slot = 1;
-                if (pending_load_reg != 0) {
-                    if (pending_load_apply_now) {
+                if (pending_load_reg != 0)
+                {
+                    if (pending_load_apply_now)
+                    {
+                        mark_vreg_var(pending_load_reg);
                         EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
                         emit_store_psx_reg(pending_load_reg, REG_T0);
                         pending_load_reg = 0;
                         pending_load_apply_now = 0;
-                    } else {
+                    }
+                    else
+                    {
                         pending_load_apply_now = 1;
                     }
                 }
@@ -676,6 +723,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             {
                 if (pending_load_apply_now)
                 {
+                    mark_vreg_var(pending_load_reg);
                     EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
                     emit_store_psx_reg(pending_load_reg, REG_T0);
                     pending_load_reg = 0;
@@ -699,25 +747,33 @@ uint32_t *compile_block(uint32_t psx_pc)
             branch_target = cur_pc + 4 + offset;
 
             /* --- Compile-time folding for BLTZ/BGEZ/BLTZAL/BGEZAL --- */
-            if (is_vreg_const(rs)) {
+            if (is_vreg_const(rs))
+            {
                 int32_t vs = (int32_t)get_vreg_const(rs);
                 int taken = ((rt & 1) == 0) ? (vs < 0) : (vs >= 0);
-                if (!taken) branch_target = cur_pc + 8;
+                if (!taken)
+                    branch_target = cur_pc + 8;
                 /* Link variants still write $ra */
-                if (rt == 0x10 || rt == 0x11) {
+                if (rt == 0x10 || rt == 0x11)
+                {
                     mark_vreg_const(31, cur_pc + 8);
                     emit_load_imm32(REG_T1, cur_pc + 8);
                     emit_store_psx_reg(31, REG_T1);
                 }
                 branch_type = 1;
                 in_delay_slot = 1;
-                if (pending_load_reg != 0) {
-                    if (pending_load_apply_now) {
+                if (pending_load_reg != 0)
+                {
+                    if (pending_load_apply_now)
+                    {
+                        mark_vreg_var(pending_load_reg);
                         EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
                         emit_store_psx_reg(pending_load_reg, REG_T0);
                         pending_load_reg = 0;
                         pending_load_apply_now = 0;
-                    } else {
+                    }
+                    else
+                    {
                         pending_load_apply_now = 1;
                     }
                 }
@@ -731,6 +787,7 @@ uint32_t *compile_block(uint32_t psx_pc)
 
             if (rt == 0x10 || rt == 0x11)
             {
+                mark_vreg_const(31, cur_pc + 8);
                 emit_load_imm32(REG_T1, cur_pc + 8);
                 emit_store_psx_reg(31, REG_T1);
             }
@@ -752,6 +809,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             {
                 if (pending_load_apply_now)
                 {
+                    mark_vreg_var(pending_load_reg);
                     EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
                     emit_store_psx_reg(pending_load_reg, REG_T0);
                     pending_load_reg = 0;
@@ -805,6 +863,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                 }
                 else
                 {
+                    mark_vreg_var(pending_load_reg);
                     EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
                     emit_store_psx_reg(pending_load_reg, REG_T0);
                     pending_load_reg = 0;
@@ -839,6 +898,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             {
                 if (pending_load_reg != 0 && pending_load_reg != load_target)
                 {
+                    mark_vreg_var(pending_load_reg);
                     EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
                     emit_store_psx_reg(pending_load_reg, REG_T0);
                 }
@@ -854,6 +914,7 @@ uint32_t *compile_block(uint32_t psx_pc)
         {
             if (pending_load_reg != 0)
             {
+                mark_vreg_var(pending_load_reg);
                 EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
                 emit_store_psx_reg(pending_load_reg, REG_T0);
                 pending_load_reg = 0;
@@ -931,7 +992,8 @@ uint32_t *compile_block(uint32_t psx_pc)
             /* Hash all PSX opcodes for self-modifying code detection */
             uint32_t *opcodes = get_psx_code_ptr(psx_pc);
             uint32_t hash = 0;
-            if (opcodes) {
+            if (opcodes)
+            {
                 for (uint32_t i = 0; i < block_instr_count; i++)
                     hash = (hash << 5) + hash + opcodes[i]; /* djb2 */
             }

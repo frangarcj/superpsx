@@ -166,6 +166,9 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
          */
         if (phys == 0x1F801814 && size == 4)
         {
+            /* Flush lazy consts before conditional fast/slow split
+             * to prevent compile-time dirty-flag leak across paths */
+            flush_dirty_consts();
             /* Check gpu_busy_until == 0 (both halves) */
             emit_load_imm32(REG_T2, (uint32_t)&gpu_busy_until);
             EMIT_LW(REG_T1, 0, REG_T2);      /* t1 = low 32 bits  */
@@ -232,6 +235,10 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     /* Compute effective address into REG_T0 */
     emit_load_psx_reg(REG_T0, rs_psx);
     EMIT_ADDIU(REG_T0, REG_T0, offset);
+
+    /* Flush lazy consts before conditional fast/slow split
+     * to prevent compile-time dirty-flag leak across paths */
+    flush_dirty_consts();
 
     /*
      * LUT-based fast path (64KB virtual pages):
@@ -321,6 +328,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     }
 
     /* Use shared mem_slow_trampoline: A0=addr, T0=func, T2=psx_pc, T1=cycle_off */
+    flush_dirty_consts();
     EMIT_MOVE(REG_A0, REG_T0);
     {
         uint32_t func_addr;
@@ -444,6 +452,8 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
          */
         if (phys == 0x1F801040)
         {
+            /* Flush lazy consts before conditional fast/slow split */
+            flush_dirty_consts();
             /* Check sio_selected == 0 */
             emit_load_imm32(REG_T1, (uint32_t)&sio_selected);
             EMIT_LW(REG_T1, 0, REG_T1);
@@ -503,6 +513,10 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     emit_load_psx_reg(REG_T0, rs_psx);
     EMIT_ADDIU(REG_T0, REG_T0, offset);
     emit_load_psx_reg(REG_T2, rt_psx); /* data value */
+
+    /* Flush lazy consts before conditional fast/slow split
+     * to prevent compile-time dirty-flag leak across paths */
+    flush_dirty_consts();
 
     /* Cache Isolation check: if SR.IsC (bit 16) is set, writes to KUSEG/KSEG0
      * must be ignored (it's a cache invalidation, not a real RAM write).
@@ -568,6 +582,7 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     }
 
     /* Use shared mem_slow_trampoline: A0=addr, A1=data, T0=func, T2=psx_pc, T1=cycle_off */
+    flush_dirty_consts();
     EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
     EMIT_MOVE(REG_A1, REG_T2); /* a1 = data */
     {
@@ -614,6 +629,9 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
     emit_load_psx_reg(REG_T0, rs_psx);
     EMIT_ADDIU(REG_T0, REG_T0, offset);
 
+    /* Flush lazy consts before conditional fast/slow split */
+    flush_dirty_consts();
+
     /* LUT lookup (64KB virtual pages, S3 = mem_lut) */
     emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* srl  t1, t0, 16       */
     emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00));  /* sll  t1, t1, 2        */
@@ -640,6 +658,7 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
     *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff_lut & 0xFFFF);
 
     /* Use shared mem_slow_trampoline: A0=addr, A1=cur_rt, T0=func, T2=psx_pc, T1=cycle_off */
+    flush_dirty_consts();
     EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
     EMIT_MOVE(REG_A1, REG_V0); /* a1 = cur_rt */
     emit_load_imm32(REG_T0, is_left ? (uint32_t)Helper_LWL : (uint32_t)Helper_LWR);
@@ -674,6 +693,9 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     emit_load_psx_reg(REG_T0, rs_psx);
     EMIT_ADDIU(REG_T0, REG_T0, offset);
     emit_load_psx_reg(REG_T2, rt_psx);
+
+    /* Flush lazy consts before conditional fast/slow split */
+    flush_dirty_consts();
 
     /* Cache Isolation check */
     EMIT_LW(REG_A0, CPU_COP0(12), REG_S0);
@@ -713,6 +735,7 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     *isc_branch = (*isc_branch & 0xFFFF0000) | ((uint32_t)soff0 & 0xFFFF);
 
     /* Use shared mem_slow_trampoline: A0=addr, A1=data, T0=func, T2=psx_pc, T1=cycle_off */
+    flush_dirty_consts();
     EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
     EMIT_MOVE(REG_A1, REG_T2); /* a1 = rt_val */
     emit_load_imm32(REG_T0, is_left ? (uint32_t)Helper_SWL : (uint32_t)Helper_SWR);

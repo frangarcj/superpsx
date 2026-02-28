@@ -8,19 +8,19 @@
 #define LOG_TAG "SIO"
 
 /* Joypad/Memcard interface — non-static for JIT inline fast paths */
-uint32_t sio_data = 0xFF;              /* RX Data register */
-uint32_t sio_stat = 0x00000005;        /* TX Ready 1+2 */
+uint32_t sio_data = 0xFF;       /* RX Data register */
+uint32_t sio_stat = 0x00000005; /* TX Ready 1+2 */
 static uint16_t sio_mode = 0;
 static uint16_t sio_ctrl = 0;
 static uint16_t sio_baud = 0;
-int sio_tx_pending = 0;                /* 1 = RX data available */
+int sio_tx_pending = 0; /* 1 = RX data available */
 
 /* Controller protocol state machine — partially exposed for JIT */
-int sio_state = 0;                     /* Current byte index in protocol */
-static uint8_t sio_response[20];       /* Pre-built response buffer */
-int sio_response_len = 0;              /* Number of valid bytes in sio_response */
-int sio_selected = 0;                  /* 1 = JOY SELECT is asserted */
-static int sio_port = 0;               /* 0 = PSX port 1, 1 = PSX port 2 */
+int sio_state = 0;               /* Current byte index in protocol */
+static uint8_t sio_response[20]; /* Pre-built response buffer */
+int sio_response_len = 0;        /* Number of valid bytes in sio_response */
+int sio_selected = 0;            /* 1 = JOY SELECT is asserted */
+static int sio_port = 0;         /* 0 = PSX port 1, 1 = PSX port 2 */
 
 /* SIO Serial Port (0x1F801050-0x1F80105E) */
 static uint16_t serial_mode = 0;
@@ -51,9 +51,10 @@ static inline void sio_cancel_irq(void)
     Scheduler_RemoveEvent(SCHED_EVENT_SIO_IRQ);
 }
 
-uint32_t SIO_Read(uint32_t phys)   /* caller passes physical addr */
+uint32_t SIO_Read(uint32_t phys) /* caller passes physical addr */
 {
-    switch (phys - 0x1F801040) {
+    switch (phys - 0x1F801040)
+    {
     case 0x00: /* SIO_DATA */
     {
         uint32_t val = sio_data;
@@ -91,9 +92,10 @@ uint32_t SIO_Read(uint32_t phys)   /* caller passes physical addr */
     }
 }
 
-void SIO_Write(uint32_t phys, uint32_t data)   /* caller passes physical addr */
+void SIO_Write(uint32_t phys, uint32_t data) /* caller passes physical addr */
 {
-    switch (phys - 0x1F801040) {
+    switch (phys - 0x1F801040)
+    {
     case 0x00: /* 0x1F801040: SIO_DATA */
     {
         uint8_t tx = (uint8_t)(data & 0xFF);
@@ -121,14 +123,14 @@ void SIO_Write(uint32_t phys, uint32_t data)   /* caller passes physical addr */
                         {
                             uint8_t pad[3];
                             Joystick_GetPSXDigitalResponse(sio_port, slot, pad);
-                            sio_response[base]     = pad[0];
+                            sio_response[base] = pad[0];
                             sio_response[base + 1] = 0x5A;
                             sio_response[base + 2] = pad[1];
                             sio_response[base + 3] = pad[2];
                         }
                         else
                         {
-                            sio_response[base]     = 0xFF;
+                            sio_response[base] = 0xFF;
                             sio_response[base + 1] = 0xFF;
                             sio_response[base + 2] = 0xFF;
                             sio_response[base + 3] = 0xFF;
@@ -185,11 +187,17 @@ void SIO_Write(uint32_t phys, uint32_t data)   /* caller passes physical addr */
         sio_ctrl = (uint16_t)data;
         if (data & 0x40)
         {
-            sio_ctrl = 0; sio_mode = 0; sio_baud = 0;
-            sio_tx_pending = 0; sio_state = 0;
-            sio_response_len = 0; sio_selected = 0;
-            sio_port = 0; sio_data = 0xFF;
-            sio_irq_pending = 0; sio_cancel_irq();
+            sio_ctrl = 0;
+            sio_mode = 0;
+            sio_baud = 0;
+            sio_tx_pending = 0;
+            sio_state = 0;
+            sio_response_len = 0;
+            sio_selected = 0;
+            sio_port = 0;
+            sio_data = 0xFF;
+            sio_irq_pending = 0;
+            sio_cancel_irq();
             return;
         }
         if (data & 0x10)
@@ -205,13 +213,16 @@ void SIO_Write(uint32_t phys, uint32_t data)   /* caller passes physical addr */
         sio_port = (data >> 13) & 1;
         if (data & 0x02)
         {
-            if (!sio_selected) sio_state = 0;
+            if (!sio_selected)
+                sio_state = 0;
             sio_selected = 1;
         }
         else
         {
-            sio_selected = 0; sio_state = 0;
-            sio_irq_pending = 0; sio_cancel_irq();
+            sio_selected = 0;
+            sio_state = 0;
+            sio_irq_pending = 0;
+            sio_cancel_irq();
         }
         return;
     }
@@ -223,11 +234,15 @@ void SIO_Write(uint32_t phys, uint32_t data)   /* caller passes physical addr */
         return;
     case 0x1A: /* 0x1F80105A: Serial CTRL */
         serial_ctrl = (uint16_t)data;
-        if (data & 0x40) { serial_ctrl = 0; serial_mode = 0; serial_baud = 0; }
+        if (data & 0x40)
+        {
+            serial_ctrl = 0;
+            serial_mode = 0;
+            serial_baud = 0;
+        }
         return;
     case 0x1E: /* 0x1F80105E: Serial BAUD */
         serial_baud = (uint16_t)data;
         return;
     }
 }
-
