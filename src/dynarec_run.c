@@ -706,7 +706,7 @@ static inline int run_jit_chain(uint64_t deadline)
             idle_skip_pc = pc;
             idle_skip_count = 0;
         }
-        uint32_t threshold = (be->is_idle == 1) ? 1 : ((pc >= 0xBFC00000) ? 2048 : 0x7FFFFFFF);
+        uint32_t threshold = (be->is_idle == 1) ? 1 : 2;
         if (++idle_skip_count >= threshold)
         {
             if (deadline > global_cycles)
