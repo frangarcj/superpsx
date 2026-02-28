@@ -219,6 +219,7 @@ extern uint32_t emit_current_psx_pc;
 extern int dynarec_load_defer;
 extern int dynarec_lwx_pending;
 extern RegStatus vregs[32];
+extern uint32_t dirty_const_mask;  /* Bitmask of dirty const vregs */
 
 /* ================================================================
  *  Shared state — stats / perf

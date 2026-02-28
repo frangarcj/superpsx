@@ -539,6 +539,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                  * emit_branch_epilogue clears dirty flags at compile
                  * time; we need the taken path to get its own flush. */
                 RegStatus saved_vregs[32];
+                uint32_t saved_dirty_mask = dirty_const_mask;
                 memcpy(saved_vregs, vregs, sizeof(vregs));
 
                 /* Not taken: fall through PC */
@@ -551,6 +552,7 @@ uint32_t *compile_block(uint32_t psx_pc)
 
                 /* Restore vreg state so taken path materializes its own consts */
                 memcpy(vregs, saved_vregs, sizeof(vregs));
+                dirty_const_mask = saved_dirty_mask;
                 emit_branch_epilogue(branch_target);
             }
             else if (branch_type == 3)

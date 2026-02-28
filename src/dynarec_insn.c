@@ -272,33 +272,75 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             }
             EMIT_SW(REG_T0, CPU_HI, REG_S0);
             break;
-        case 0x1A: /* DIV */
+        case 0x1A: /* DIV — inline with div-by-zero handling */
         {
-            emit_load_psx_reg(REG_A0, rs);
-            emit_load_psx_reg(REG_A1, rt);
-            EMIT_ADDIU(6, REG_S0, CPU_LO);
-            EMIT_ADDIU(7, REG_S0, CPU_HI);
-            emit_call_c((uint32_t)Helper_DIV);
+            emit_load_psx_reg(REG_T0, rs);
+            emit_load_psx_reg(REG_T1, rt);
+            /* Branch over division if divisor == 0 */
+            EMIT_BEQ(REG_T1, REG_ZERO, 7); /* skip 7 insns to @divz */
+            EMIT_NOP();
+            /* Common path: native signed divide */
+            emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x1A)); /* div t0, t1 */
+            emit(MK_R(0, 0, 0, REG_T2, 0, 0x12));       /* mflo t2 */
+            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));       /* mfhi t0 */
+            EMIT_SW(REG_T2, CPU_LO, REG_S0);
+            uint32_t *b_end_div = code_ptr;
+            emit(MK_I(4, REG_ZERO, REG_ZERO, 0)); /* beq zero,zero,@end (placeholder) */
+            EMIT_SW(REG_T0, CPU_HI, REG_S0); /* delay slot */
+            /* @divz: lo = (rs >= 0) ? -1 : 1, hi = rs */
+            EMIT_SW(REG_T0, CPU_HI, REG_S0); /* hi = rs (T0 still has rs) */
+            emit(MK_R(0, 0, REG_T0, REG_T1, 31, 0x03)); /* sra t1, t0, 31 */
+            emit(MK_R(0, 0, REG_T1, REG_T1, 1, 0x00));  /* sll t1, t1, 1  */
+            emit(MK_R(0, REG_T1, REG_ZERO, REG_T1, 0, 0x27)); /* nor t1, t1, zero */
+            EMIT_SW(REG_T1, CPU_LO, REG_S0); /* lo = result */
+            /* @end: patch the branch */
+            {
+                int32_t off = (int32_t)(code_ptr - b_end_div - 1);
+                *b_end_div = (*b_end_div & 0xFFFF0000) | (off & 0xFFFF);
+            }
             break;
         }
-        case 0x1B: /* DIVU */
+        case 0x1B: /* DIVU — inline with div-by-zero handling */
         {
-            emit_load_psx_reg(REG_A0, rs);
-            emit_load_psx_reg(REG_A1, rt);
-            EMIT_ADDIU(6, REG_S0, CPU_LO);
-            EMIT_ADDIU(7, REG_S0, CPU_HI);
-            emit_call_c((uint32_t)Helper_DIVU);
+            emit_load_psx_reg(REG_T0, rs);
+            emit_load_psx_reg(REG_T1, rt);
+            /* Branch over division if divisor == 0 */
+            EMIT_BEQ(REG_T1, REG_ZERO, 7); /* skip 7 insns to @divz */
+            EMIT_NOP();
+            /* Common path: native unsigned divide */
+            emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x1B)); /* divu t0, t1 */
+            emit(MK_R(0, 0, 0, REG_T2, 0, 0x12));       /* mflo t2 */
+            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));       /* mfhi t0 */
+            EMIT_SW(REG_T2, CPU_LO, REG_S0);
+            uint32_t *b_end_divu = code_ptr;
+            emit(MK_I(4, REG_ZERO, REG_ZERO, 0)); /* beq zero,zero,@end (placeholder) */
+            EMIT_SW(REG_T0, CPU_HI, REG_S0); /* delay slot */
+            /* @divz: lo = 0xFFFFFFFF, hi = rs */
+            EMIT_SW(REG_T0, CPU_HI, REG_S0); /* hi = rs (T0 still has rs) */
+            EMIT_ADDIU(REG_T0, REG_ZERO, -1); /* t0 = 0xFFFFFFFF */
+            EMIT_SW(REG_T0, CPU_LO, REG_S0); /* lo = 0xFFFFFFFF */
+            /* @end: patch the branch */
+            {
+                int32_t off = (int32_t)(code_ptr - b_end_divu - 1);
+                *b_end_divu = (*b_end_divu & 0xFFFF0000) | (off & 0xFFFF);
+            }
             break;
         }
-        case 0x20: /* ADD (with overflow check) */
+        case 0x20: /* ADD — treat as ADDU (overflow exceptions extremely rare in PSX games) */
+        {
+            if (is_vreg_const(rs) && is_vreg_const(rt))
+            {
+                mark_vreg_const_lazy(rd, get_vreg_const(rs) + get_vreg_const(rt));
+                break;
+            }
             mark_vreg_var(rd);
-            emit_load_psx_reg(REG_A0, rs);
-            emit_load_psx_reg(REG_A1, rt);
-            emit_load_imm32(6, rd);
-            emit_load_imm32(7, psx_pc);
-            emit_call_c((uint32_t)Helper_ADD);
-            emit_abort_check();
+            int s1 = emit_use_reg(rs, REG_T0);
+            int s2 = emit_use_reg(rt, REG_T1);
+            int d = emit_dst_reg(rd, REG_T0);
+            EMIT_ADDU(d, s1, s2);
+            emit_sync_reg(rd, d);
             break;
+        }
         case 0x21: /* ADDU */
         {
             if (is_vreg_const(rs) && is_vreg_const(rt))
@@ -314,15 +356,21 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_sync_reg(rd, d);
             break;
         }
-        case 0x22: /* SUB (with overflow check) */
+        case 0x22: /* SUB — treat as SUBU (overflow exceptions extremely rare in PSX games) */
+        {
+            if (is_vreg_const(rs) && is_vreg_const(rt))
+            {
+                mark_vreg_const_lazy(rd, get_vreg_const(rs) - get_vreg_const(rt));
+                break;
+            }
             mark_vreg_var(rd);
-            emit_load_psx_reg(REG_A0, rs);
-            emit_load_psx_reg(REG_A1, rt);
-            emit_load_imm32(6, rd);
-            emit_load_imm32(7, psx_pc);
-            emit_call_c((uint32_t)Helper_SUB);
-            emit_abort_check();
+            int s1 = emit_use_reg(rs, REG_T0);
+            int s2 = emit_use_reg(rt, REG_T1);
+            int d = emit_dst_reg(rd, REG_T0);
+            emit(MK_R(0, s1, s2, d, 0, 0x23)); /* subu */
+            emit_sync_reg(rd, d);
             break;
+        }
         case 0x23: /* SUBU */
         {
             if (is_vreg_const(rs) && is_vreg_const(rt))
@@ -436,15 +484,18 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         break;
 
     /* I-type ALU */
-    case 0x08: /* ADDI (with overflow check) */
+    case 0x08: /* ADDI — treat as ADDIU (overflow exceptions extremely rare in PSX games) */
     {
+        if (is_vreg_const(rs))
+        {
+            mark_vreg_const_lazy(rt, get_vreg_const(rs) + imm);
+            break;
+        }
         mark_vreg_var(rt);
-        emit_load_psx_reg(REG_A0, rs);
-        emit_load_imm32(REG_A1, (uint32_t)(int32_t)imm);
-        emit_load_imm32(6, rt);
-        emit_load_imm32(7, psx_pc);
-        emit_call_c((uint32_t)Helper_ADDI);
-        emit_abort_check();
+        int s = emit_use_reg(rs, REG_T0);
+        int d = emit_dst_reg(rt, REG_T0);
+        EMIT_ADDIU(d, s, imm);
+        emit_sync_reg(rt, d);
         break;
     }
     case 0x09: /* ADDIU */

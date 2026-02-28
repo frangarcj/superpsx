@@ -24,6 +24,7 @@ const int psx_pinned_reg[32] = {
 };
 
 RegStatus vregs[32];
+uint32_t dirty_const_mask;
 
 /* Load PSX register 'r' from cpu struct into hw reg 'hwreg' */
 void emit_load_psx_reg(int hwreg, int r)
@@ -42,6 +43,7 @@ void emit_load_psx_reg(int hwreg, int r)
         else if (!psx_pinned_reg[r])
             EMIT_SW(hwreg, CPU_REG(r), REG_S0);
         vregs[r].is_dirty = 0;
+        dirty_const_mask &= ~(1u << r);
     }
     else if (psx_pinned_reg[r])
     {
@@ -66,6 +68,7 @@ int emit_use_reg(int r, int scratch)
         if (!psx_pinned_reg[r])
             EMIT_SW(dst, CPU_REG(r), REG_S0);
         vregs[r].is_dirty = 0;
+        dirty_const_mask &= ~(1u << r);
         return dst;
     }
     if (psx_pinned_reg[r])
@@ -110,9 +113,13 @@ void emit_sync_reg(int r, int host_reg)
  * memory slow paths when flush_dirty_consts is called. */
 void flush_dirty_consts(void)
 {
-    int r;
-    for (r = 1; r < 32; r++)
-    {
+    if (dirty_const_mask == 0)
+        return;
+    uint32_t mask = dirty_const_mask;
+    dirty_const_mask = 0;
+    while (mask) {
+        int r = __builtin_ctz(mask);
+        mask &= mask - 1;
         if (vregs[r].is_const && vregs[r].is_dirty)
         {
             if (psx_pinned_reg[r])
@@ -128,6 +135,7 @@ void flush_dirty_consts(void)
         }
     }
 }
+
 
 /* Flush pinned PSX registers to cpu struct before JAL to C helpers.
  * This ensures cpu.regs[] is consistent for C code and exception handlers. */
@@ -265,6 +273,7 @@ void mark_vreg_const_lazy(int r, uint32_t val)
     vregs[r].is_const = 1;
     vregs[r].value = val;
     vregs[r].is_dirty = 1;
+    dirty_const_mask |= (1u << r);
 }
 
 void mark_vreg_var(int r)
@@ -289,6 +298,7 @@ void mark_vreg_var(int r)
     }
     vregs[r].is_const = 0;
     vregs[r].is_dirty = 0;
+    dirty_const_mask &= ~(1u << r);
 }
 
 int is_vreg_const(int r)
@@ -308,6 +318,7 @@ uint32_t get_vreg_const(int r)
 void reset_vregs(void)
 {
     memset(vregs, 0, sizeof(vregs));
+    dirty_const_mask = 0;
     /* $0 is special, but memset already handles it by setting is_const=0.
      * However, is_vreg_const(0) handles it specifically. */
 }
