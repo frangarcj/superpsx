@@ -258,7 +258,14 @@ void profiler_frame_end(uint64_t psx_cycles_this_frame)
         prof.jit_blocks = 0;
         prof.jit_compiles = 0;
         prof.gpu_pixels = 0;
-        prof.stack_depth = 0;
+        /* Keep stack intact — callers still have pending PROF_POP.
+         * Reset all entry times to prevent old-interval time
+         * from bleeding into the new accumulator period. */
+        {
+            clock_t rst = clock();
+            for (int i = 0; i < prof.stack_depth; i++)
+                prof.stack_enter[i] = rst;
+        }
     }
 }
 
