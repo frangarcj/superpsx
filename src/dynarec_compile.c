@@ -378,6 +378,7 @@ uint32_t *compile_block(uint32_t psx_pc)
     }
 
     reset_vregs();
+    cold_slow_reset();
     emit_block_prologue();
 
     /* Inject BIOS HLE hooks natively so that DBL jumps do not bypass them */
@@ -922,6 +923,9 @@ uint32_t *compile_block(uint32_t psx_pc)
             block_ended = 1;
         }
     }
+
+    /* Emit all deferred (cold) slow paths at the end of the block */
+    cold_slow_emit_all();
 
     if (blocks_compiled < 5)
     {
