@@ -187,7 +187,7 @@ void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
 
 /* ── Main GP0 → GS translator ────────────────────────────────────── */
 
-void Translate_GP0_to_GS(uint32_t *psx_cmd)
+int Translate_GP0_to_GS(uint32_t *psx_cmd)
 {
     uint32_t cmd_word = psx_cmd[0];
     uint32_t cmd = (cmd_word >> 24) & 0xFF;
@@ -674,6 +674,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
             }
             /* No state restore — lazy tracking handles next primitive */
         }
+        return idx;
     }
     else if ((cmd & 0xE0) == 0x60)
     {                       // Rectangle (Sprite) - use GS SPRITE primitive for reliable rendering
@@ -1043,6 +1044,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
 
             Push_GIF_Data(GS_SET_DTHE(dither_enabled), GS_REG_DTHE);
         }
+        return idx;
     }
     else if (cmd == 0x02)
     { // FillRect
@@ -1088,15 +1090,26 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
             vram_gen_counter++;
             Tex_Cache_DirtyRegion(x, y, w, h);
             uint16_t psx_color = ((r >> 3) & 0x1F) | (((g >> 3) & 0x1F) << 5) | (((b >> 3) & 0x1F) << 10);
-            for (int row = y; row < y + h && row < 512; row++)
+            uint32_t fill32 = (uint32_t)psx_color | ((uint32_t)psx_color << 16);
+            uint64_t fill64 = (uint64_t)fill32 | ((uint64_t)fill32 << 32);
+            int end_y = (y + h < 512) ? y + h : 512;
+            int end_x = (x + w < 1024) ? x + w : 1024;
+            int fill_w = end_x - x;
+            for (int row = y; row < end_y; row++)
             {
-                for (int col = x; col < x + w && col < 1024; col++)
-                {
-                    psx_vram_shadow[row * 1024 + col] = psx_color;
-                }
+                uint16_t *row_ptr = &psx_vram_shadow[row * 1024 + x];
+                int col = 0;
+                /* Fill 4 pixels (64 bits) at a time */
+                int bulk = fill_w & ~3;
+                for (; col < bulk; col += 4)
+                    *(uint64_t *)&row_ptr[col] = fill64;
+                /* Fill remaining pixels */
+                for (; col < fill_w; col++)
+                    row_ptr[col] = psx_color;
             }
         }
-    fillrect_done:;
+    fillrect_done:
+        return 3;
     }
     else if ((cmd & 0xE0) == 0x40)
     {                       // Line
@@ -1119,5 +1132,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
         int16_t y1 = (int16_t)(xy1 >> 16);
 
         Emit_Line_Segment_AD(x0, y0, color0, x1, y1, color1, is_shaded, is_semi_trans);
+        return idx;
     }
+    return 1; /* Unknown command — consume 1 word */
 }

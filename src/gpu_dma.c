@@ -25,14 +25,6 @@ uint64_t gpu_busy_until = 0;
  * We use a uniform ~2 CPU cycles per pixel as a rough average.             */
 #define GPU_CYCLES_PER_PIXEL 2
 
-/* ── Helper: read a 32-bit word from PSX RAM ─────────────────────── */
-
-static uint32_t GPU_GetWord(uint32_t addr)
-{
-    addr &= 0x1FFFFC;
-    return *(uint32_t *)&psx_ram[addr];
-}
-
 /* ── DMA Channel 2 entry point ───────────────────────────────────── */
 
 void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
@@ -142,7 +134,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
         while (packets < max_packets)
         {
             uint32_t packet_addr = addr;
-            uint32_t header = GPU_GetWord(addr);
+            uint32_t header = *(uint32_t *)&psx_ram[addr];
             uint32_t count = header >> 24;
             uint32_t next = header & 0xFFFFFF;
             total_dma_words += count + 1; /* +1 for the header word */
@@ -153,91 +145,97 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                 break;
             }
 
-            addr += 4;
-            for (uint32_t i = 0; i < count;)
+            addr = (addr + 4) & 0x1FFFFC;
+
+            /* ── Polyline-active: rare slow path, word-by-word ── */
+            if (polyline_active)
             {
-                if (polyline_active)
+                for (uint32_t i = 0; i < count; i++)
                 {
-                    uint32_t word = GPU_GetWord(addr);
-                    GPU_WriteGP0(word);
-                    i++;
-                    addr += 4;
-                    continue;
+                    GPU_WriteGP0(*(uint32_t *)&psx_ram[addr]);
+                    addr = (addr + 4) & 0x1FFFFC;
                 }
-
-                uint32_t cmd_word = GPU_GetWord(addr);
-                uint32_t cmd_byte = cmd_word >> 24;
-
-                if ((cmd_byte & 0xE0) == 0x40)
+            }
+            else
+            {
+                /* ── Fast inner loop: direct pointer reads, no polyline check ── */
+                for (uint32_t i = 0; i < count;)
                 {
-                    while (i < count)
+                    uint32_t *cmd_ptr = (uint32_t *)&psx_ram[addr];
+                    uint32_t cmd_word = cmd_ptr[0];
+                    uint32_t cmd_byte = cmd_word >> 24;
+
+                    if (cmd_byte >= 0x20 && cmd_byte <= 0x7F)
                     {
-                        GPU_WriteGP0(GPU_GetWord(addr));
-                        i++;
-                        addr += 4;
-                        if (gpu_cmd_remaining == 0 && gpu_transfer_words == 0 && !polyline_active)
-                            break;
+                        /* Polyline lines: must go word-by-word for state machine */
+                        if ((cmd_byte & 0xE8) == 0x48)
+                        {
+                            while (i < count)
+                            {
+                                GPU_WriteGP0(*(uint32_t *)&psx_ram[addr]);
+                                i++;
+                                addr = (addr + 4) & 0x1FFFFC;
+                                if (gpu_cmd_remaining == 0 && gpu_transfer_words == 0 && !polyline_active)
+                                    break;
+                            }
+                        }
+                        else
+                        {
+                            /* Polygons, rects, non-polyline lines → fast translate */
+                            int size = Translate_GP0_to_GS(cmd_ptr);
+                            i += size;
+                            addr = (addr + size * 4) & 0x1FFFFC;
+                        }
                     }
-                }
-                else if (cmd_byte >= 0x20 && cmd_byte <= 0x7F)
-                {
-                    uint32_t *cmd_ptr = (uint32_t *)&psx_ram[addr];
-
-                    Translate_GP0_to_GS(cmd_ptr);
-
-                    int size = GPU_GetCommandSize(cmd_word >> 24);
-                    i += size;
-                    addr += (size * 4);
-                }
-                else if ((cmd_word >> 24) == 0x02)
-                {
-                    uint32_t *cmd_ptr = (uint32_t *)&psx_ram[addr];
-
-                    Translate_GP0_to_GS(cmd_ptr);
-
-                    int size = 3;
-                    i += size;
-                    addr += (size * 4);
-                }
-                else if ((cmd_word >> 24) == 0xA0)
-                {
-                    uint32_t coords = GPU_GetWord(addr + 4);
-                    uint32_t dims = GPU_GetWord(addr + 8);
-                    uint32_t image_words = ((dims & 0xFFFF) * (dims >> 16)) / 2;
-
-                    // Procesar por vía rápida solo si el bloque está completo en este paquete
-                    if (3 + image_words <= count - i)
+                    else if (cmd_byte == 0x02)
                     {
-                        GS_UploadRegionFast(coords, dims, (uint32_t *)(psx_ram + ((addr + 12) & 0x1FFFFC)), image_words);
-                        uint32_t skip = 3 + image_words;
-                        i += skip;
-                        addr += (skip * 4);
+                        /* Fill-rect → fast translate */
+                        int size = Translate_GP0_to_GS(cmd_ptr);
+                        i += size;
+                        addr = (addr + size * 4) & 0x1FFFFC;
+                    }
+                    else if (cmd_byte == 0xA0)
+                    {
+                        uint32_t coords = cmd_ptr[1];
+                        uint32_t dims = cmd_ptr[2];
+                        uint32_t image_words = ((dims & 0xFFFF) * (dims >> 16)) / 2;
+
+                        /* Fast path only if the entire image block fits in this packet */
+                        if (3 + image_words <= count - i)
+                        {
+                            GS_UploadRegionFast(coords, dims, (uint32_t *)(psx_ram + ((addr + 12) & 0x1FFFFC)), image_words);
+                            uint32_t skip = 3 + image_words;
+                            i += skip;
+                            addr = (addr + skip * 4) & 0x1FFFFC;
+                        }
+                        else
+                        {
+                            /* Fallback: fragmented upload (uncommon) */
+                            GPU_WriteGP0(cmd_word);
+                            i++;
+                            addr = (addr + 4) & 0x1FFFFC;
+                        }
+                    }
+                    else if ((cmd_byte & 0xE0) == 0x80)
+                    {
+                        /* VRAM-to-VRAM copy: word-by-word until done */
+                        GPU_WriteGP0(cmd_word);
+                        i++;
+                        addr = (addr + 4) & 0x1FFFFC;
+                        while (i < count && gpu_cmd_remaining > 0)
+                        {
+                            GPU_WriteGP0(*(uint32_t *)&psx_ram[addr]);
+                            i++;
+                            addr = (addr + 4) & 0x1FFFFC;
+                        }
                     }
                     else
                     {
-                        // Fallback al modo normal si está fragmentado (poco común)
+                        /* E1-E6 env commands, NOP, etc. */
                         GPU_WriteGP0(cmd_word);
                         i++;
-                        addr += 4;
+                        addr = (addr + 4) & 0x1FFFFC;
                     }
-                }
-                else if (((cmd_word >> 24) & 0xE0) == 0x80)
-                {
-                    GPU_WriteGP0(cmd_word);
-                    i++;
-                    addr += 4;
-                    while (i < count && gpu_cmd_remaining > 0)
-                    {
-                        GPU_WriteGP0(GPU_GetWord(addr));
-                        i++;
-                        addr += 4;
-                    }
-                }
-                else
-                {
-                    GPU_WriteGP0(cmd_word);
-                    i++;
-                    addr += 4;
                 }
             }
 

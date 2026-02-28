@@ -296,7 +296,7 @@ void Tex_Cache_ResetStats(void);
 void Tex_Cache_DirtyRegion(int x, int y, int w, int h);
 
 /* gpu_primitives.c — GP0 command translation to GS */
-void Translate_GP0_to_GS(uint32_t *psx_cmd);
+int Translate_GP0_to_GS(uint32_t *psx_cmd);
 void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
                           int16_t x1, int16_t y1, uint32_t color1,
                           int is_shaded, int is_semi_trans);
