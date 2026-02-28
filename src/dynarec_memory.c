@@ -44,6 +44,96 @@ void emit_flush_partial_cycles(void)
     EMIT_SW(REG_T1, (int16_t)lo, REG_AT);
 }
 
+/* ================================================================
+ *  Cold Slow Path Queue
+ *
+ *  Instead of emitting slow-path code inline (after the fast path),
+ *  we defer it to the end of the block.  This allows the fast path to
+ *  fall through without a branch, saving 2 instructions (b @done + nop)
+ *  per memory access on the hot path (~95%+ of accesses hit the fast path).
+ * ================================================================ */
+
+#define MAX_COLD_SLOW 256
+
+typedef struct {
+    uint32_t *branches[4];  /* Branches to patch (alignment, range, ISC) */
+    int       num_branches;
+    uint32_t *return_point; /* Where to jump back after slow path */
+    uint32_t  func_addr;    /* ReadWord/WriteWord/Helper_LWL/etc. */
+    uint32_t  psx_pc;       /* PSX PC for cycle tracking */
+    int16_t   cycle_offset; /* Cycle offset for flush */
+    uint8_t   size;         /* 1/2/4 */
+    uint8_t   is_signed;    /* Sign extension needed? */
+    uint8_t   type;         /* 0=read, 1=write, 2=lwx, 3=swx */
+    uint8_t   has_abort;    /* emit_abort_check after trampoline? */
+    uint8_t   load_defer;   /* dynarec_load_defer at emission time */
+    int       rt_psx;       /* PSX register for store result */
+} ColdSlowEntry;
+
+static ColdSlowEntry cold_queue[MAX_COLD_SLOW];
+static int cold_count = 0;
+
+void cold_slow_reset(void)
+{
+    cold_count = 0;
+}
+
+void cold_slow_emit_all(void)
+{
+    int i;
+    for (i = 0; i < cold_count; i++)
+    {
+        ColdSlowEntry *e = &cold_queue[i];
+        int j;
+
+        /* Patch all branches to point to this cold slow path entry */
+        for (j = 0; j < e->num_branches; j++)
+        {
+            int32_t off = (int32_t)(code_ptr - e->branches[j] - 1);
+            *e->branches[j] = (*e->branches[j] & 0xFFFF0000)
+                             | ((uint32_t)off & 0xFFFF);
+        }
+
+        /* Emit slow path: set up args and call mem_slow_trampoline */
+        EMIT_MOVE(REG_A0, REG_T0); /* a0 = PSX address (always in T0) */
+
+        if (e->type == 1 || e->type == 3)
+            EMIT_MOVE(REG_A1, REG_T2); /* a1 = data (writes/SWX) */
+        else if (e->type == 2)
+            EMIT_MOVE(REG_A1, REG_V0); /* a1 = current RT (LWX merge) */
+
+        emit_load_imm32(REG_T0, e->func_addr);
+        emit_load_imm32(REG_T2, e->psx_pc);
+        EMIT_ADDIU(REG_T1, REG_ZERO, (int16_t)e->cycle_offset);
+        EMIT_JAL_ABS((uint32_t)mem_slow_trampoline_addr);
+        EMIT_NOP();
+
+        if (e->has_abort)
+            emit_abort_check();
+
+        /* Sign extension for signed byte/halfword reads */
+        if (e->type == 0 && e->is_signed && e->size < 4)
+        {
+            int shift = (e->size == 1) ? 24 : 16;
+            emit(MK_R(0, 0, REG_V0, REG_V0, shift, 0x00)); /* SLL */
+            emit(MK_R(0, 0, REG_V0, REG_V0, shift, 0x03)); /* SRA */
+        }
+
+        /* Store result for reads (duplicate of fast-path store) */
+        if ((e->type == 0 || e->type == 2) && !e->load_defer)
+            emit_store_psx_reg(e->rt_psx, REG_V0);
+
+        /* Branch back to return point */
+        {
+            int32_t ret_off = (int32_t)(e->return_point - code_ptr - 1);
+            emit(MK_I(0x04, REG_ZERO, REG_ZERO, (uint16_t)(ret_off & 0xFFFF)));
+            EMIT_NOP();
+        }
+    }
+
+    cold_count = 0;
+}
+
 /*
  * emit_memory_read: Emit native code for LW/LH/LHU/LB/LBU.
  *
@@ -241,17 +331,15 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     flush_dirty_consts();
 
     /*
-     * Direct address fast path (no LUT):
+     * Direct address fast path (cold slow path):
      *   [alignment check if size > 1]
      *   and    t1, t0, s3          # phys = addr & 0x1FFFFFFF (S3 pinned)
      *   srl    t2, t1, 21          # 0 if phys < 2MB
-     *   bne    t2, zero, @slow
+     *   bne    t2, zero, @cold     # range miss → deferred slow path
      *   addu   t1, t1, s1          # [delay] host = psx_ram + phys
      *   lw/lhu/lbu v0, 0(t1)
-     *   b      @done
-     *   nop
-     * @slow: <call C helper>
-     * @done:
+     *   [store result]             # fast path falls through — no b @done!
+     * @cold: <emitted at end of block>
      */
 
     uint32_t *align_branch = NULL;
@@ -261,7 +349,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
          * BNE reads T1 before the delay slot AND overwrites it. */
         emit(MK_I(0x0C, REG_T0, REG_T1, size - 1));         /* andi  t1, t0, size-1 */
         align_branch = code_ptr;
-        emit(MK_I(0x05, REG_T1, REG_ZERO, 0));              /* bne   t1, zero, @slow */
+        emit(MK_I(0x05, REG_T1, REG_ZERO, 0));              /* bne   t1, zero, @cold */
         emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* [delay] and t1, t0, s3 (phys) */
     }
     else
@@ -273,7 +361,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     /* Range check: phys < 2MB (srl by 21 gives 0 for addresses in [0, 2MB)) */
     emit(MK_R(0, 0, REG_T1, REG_T2, 21, 0x02));  /* srl  t2, t1, 21      */
     uint32_t *range_branch = code_ptr;
-    emit(MK_I(0x05, REG_T2, REG_ZERO, 0));        /* bne  t2, zero, @slow */
+    emit(MK_I(0x05, REG_T2, REG_ZERO, 0));        /* bne  t2, zero, @cold */
     EMIT_ADDU(REG_T1, REG_T1, REG_S1);            /* [delay] addu t1, t1, s1 (host addr) */
     if (size == 4)
         EMIT_LW(REG_V0, 0, REG_T1);
@@ -292,60 +380,30 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
             EMIT_LBU(REG_V0, 0, REG_T1);
     }
 
-    uint32_t *fast_done = code_ptr;
-    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
-    EMIT_NOP();
-
-    /*
-     * @slow: Range miss or misaligned goes directly to C helper.
-     * Scratchpad (0x1F800000-0x1F8003FF), BIOS, and I/O are all
-     * handled by the C ReadWord/ReadHalf/ReadByte functions.
-     */
-    int32_t soff_range = (int32_t)(code_ptr - range_branch - 1);
-    *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff_range & 0xFFFF);
-
-    /* Route alignment-miss branch to @slow */
-    if (align_branch)
-    {
-        int32_t soff1 = (int32_t)(code_ptr - align_branch - 1);
-        *align_branch = (*align_branch & 0xFFFF0000) | ((uint32_t)soff1 & 0xFFFF);
-    }
-
-    /* Use shared mem_slow_trampoline: A0=addr, T0=func, T2=psx_pc, T1=cycle_off */
-    flush_dirty_consts();
-    EMIT_MOVE(REG_A0, REG_T0);
-    {
-        uint32_t func_addr;
-        if (size == 4)
-            func_addr = (uint32_t)ReadWord;
-        else if (size == 2)
-            func_addr = (uint32_t)ReadHalf;
-        else
-            func_addr = (uint32_t)ReadByte;
-        emit_load_imm32(REG_T0, func_addr);
-    }
-    emit_load_imm32(REG_T2, emit_current_psx_pc);
-    EMIT_ADDIU(REG_T1, REG_ZERO, (int16_t)emit_cycle_offset);
-    EMIT_JAL_ABS((uint32_t)mem_slow_trampoline_addr);
-    EMIT_NOP();
-
-    if (size >= 2)
-        emit_abort_check(); /* AdEL on misaligned addr */
-
-    /* Sign-extend slow-path result (C helpers return unsigned) */
-    if (is_signed && size < 4)
-    {
-        int shift = (size == 1) ? 24 : 16;
-        emit(MK_R(0, 0, REG_V0, REG_V0, shift, 0x00)); /* SLL */
-        emit(MK_R(0, 0, REG_V0, REG_V0, shift, 0x03)); /* SRA */
-    }
-
-    /* @done: patch forward branch */
-    int32_t doff = (int32_t)(code_ptr - fast_done - 1);
-    *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
-
+    /* Fast path falls through — store result immediately */
     if (!dynarec_load_defer)
         emit_store_psx_reg(rt_psx, REG_V0);
+
+    /* Defer slow path to end of block */
+    {
+        ColdSlowEntry *e = &cold_queue[cold_count++];
+        e->num_branches = 0;
+        if (align_branch)
+            e->branches[e->num_branches++] = align_branch;
+        e->branches[e->num_branches++] = range_branch;
+        e->return_point = code_ptr;
+        e->func_addr = (size == 4) ? (uint32_t)ReadWord
+                     : (size == 2) ? (uint32_t)ReadHalf
+                                   : (uint32_t)ReadByte;
+        e->psx_pc = emit_current_psx_pc;
+        e->cycle_offset = (int16_t)emit_cycle_offset;
+        e->size = (uint8_t)size;
+        e->is_signed = (uint8_t)is_signed;
+        e->type = 0; /* read */
+        e->has_abort = (size >= 2) ? 1 : 0;
+        e->load_defer = (uint8_t)dynarec_load_defer;
+        e->rt_psx = rt_psx;
+    }
 }
 
 void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t offset)
@@ -510,29 +568,26 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02)); /* srl  a0, a0, 16 */
     emit(MK_I(0x0C, REG_A0, REG_A0, 1));        /* andi a0, a0, 1 */
     uint32_t *isc_branch = code_ptr;
-    emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne  a0, zero, @slow (IsC set) */
+    emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne  a0, zero, @cold (IsC set) */
     EMIT_NOP();
 
     uint32_t *align_branch = NULL;
     if (size > 1)
     {
-        /* Alignment check — use delay slot for phys mask.
-         * BNE reads T1 before the delay slot AND overwrites it. */
         emit(MK_I(0x0C, REG_T0, REG_T1, size - 1)); /* andi  t1, t0, size-1 */
         align_branch = code_ptr;
-        emit(MK_I(0x05, REG_T1, REG_ZERO, 0));              /* bne   t1, zero, @slow */
+        emit(MK_I(0x05, REG_T1, REG_ZERO, 0));              /* bne   t1, zero, @cold */
         emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* [delay] and t1, t0, s3 (phys) */
     }
     else
     {
-        /* No alignment check for byte stores */
         emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3  (phys) */
     }
 
     /* Range check: phys < 2MB */
     emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02)); /* srl  a0, t1, 21      */
     uint32_t *range_branch = code_ptr;
-    emit(MK_I(0x05, REG_A0, REG_ZERO, 0));       /* bne  a0, zero, @slow */
+    emit(MK_I(0x05, REG_A0, REG_ZERO, 0));       /* bne  a0, zero, @cold */
     EMIT_ADDU(REG_T1, REG_T1, REG_S1);           /* [delay] addu t1, t1, s1 (host addr) */
     if (size == 4)
         EMIT_SW(REG_T2, 0, REG_T1);
@@ -541,50 +596,29 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     else
         EMIT_SB(REG_T2, 0, REG_T1);
 
-    uint32_t *fast_done = code_ptr;
-    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b    @done */
-    EMIT_NOP();
+    /* Fast path falls through — no b @done needed */
 
-    /*
-     * @slow: Range miss, misaligned, or cache-isolated → C helper.
-     */
-    int32_t soff_range = (int32_t)(code_ptr - range_branch - 1);
-    *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff_range & 0xFFFF);
-
-    /* @slow: isc_branch, align_branch land here */
-    int32_t soff0 = (int32_t)(code_ptr - isc_branch - 1);
-    *isc_branch = (*isc_branch & 0xFFFF0000) | ((uint32_t)soff0 & 0xFFFF);
-    if (align_branch)
+    /* Defer slow path to end of block */
     {
-        int32_t soff1 = (int32_t)(code_ptr - align_branch - 1);
-        *align_branch = (*align_branch & 0xFFFF0000) | ((uint32_t)soff1 & 0xFFFF);
+        ColdSlowEntry *e = &cold_queue[cold_count++];
+        e->num_branches = 0;
+        e->branches[e->num_branches++] = isc_branch;
+        if (align_branch)
+            e->branches[e->num_branches++] = align_branch;
+        e->branches[e->num_branches++] = range_branch;
+        e->return_point = code_ptr;
+        e->func_addr = (size == 4) ? (uint32_t)WriteWord
+                     : (size == 2) ? (uint32_t)WriteHalf
+                                   : (uint32_t)WriteByte;
+        e->psx_pc = emit_current_psx_pc;
+        e->cycle_offset = (int16_t)emit_cycle_offset;
+        e->size = (uint8_t)size;
+        e->is_signed = 0;
+        e->type = 1; /* write */
+        e->has_abort = (size >= 2) ? 1 : 0;
+        e->load_defer = 0;
+        e->rt_psx = 0;
     }
-
-    /* Use shared mem_slow_trampoline: A0=addr, A1=data, T0=func, T2=psx_pc, T1=cycle_off */
-    flush_dirty_consts();
-    EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
-    EMIT_MOVE(REG_A1, REG_T2); /* a1 = data */
-    {
-        uint32_t func_addr;
-        if (size == 4)
-            func_addr = (uint32_t)WriteWord;
-        else if (size == 2)
-            func_addr = (uint32_t)WriteHalf;
-        else
-            func_addr = (uint32_t)WriteByte;
-        emit_load_imm32(REG_T0, func_addr);
-    }
-    emit_load_imm32(REG_T2, emit_current_psx_pc);
-    EMIT_ADDIU(REG_T1, REG_ZERO, (int16_t)emit_cycle_offset);
-    EMIT_JAL_ABS((uint32_t)mem_slow_trampoline_addr);
-    EMIT_NOP();
-
-    if (size >= 2)
-        emit_abort_check(); /* AdES on misaligned addr */
-
-    /* @done: patch forward branch */
-    int32_t doff = (int32_t)(code_ptr - fast_done - 1);
-    *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff & 0xFFFF);
 }
 
 /*
@@ -611,11 +645,11 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
     /* Flush lazy consts before conditional fast/slow split */
     flush_dirty_consts();
 
-    /* Direct address fast path (no LUT): S3 = 0x1FFFFFFF, S1 = psx_ram */
+    /* Direct address fast path: S3 = 0x1FFFFFFF, S1 = psx_ram */
     emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3 (phys) */
     emit(MK_R(0, 0, REG_T1, REG_T2, 21, 0x02));         /* srl  t2, t1, 21 (range check) */
     uint32_t *range_branch = code_ptr;
-    emit(MK_I(0x05, REG_T2, REG_ZERO, 0));              /* bne  t2, zero, @slow */
+    emit(MK_I(0x05, REG_T2, REG_ZERO, 0));              /* bne  t2, zero, @cold */
     EMIT_ADDU(REG_T1, REG_T1, REG_S1);                  /* [delay] addu t1, t1, s1 (host) */
 
     /* Fast path: native lwl/lwr on host address */
@@ -624,33 +658,29 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
     else
         EMIT_LWR(REG_V0, 0, REG_T1);
 
-    uint32_t *fast_done = code_ptr;
-    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
-    EMIT_NOP();
-
-    /* @slow: range miss → C helper handles scratchpad too */
-    int32_t soff_range = (int32_t)(code_ptr - range_branch - 1);
-    *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff_range & 0xFFFF);
-
-    /* Use shared mem_slow_trampoline: A0=addr, A1=cur_rt, T0=func, T2=psx_pc, T1=cycle_off */
-    flush_dirty_consts();
-    EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
-    EMIT_MOVE(REG_A1, REG_V0); /* a1 = cur_rt */
-    emit_load_imm32(REG_T0, is_left ? (uint32_t)Helper_LWL : (uint32_t)Helper_LWR);
-    emit_load_imm32(REG_T2, emit_current_psx_pc);
-    EMIT_ADDIU(REG_T1, REG_ZERO, (int16_t)emit_cycle_offset);
-    EMIT_JAL_ABS((uint32_t)mem_slow_trampoline_addr);
-    EMIT_NOP();
-
-    /* @done: patch forward branch */
-    int32_t doff2 = (int32_t)(code_ptr - fast_done - 1);
-    *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff2 & 0xFFFF);
-
+    /* Fast path falls through — store result immediately */
     if (!dynarec_load_defer)
     {
         if (is_left)
             mark_vreg_var(rt_psx);
         emit_store_psx_reg(rt_psx, REG_V0);
+    }
+
+    /* Defer slow path to end of block */
+    {
+        ColdSlowEntry *e = &cold_queue[cold_count++];
+        e->num_branches = 0;
+        e->branches[e->num_branches++] = range_branch;
+        e->return_point = code_ptr;
+        e->func_addr = is_left ? (uint32_t)Helper_LWL : (uint32_t)Helper_LWR;
+        e->psx_pc = emit_current_psx_pc;
+        e->cycle_offset = (int16_t)emit_cycle_offset;
+        e->size = 4;
+        e->is_signed = 0;
+        e->type = 2; /* lwx */
+        e->has_abort = 0;
+        e->load_defer = (uint8_t)dynarec_load_defer;
+        e->rt_psx = rt_psx;
     }
 }
 
@@ -684,7 +714,7 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3 (phys) */
     emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02));         /* srl  a0, t1, 21 (range) */
     uint32_t *range_branch = code_ptr;
-    emit(MK_I(0x05, REG_A0, REG_ZERO, 0));              /* bne  a0, zero, @slow */
+    emit(MK_I(0x05, REG_A0, REG_ZERO, 0));              /* bne  a0, zero, @cold */
     EMIT_ADDU(REG_T1, REG_T1, REG_S1);                  /* [delay] addu t1, t1, s1 */
 
     /* Fast path: native swl/swr on host address */
@@ -693,29 +723,23 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     else
         EMIT_SWR(REG_T2, 0, REG_T1);
 
-    uint32_t *fast_done = code_ptr;
-    emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
-    EMIT_NOP();
+    /* Fast path falls through — no b @done needed */
 
-    /* @slow: range miss or cache-isolated → C helper */
-    int32_t soff_range = (int32_t)(code_ptr - range_branch - 1);
-    *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff_range & 0xFFFF);
-
-    /* Slow path */
-    int32_t soff0 = (int32_t)(code_ptr - isc_branch - 1);
-    *isc_branch = (*isc_branch & 0xFFFF0000) | ((uint32_t)soff0 & 0xFFFF);
-
-    /* Use shared mem_slow_trampoline: A0=addr, A1=data, T0=func, T2=psx_pc, T1=cycle_off */
-    flush_dirty_consts();
-    EMIT_MOVE(REG_A0, REG_T0); /* a0 = addr */
-    EMIT_MOVE(REG_A1, REG_T2); /* a1 = rt_val */
-    emit_load_imm32(REG_T0, is_left ? (uint32_t)Helper_SWL : (uint32_t)Helper_SWR);
-    emit_load_imm32(REG_T2, emit_current_psx_pc);
-    EMIT_ADDIU(REG_T1, REG_ZERO, (int16_t)emit_cycle_offset);
-    EMIT_JAL_ABS((uint32_t)mem_slow_trampoline_addr);
-    EMIT_NOP();
-
-    /* @done: patch forward branch */
-    int32_t doff2 = (int32_t)(code_ptr - fast_done - 1);
-    *fast_done = (*fast_done & 0xFFFF0000) | ((uint32_t)doff2 & 0xFFFF);
+    /* Defer slow path to end of block */
+    {
+        ColdSlowEntry *e = &cold_queue[cold_count++];
+        e->num_branches = 0;
+        e->branches[e->num_branches++] = isc_branch;
+        e->branches[e->num_branches++] = range_branch;
+        e->return_point = code_ptr;
+        e->func_addr = is_left ? (uint32_t)Helper_SWL : (uint32_t)Helper_SWR;
+        e->psx_pc = emit_current_psx_pc;
+        e->cycle_offset = (int16_t)emit_cycle_offset;
+        e->size = 4;
+        e->is_signed = 0;
+        e->type = 3; /* swx */
+        e->has_abort = 0;
+        e->load_defer = 0;
+        e->rt_psx = 0;
+    }
 }
