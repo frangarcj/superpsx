@@ -232,12 +232,14 @@ static inline uint64_t Get_Alpha_Reg(int mode)
 
 static inline uint64_t Get_Base_TEST(void)
 {
-    /* Compose TEST register using SDK macro so callers don't use raw bit masks.
-     * Use `mask_check_bit` to drive both DATEN and DATMD (prevents writing to pixels
-     * that already have bit 15 set in the framebuffer).
+    /* Compose TEST register base using SDK macro, but only for invariant mask bits.
+     * Use `mask_check_bit` to drive DATEN/DATMD (prevents writing to pixels that
+     * already have bit 15 set in the framebuffer).
+     * Alpha-test and Z-test fields are left clear so callers can safely OR their
+     * own configuration without double-encoding ATEN/ATST or ZTST.
      * GS_SET_TEST params: ATEN, ATMETH, ATREF, ATFAIL, DATEN, DATMD, ZTEN, ZTMETH
      */
-    return GS_SET_TEST(1, 1, 0, 0, mask_check_bit, 0, 1, 1);
+    return GS_SET_TEST(0, 0, 0, 0, mask_check_bit, 0, 0, 0);
 }
 
 /* Helper: pack an existing prim bitfield value into the GS_SET_PRIM macro
