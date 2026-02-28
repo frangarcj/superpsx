@@ -265,7 +265,10 @@ extern uint64_t stat_total_psx_instrs;
 #endif
 
 #ifdef ENABLE_HOST_LOG
-extern FILE *host_log_file;
+extern int host_log_fd;
+void host_log_printf(const char *fmt, ...);
+void host_log_putc(char c);
+void host_log_flush(void);
 #endif
 
 /* ================================================================

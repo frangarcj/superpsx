@@ -10,6 +10,8 @@
 #include <string.h>
 #include <malloc.h>
 #include <time.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include "dynarec.h"
 #include "spu.h"
 #include "scheduler.h"
@@ -50,7 +52,47 @@ uint32_t *jump_dispatch_trampoline_addr = NULL;
 
 /* Host log */
 #ifdef ENABLE_HOST_LOG
-FILE *host_log_file = NULL;
+int host_log_fd = -1;
+
+/* Simple printf-to-fd helper (avoids stdio on host log) */
+#include <stdarg.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <string.h>
+
+void host_log_printf(const char *fmt, ...)
+{
+    if (host_log_fd < 0)
+        return;
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n > 0)
+    {
+        ssize_t written = 0;
+        while (written < n)
+        {
+            ssize_t w = write(host_log_fd, buf + written, n - written);
+            if (w <= 0)
+                break;
+            written += w;
+        }
+    }
+}
+
+void host_log_putc(char c)
+{
+    if (host_log_fd < 0)
+        return;
+    write(host_log_fd, &c, 1);
+}
+
+void host_log_flush(void)
+{
+    /* no-op for fd writes */
+}
 #endif
 
 /* Dynarec stats */
@@ -513,7 +555,11 @@ static inline bool handle_bios_boot_hook(uint32_t pc)
         {
             DLOG("Binary loaded. Start PC=0x%08X\n", (unsigned)cpu.pc);
 #ifdef ENABLE_HOST_LOG
-            host_log_file = fopen("output.log", "w");
+            {
+                int hfd = open("output.log", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+                if (hfd >= 0)
+                    host_log_fd = hfd;
+            }
 #endif
             binary_loaded = 1;
             FlushCache(0);

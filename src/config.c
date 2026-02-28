@@ -8,6 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <stdlib.h>
 
 /* Defined in main.c — internal buffer backing psx_exe_filename */
 #ifndef PSX_EXE_PATH_MAX
@@ -44,8 +48,8 @@ int load_config_file(void)
     strncpy(psx_config.bios_path, BIOS_PATH_DEFAULT, sizeof(psx_config.bios_path) - 1);
     psx_config.bios_path[sizeof(psx_config.bios_path) - 1] = '\0';
 
-    FILE *fp = fopen(CONFIG_FILENAME, "r");
-    if (!fp)
+    int fd = open(CONFIG_FILENAME, O_RDONLY);
+    if (fd < 0)
     {
         printf("CONFIG: No config file found (%s)\n", CONFIG_FILENAME);
         return 0;
@@ -53,20 +57,52 @@ int load_config_file(void)
 
     printf("CONFIG: Reading %s\n", CONFIG_FILENAME);
 
-    char line[CONFIG_LINE_MAX];
-
-    while (fgets(line, sizeof(line), fp))
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size <= 0)
     {
+        close(fd);
+        return 0;
+    }
+
+    /* Use a stack-allocated buffer to avoid dynamic allocation */
+    char buf[8192];
+    ssize_t rr = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (rr <= 0)
+    {
+        return 0;
+    }
+    if ((size_t)rr >= sizeof(buf) - 1)
+    {
+        printf("CONFIG: Warning: config file truncated to %zu bytes\n", sizeof(buf) - 1);
+        rr = sizeof(buf) - 1;
+    }
+    buf[rr] = '\0';
+
+    char *line = buf;
+    while (line && *line)
+    {
+        char *nl = strchr(line, '\n');
+        char *next = nl ? nl + 1 : NULL;
+        if (nl)
+            *nl = '\0';
+
         char *trimmed = str_trim(line);
 
         /* Skip empty lines and comments */
         if (trimmed[0] == '\0' || trimmed[0] == '#' || trimmed[0] == ';')
+        {
+            line = next;
             continue;
+        }
 
         /* Look for 'key = value' */
         char *eq = strchr(trimmed, '=');
         if (!eq)
+        {
+            line = next;
             continue;
+        }
 
         *eq = '\0';
         char *key = str_trim(trimmed);
@@ -123,8 +159,9 @@ int load_config_file(void)
             psx_config.frame_limit = (atoi(val) != 0 && strcasecmp(val, "false") != 0);
             printf("CONFIG: frame_limit = %d\n", psx_config.frame_limit);
         }
+        line = next;
     }
 
-    fclose(fp);
+    /* buf is stack-allocated; no free required */
     return 1;
 }

@@ -5,6 +5,10 @@
  * readback for CLUT decode, and the full-VRAM dump used by tests.
  */
 #include "gpu_state.h"
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <stdio.h>
 
 /* ── Start a HOST→LOCAL VRAM transfer ────────────────────────────── */
 
@@ -410,13 +414,25 @@ void DumpVRAM(const char *filename)
     fflush(stdout);
 #endif
 
-    FILE *f = fopen(filename, "wb");
-    if (f)
+    int fd = open(filename, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd >= 0)
     {
-        fwrite(uncached_buf, 1, size_bytes, f);
-        fclose(f);
+        ssize_t remaining = size_bytes;
+        uint8_t *ptr = uncached_buf;
+        while (remaining > 0)
+        {
+            ssize_t w = write(fd, ptr, remaining);
+            if (w <= 0)
+                break;
+            remaining -= w;
+            ptr += w;
+        }
+        close(fd);
 #ifdef ENABLE_VRAM_DUMP
-        DLOG("DumpVRAM: Saved %d bytes to %s\n", size_bytes, filename);
+        if (remaining == 0)
+            DLOG("DumpVRAM: Saved %d bytes to %s\n", size_bytes, filename);
+        else
+            DLOG("DumpVRAM: Partial/failed write to %s\n", filename);
         fflush(stdout);
 #endif
     }

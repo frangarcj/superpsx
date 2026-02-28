@@ -162,21 +162,37 @@ int Load_BIOS_From_ROM(void)
 int Load_BIOS(const char *filename)
 {
     printf("Loading BIOS from %s...\n", filename);
-    FILE *f = fopen(filename, "rb");
-    if (f)
+    int fd = open(filename, O_RDONLY);
+    if (fd >= 0)
     {
-        fseek(f, 0, SEEK_END);
-        long size = ftell(f);
-        fseek(f, 0, SEEK_SET);
+        struct stat st;
+        if (fstat(fd, &st) != 0)
+        {
+            close(fd);
+            printf("  ERROR: Failed to stat BIOS file\n");
+            return -2;
+        }
+        long size = (long)st.st_size;
         printf("  BIOS size: %ld bytes\n", size);
         if (size > PSX_BIOS_SIZE)
         {
             printf("  ERROR: BIOS file too large\n");
-            fclose(f);
+            close(fd);
             return -2;
         }
-        size_t rd = fread(psx_bios, 1, size, f);
-        fclose(f);
+
+        ssize_t remaining = size;
+        ssize_t offset = 0;
+        while (remaining > 0)
+        {
+            ssize_t r = read(fd, psx_bios + offset, remaining);
+            if (r <= 0)
+                break;
+            remaining -= r;
+            offset += r;
+        }
+        close(fd);
+        size_t rd = (size_t)(size - remaining);
         printf("  BIOS loaded: %lu bytes at %p\n", (unsigned long)rd, psx_bios);
 
         /* Print first 4 instructions for verification */
