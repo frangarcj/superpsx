@@ -460,18 +460,9 @@ static inline void handle_performance_report(void)
 
 static inline void sync_hardware_and_interrupts(void)
 {
-    /* Level-triggered CD-ROM IRQ re-assertion */
-    if (cdrom_irq_active)
-        SignalInterrupt(2);
-
-    /* Fallback SIO IRQ7 check */
-    if (sio_irq_delay_cycle && global_cycles >= sio_irq_delay_cycle)
-    {
-        sio_irq_delay_cycle = 0;
-        SignalInterrupt(7);
-    }
-
-    /* Check and dispatch hardware interrupts */
+    /* Check and dispatch hardware interrupts.
+     * CD-ROM IRQ re-assertion is now handled in the I_STAT ack path
+     * (hardware.c).  SIO IRQ delay is now a scheduler event. */
     if (CheckInterrupts())
     {
         cpu.cop0[PSX_COP0_CAUSE] |= (1 << 10);
@@ -521,12 +512,6 @@ static inline bool handle_bios_boot_hook(uint32_t pc)
 /* ================================================================
  *  Scheduler Integration
  * ================================================================ */
-
-static void Sched_VBlank_Callback(void)
-{
-    uint32_t cycles_per_frame = psx_config.region_pal ? CYCLES_PER_FRAME_PAL : CYCLES_PER_FRAME_NTSC;
-    Scheduler_ScheduleEvent(SCHED_EVENT_VBLANK, global_cycles + cycles_per_frame, Sched_VBlank_Callback);
-}
 
 static void Sched_HBlank_Callback(void)
 {
@@ -731,10 +716,6 @@ void Run_CPU(void)
     cpu.cop0[PSX_COP0_PRID] = 0x00000002;
 
     Scheduler_Init();
-    {
-        uint32_t cycles_per_frame = psx_config.region_pal ? CYCLES_PER_FRAME_PAL : CYCLES_PER_FRAME_NTSC;
-        Scheduler_ScheduleEvent(SCHED_EVENT_VBLANK, global_cycles + cycles_per_frame, Sched_VBlank_Callback);
-    }
 
     hblank_scanline = 0;
     perf_frame_count = 0;

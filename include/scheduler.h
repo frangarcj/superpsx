@@ -67,7 +67,7 @@
 #define SCHED_EVENT_TIMER0 0
 #define SCHED_EVENT_TIMER1 1
 #define SCHED_EVENT_TIMER2 2
-#define SCHED_EVENT_VBLANK 3
+#define SCHED_EVENT_SIO_IRQ 3    /* SIO IRQ delay (was VBLANK no-op) */
 #define SCHED_EVENT_CDROM 4
 #define SCHED_EVENT_CDROM_DEFERRED 5 /* Deferred first-response delivery */
 #define SCHED_EVENT_CDROM_IRQ 6      /* IRQ signal delay (I_STAT assertion) */

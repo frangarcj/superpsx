@@ -31,6 +31,26 @@ static uint16_t serial_baud = 0;
 volatile uint64_t sio_irq_delay_cycle = 0;
 int sio_irq_pending = 0;
 
+/* ---- Scheduler-driven SIO IRQ delay ---- */
+static void Sched_SIO_IRQ_Callback(void)
+{
+    sio_irq_delay_cycle = 0;
+    SignalInterrupt(7);
+}
+
+static inline void sio_schedule_irq(void)
+{
+    uint64_t deadline = global_cycles + SIO_IRQ_DELAY;
+    sio_irq_delay_cycle = deadline;
+    Scheduler_ScheduleEvent(SCHED_EVENT_SIO_IRQ, deadline, Sched_SIO_IRQ_Callback);
+}
+
+static inline void sio_cancel_irq(void)
+{
+    sio_irq_delay_cycle = 0;
+    Scheduler_RemoveEvent(SCHED_EVENT_SIO_IRQ);
+}
+
 uint32_t SIO_Read(uint32_t phys)   /* caller passes physical addr */
 {
     switch (phys - 0x1F801040) {
@@ -131,7 +151,7 @@ void SIO_Write(uint32_t phys, uint32_t data)   /* caller passes physical addr */
                 sio_state = 1;
                 sio_tx_pending = 1;
                 sio_irq_pending = 1;
-                sio_irq_delay_cycle = global_cycles + SIO_IRQ_DELAY;
+                sio_schedule_irq();
             }
             else
             {
@@ -146,7 +166,7 @@ void SIO_Write(uint32_t phys, uint32_t data)   /* caller passes physical addr */
             if (sio_state < sio_response_len - 1)
             {
                 sio_irq_pending = 1;
-                sio_irq_delay_cycle = global_cycles + SIO_IRQ_DELAY;
+                sio_schedule_irq();
             }
             sio_state++;
         }
@@ -169,7 +189,7 @@ void SIO_Write(uint32_t phys, uint32_t data)   /* caller passes physical addr */
             sio_tx_pending = 0; sio_state = 0;
             sio_response_len = 0; sio_selected = 0;
             sio_port = 0; sio_data = 0xFF;
-            sio_irq_pending = 0; sio_irq_delay_cycle = 0;
+            sio_irq_pending = 0; sio_cancel_irq();
             return;
         }
         if (data & 0x10)
@@ -177,7 +197,7 @@ void SIO_Write(uint32_t phys, uint32_t data)   /* caller passes physical addr */
             sio_stat &= ~(1 << 9);
             if (sio_irq_pending)
             {
-                sio_irq_delay_cycle = 0;
+                sio_cancel_irq();
                 psx_abort_pc = cpu.current_pc + 4;
                 cpu.block_aborted = 1;
             }
@@ -191,7 +211,7 @@ void SIO_Write(uint32_t phys, uint32_t data)   /* caller passes physical addr */
         else
         {
             sio_selected = 0; sio_state = 0;
-            sio_irq_pending = 0; sio_irq_delay_cycle = 0;
+            sio_irq_pending = 0; sio_cancel_irq();
         }
         return;
     }

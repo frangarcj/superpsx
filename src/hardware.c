@@ -123,12 +123,18 @@ void WriteHardware(uint32_t phys, uint32_t data, int size)
         }
         if (phys == 0x1F801070) {
             cpu.i_stat &= data;
+            /* CD-ROM level-triggered re-assertion: if the game acknowledged
+             * bit 2 but the CD-ROM IRQ condition is still active, re-set it
+             * immediately (replaces per-loop polling). */
+            if (cdrom_irq_active && !(cpu.i_stat & (1 << 2)))
+                cpu.i_stat |= (1 << 2);
             /* Inline SIO IRQ check: if SIO IRQ was pending and bit 7 is now
              * cleared, fire the SIO interrupt immediately. */
             if (sio_irq_pending && !(data & (1 << 7)))
             {
                 sio_irq_pending = 0;
                 sio_irq_delay_cycle = 0;
+                Scheduler_RemoveEvent(SCHED_EVENT_SIO_IRQ);
                 SignalInterrupt(7);
             }
             return;
