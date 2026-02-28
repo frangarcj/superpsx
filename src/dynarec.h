@@ -79,7 +79,7 @@ typedef int32_t (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios, int3
 #define REG_S0 16
 #define REG_S1 17
 #define REG_S2 18
-#define REG_S3 19 /* Pinned: mem_lut base pointer */
+#define REG_S3 19 /* Pinned: physical address mask 0x1FFFFFFF */
 #define REG_S4 20 /* Pinned: PSX $sp (29) */
 #define REG_S5 21 /* Pinned: PSX $ra (31) */
 #define REG_S6 22 /* Pinned: PSX $v0 (2)  */

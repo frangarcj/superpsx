@@ -272,12 +272,9 @@ void emit_block_prologue(void)
     EMIT_MOVE(REG_S0, REG_A0); /* S0 = &cpu           */
     EMIT_MOVE(REG_S1, REG_A1); /* S1 = psx_ram        */
     EMIT_MOVE(REG_S2, REG_A3); /* S2 = cycles_left    */
-    /* Load mem_lut address directly into S3 (always 2 words: LUI+ORI) */
-    {
-        uint32_t lut_addr = (uint32_t)mem_lut;
-        EMIT_LUI(REG_S3, lut_addr >> 16);
-        EMIT_ORI(REG_S3, REG_S3, lut_addr & 0xFFFF);
-    }
+    /* Load physical address mask into S3: 0x1FFFFFFF */
+    EMIT_LUI(REG_S3, 0x1FFF);
+    EMIT_ORI(REG_S3, REG_S3, 0xFFFF);
     emit_reload_pinned();
 }
 

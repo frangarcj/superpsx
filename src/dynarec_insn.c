@@ -946,20 +946,15 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         emit(MK_I(0x0C, REG_T0, REG_T1, 3)); /* andi t1, t0, 3 */
         uint32_t *align_swc2 = code_ptr;
         emit(MK_I(0x05, REG_T1, REG_ZERO, 0)); /* bne → slow */
-        EMIT_NOP();
+        emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24)); /* [delay] and t1, t0, s3 (phys) */
 
-        /* LUT lookup */
-        emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* srl  t1, t0, 16 */
-        emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00));  /* sll  t1, t1, 2 */
-        EMIT_ADDU(REG_T1, REG_T1, REG_S3);
-        EMIT_LW(REG_T1, 0, REG_T1);
-        emit(MK_I(0x0C, REG_T0, REG_A0, 0xFFFF)); /* andi a0, t0, 0xFFFF */
-        uint32_t *lut_swc2 = code_ptr;
-        emit(MK_I(0x04, REG_T1, REG_ZERO, 0)); /* beq → slow */
-        EMIT_NOP();
+        /* Range check: phys < 2MB */
+        emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02)); /* srl  a0, t1, 21 */
+        uint32_t *range_swc2 = code_ptr;
+        emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne → slow */
+        EMIT_ADDU(REG_T1, REG_T1, REG_S1); /* [delay] host = psx_ram + phys */
 
         /* Fast path: direct store */
-        EMIT_ADDU(REG_T1, REG_T1, REG_A0);
         EMIT_SW(REG_T2, 0, REG_T1);
 
         uint32_t *done_swc2 = code_ptr;
@@ -968,13 +963,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 
         /* Scratchpad inline check for SWC2 */
         {
-            int32_t s2 = (int32_t)(code_ptr - lut_swc2 - 1);
-            *lut_swc2 = (*lut_swc2 & 0xFFFF0000) | ((uint32_t)s2 & 0xFFFF);
+            int32_t s2 = (int32_t)(code_ptr - range_swc2 - 1);
+            *range_swc2 = (*range_swc2 & 0xFFFF0000) | ((uint32_t)s2 & 0xFFFF);
         }
-        /* phys = vaddr & 0x1FFFFFFF; check (phys - 0x1F800000) < 0x400 */
-        emit(MK_I(0x0F, 0, REG_T1, 0x1FFF));            /* lui  t1, 0x1FFF     */
-        emit(MK_I(0x0D, REG_T1, REG_T1, 0xFFFF));       /* ori  t1, 0xFFFF     */
-        emit(MK_R(0, REG_T0, REG_T1, REG_T1, 0, 0x24)); /* and  t1, t0, t1     */
+        /* phys = vaddr & 0x1FFFFFFF (already in S3); check (phys - 0x1F800000) < 0x400 */
+        emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24)); /* and  t1, t0, s3     */
         emit(MK_I(0x0F, 0, REG_A0, 0xE080));            /* lui  a0, 0xE080     */
         EMIT_ADDU(REG_T1, REG_T1, REG_A0);              /* t1 = phys-0x1F800000 */
         emit(MK_I(0x0B, REG_T1, REG_T1, 0x400));        /* sltiu t1, 0x400     */

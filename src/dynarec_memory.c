@@ -241,15 +241,12 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     flush_dirty_consts();
 
     /*
-     * LUT-based fast path (64KB virtual pages):
+     * Direct address fast path (no LUT):
      *   [alignment check if size > 1]
-     *   srl    t1, t0, 16         # page index
-     *   sll    t1, t1, 2          # byte offset into LUT
-     *   addu   t1, t1, s3         # &lut[page]
-     *   lw     t1, 0(t1)          # host page base (or NULL)
-     *   andi   t2, t0, 0xFFFF     # offset within 64KB page
-     *   beq    t1, zero, @slow
-     *   addu   t1, t1, t2         # [delay] host address (safe: BEQ captured t1)
+     *   and    t1, t0, s3          # phys = addr & 0x1FFFFFFF (S3 pinned)
+     *   srl    t2, t1, 21          # 0 if phys < 2MB
+     *   bne    t2, zero, @slow
+     *   addu   t1, t1, s1          # [delay] host = psx_ram + phys
      *   lw/lhu/lbu v0, 0(t1)
      *   b      @done
      *   nop
@@ -260,29 +257,24 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     uint32_t *align_branch = NULL;
     if (size > 1)
     {
-        /* Alignment check — use delay slot for first LUT instruction.
-         * BNE reads T1 before the delay slot SRL overwrites it. */
-        emit(MK_I(0x0C, REG_T0, REG_T1, size - 1)); /* andi  t1, t0, size-1 */
+        /* Alignment check — use delay slot for phys mask.
+         * BNE reads T1 before the delay slot AND overwrites it. */
+        emit(MK_I(0x0C, REG_T0, REG_T1, size - 1));         /* andi  t1, t0, size-1 */
         align_branch = code_ptr;
-        emit(MK_I(0x05, REG_T1, REG_ZERO, 0));      /* bne   t1, zero, @slow */
-        emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* [delay] srl  t1, t0, 16 */
+        emit(MK_I(0x05, REG_T1, REG_ZERO, 0));              /* bne   t1, zero, @slow */
+        emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* [delay] and t1, t0, s3 (phys) */
     }
     else
     {
-        /* No alignment check for byte loads — emit SRL normally */
-        emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* srl  t1, t0, 16       (page index)   */
+        /* No alignment check for byte loads */
+        emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3  (phys) */
     }
 
-    /* LUT lookup (64KB pages, virtual address based, S3 = mem_lut) */
-    emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00)); /* sll  t1, t1, 2        (byte offset)  */
-    EMIT_ADDU(REG_T1, REG_T1, REG_S3);         /* addu t1, t1, s3       (&lut[page])   */
-    EMIT_LW(REG_T1, 0, REG_T1);                /* lw   t1, 0(t1)        (host base)    */
-    emit(MK_I(0x0C, REG_T0, REG_T2, 0xFFFF));  /* andi t2, t0, 0xFFFF   (page offset)  */
-    uint32_t *lut_branch = code_ptr;
-    emit(MK_I(0x04, REG_T1, REG_ZERO, 0)); /* beq  t1, zero, @slow                 */
-    /* Delay slot: compute host addr.  BEQ already captured t1 (null check).
-     * If branch taken (t1=0): t1 = 0 + t2 = t2 (harmless — slow path overwrites t1). */
-    EMIT_ADDU(REG_T1, REG_T1, REG_T2); /* [delay] addu t1, t1, t2  (host addr) */
+    /* Range check: phys < 2MB (srl by 21 gives 0 for addresses in [0, 2MB)) */
+    emit(MK_R(0, 0, REG_T1, REG_T2, 21, 0x02));  /* srl  t2, t1, 21      */
+    uint32_t *range_branch = code_ptr;
+    emit(MK_I(0x05, REG_T2, REG_ZERO, 0));        /* bne  t2, zero, @slow */
+    EMIT_ADDU(REG_T1, REG_T1, REG_S1);            /* [delay] addu t1, t1, s1 (host addr) */
     if (size == 4)
         EMIT_LW(REG_V0, 0, REG_T1);
     else if (size == 2)
@@ -305,21 +297,13 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     EMIT_NOP();
 
     /*
-     * @slow: LUT miss goes directly to C helper.
-     * Scratchpad (0x1F800000-0x1F8003FF) is handled by the C ReadWord/
-     * ReadHalf/ReadByte functions, so no inline check needed.
-     * This saves ~15 words per non-const memory read.
+     * @slow: Range miss or misaligned goes directly to C helper.
+     * Scratchpad (0x1F800000-0x1F8003FF), BIOS, and I/O are all
+     * handled by the C ReadWord/ReadHalf/ReadByte functions.
      */
-    int32_t soff_lut = (int32_t)(code_ptr - lut_branch - 1);
-    *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff_lut & 0xFFFF);
+    int32_t soff_range = (int32_t)(code_ptr - range_branch - 1);
+    *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff_range & 0xFFFF);
 
-    /*
-     * @slow: C helper call for I/O, unmapped, misaligned, scratchpad, etc.
-     * GPU_ReadStatus (0x1F801814) is already handled optimally in the
-     * const-address path above.  Dynamic GPUSTAT polling is rare and
-     * the const path covers the typical LUI+ORI pattern used by games.
-     * Removing the inline dynamic GPUSTAT check saves ~28 words per LW.
-     */
     /* Route alignment-miss branch to @slow */
     if (align_branch)
     {
@@ -367,8 +351,8 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
 void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t offset)
 {
     /* emit_memory_read with is_signed=1 handles signed loads natively on the
-     * LUT fast path (lb/lh) and adds SLL/SRA sign extension on the slow path.
-     * Both const-address and LUT paths are fully handled internally. */
+     * Direct address fast path (lb/lh) and adds SLL/SRA sign extension on the slow path.
+     * Both const-address and direct paths are fully handled internally. */
     emit_memory_read(size, rt_psx, rs_psx, offset, 1);
 }
 
@@ -532,28 +516,24 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     uint32_t *align_branch = NULL;
     if (size > 1)
     {
-        /* Alignment check — use delay slot for first LUT instruction.
-         * BNE reads T1 before the delay slot SRL overwrites it. */
+        /* Alignment check — use delay slot for phys mask.
+         * BNE reads T1 before the delay slot AND overwrites it. */
         emit(MK_I(0x0C, REG_T0, REG_T1, size - 1)); /* andi  t1, t0, size-1 */
         align_branch = code_ptr;
-        emit(MK_I(0x05, REG_T1, REG_ZERO, 0));      /* bne   t1, zero, @slow */
-        emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* [delay] srl  t1, t0, 16 */
+        emit(MK_I(0x05, REG_T1, REG_ZERO, 0));              /* bne   t1, zero, @slow */
+        emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* [delay] and t1, t0, s3 (phys) */
     }
     else
     {
-        /* No alignment check for byte stores — emit SRL normally */
-        emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* srl  t1, t0, 16       (page index)   */
+        /* No alignment check for byte stores */
+        emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3  (phys) */
     }
 
-    /* LUT lookup (64KB virtual pages, S3 = mem_lut base) */
-    emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00)); /* sll  t1, t1, 2        (byte offset)  */
-    EMIT_ADDU(REG_T1, REG_T1, REG_S3);         /* addu t1, t1, s3       (&lut[page])   */
-    EMIT_LW(REG_T1, 0, REG_T1);                /* lw   t1, 0(t1)        (host base)    */
-    emit(MK_I(0x0C, REG_T0, REG_A0, 0xFFFF));  /* andi a0, t0, 0xFFFF   (page offset)  */
+    /* Range check: phys < 2MB */
+    emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02)); /* srl  a0, t1, 21      */
     uint32_t *range_branch = code_ptr;
-    emit(MK_I(0x04, REG_T1, REG_ZERO, 0)); /* beq  t1, zero, @slow                 */
-    /* Delay slot: compute host addr.  BEQ already captured t1 (null check). */
-    EMIT_ADDU(REG_T1, REG_T1, REG_A0); /* [delay] addu t1, t1, a0  (host addr) */
+    emit(MK_I(0x05, REG_A0, REG_ZERO, 0));       /* bne  a0, zero, @slow */
+    EMIT_ADDU(REG_T1, REG_T1, REG_S1);           /* [delay] addu t1, t1, s1 (host addr) */
     if (size == 4)
         EMIT_SW(REG_T2, 0, REG_T1);
     else if (size == 2)
@@ -566,8 +546,7 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     EMIT_NOP();
 
     /*
-     * @slow: LUT miss goes directly to C helper.
-     * Scratchpad is handled by C WriteWord/WriteHalf/WriteByte.
+     * @slow: Range miss, misaligned, or cache-isolated → C helper.
      */
     int32_t soff_range = (int32_t)(code_ptr - range_branch - 1);
     *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff_range & 0xFFFF);
@@ -609,10 +588,10 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
 }
 
 /*
- * emit_memory_lwx: Emit LWL/LWR with LUT fast path.
+ * emit_memory_lwx: Emit LWL/LWR with direct address fast path.
  *
  * The R5900 (EE) has native lwl/lwr instructions identical to R3000A.
- * Fast path: LUT lookup → native lwl/lwr on host pointer.
+ * Fast path: phys mask + range check → native lwl/lwr on host pointer.
  * Slow path: C helper (Helper_LWL / Helper_LWR).
  *
  * is_left: 1 = LWL, 0 = LWR
@@ -632,16 +611,12 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
     /* Flush lazy consts before conditional fast/slow split */
     flush_dirty_consts();
 
-    /* LUT lookup (64KB virtual pages, S3 = mem_lut) */
-    emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* srl  t1, t0, 16       */
-    emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00));  /* sll  t1, t1, 2        */
-    EMIT_ADDU(REG_T1, REG_T1, REG_S3);          /* addu t1, t1, s3       */
-    EMIT_LW(REG_T1, 0, REG_T1);                 /* lw   t1, 0(t1)        */
-    emit(MK_I(0x0C, REG_T0, REG_T2, 0xFFFF));   /* andi t2, t0, 0xFFFF   */
-    uint32_t *lut_branch = code_ptr;
-    emit(MK_I(0x04, REG_T1, REG_ZERO, 0)); /* beq  t1, zero, @slow  */
-    /* Delay slot: compute host addr (BEQ already captured t1) */
-    EMIT_ADDU(REG_T1, REG_T1, REG_T2); /* [delay] addu t1, t1, t2 */
+    /* Direct address fast path (no LUT): S3 = 0x1FFFFFFF, S1 = psx_ram */
+    emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3 (phys) */
+    emit(MK_R(0, 0, REG_T1, REG_T2, 21, 0x02));         /* srl  t2, t1, 21 (range check) */
+    uint32_t *range_branch = code_ptr;
+    emit(MK_I(0x05, REG_T2, REG_ZERO, 0));              /* bne  t2, zero, @slow */
+    EMIT_ADDU(REG_T1, REG_T1, REG_S1);                  /* [delay] addu t1, t1, s1 (host) */
 
     /* Fast path: native lwl/lwr on host address */
     if (is_left)
@@ -653,9 +628,9 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
     emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
     EMIT_NOP();
 
-    /* @slow: LUT miss → C helper handles scratchpad too */
-    int32_t soff_lut = (int32_t)(code_ptr - lut_branch - 1);
-    *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff_lut & 0xFFFF);
+    /* @slow: range miss → C helper handles scratchpad too */
+    int32_t soff_range = (int32_t)(code_ptr - range_branch - 1);
+    *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff_range & 0xFFFF);
 
     /* Use shared mem_slow_trampoline: A0=addr, A1=cur_rt, T0=func, T2=psx_pc, T1=cycle_off */
     flush_dirty_consts();
@@ -680,9 +655,9 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
 }
 
 /*
- * emit_memory_swx: Emit SWL/SWR with LUT fast path.
+ * emit_memory_swx: Emit SWL/SWR with direct address fast path.
  *
- * Fast path: cache-isolation check → LUT lookup → native swl/swr.
+ * Fast path: cache-isolation check → phys mask + range check → native swl/swr.
  * Slow path: C helper (Helper_SWL / Helper_SWR).
  *
  * is_left: 1 = SWL, 0 = SWR
@@ -705,16 +680,12 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne  a0, zero, @slow */
     EMIT_NOP();
 
-    /* LUT lookup */
-    emit(MK_R(0, 0, REG_T0, REG_T1, 16, 0x02)); /* srl  t1, t0, 16       */
-    emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x00));  /* sll  t1, t1, 2        */
-    EMIT_ADDU(REG_T1, REG_T1, REG_S3);          /* addu t1, t1, s3       */
-    EMIT_LW(REG_T1, 0, REG_T1);                 /* lw   t1, 0(t1)        */
-    emit(MK_I(0x0C, REG_T0, REG_A0, 0xFFFF));   /* andi a0, t0, 0xFFFF   */
-    uint32_t *lut_branch = code_ptr;
-    emit(MK_I(0x04, REG_T1, REG_ZERO, 0)); /* beq  t1, zero, @slow  */
-    /* Delay slot: compute host addr (BEQ already captured t1) */
-    EMIT_ADDU(REG_T1, REG_T1, REG_A0); /* [delay] addu t1, t1, a0 */
+    /* Direct address fast path (S3 = 0x1FFFFFFF, S1 = psx_ram) */
+    emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3 (phys) */
+    emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02));         /* srl  a0, t1, 21 (range) */
+    uint32_t *range_branch = code_ptr;
+    emit(MK_I(0x05, REG_A0, REG_ZERO, 0));              /* bne  a0, zero, @slow */
+    EMIT_ADDU(REG_T1, REG_T1, REG_S1);                  /* [delay] addu t1, t1, s1 */
 
     /* Fast path: native swl/swr on host address */
     if (is_left)
@@ -726,9 +697,9 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
     EMIT_NOP();
 
-    /* @slow: LUT miss → C helper handles scratchpad too */
-    int32_t soff_lut = (int32_t)(code_ptr - lut_branch - 1);
-    *lut_branch = (*lut_branch & 0xFFFF0000) | ((uint32_t)soff_lut & 0xFFFF);
+    /* @slow: range miss or cache-isolated → C helper */
+    int32_t soff_range = (int32_t)(code_ptr - range_branch - 1);
+    *range_branch = (*range_branch & 0xFFFF0000) | ((uint32_t)soff_range & 0xFFFF);
 
     /* Slow path */
     int32_t soff0 = (int32_t)(code_ptr - isc_branch - 1);
