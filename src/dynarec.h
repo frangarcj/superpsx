@@ -105,7 +105,7 @@ typedef int32_t (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios, int3
 #define REG_SP 29
 #define REG_ZERO 0
 
-#define DYNAREC_PROLOGUE_WORDS 27
+#define DYNAREC_PROLOGUE_WORDS 28
 
 /* ================================================================
  *  MIPS instruction builders

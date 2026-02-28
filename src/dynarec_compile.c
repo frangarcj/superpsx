@@ -269,6 +269,7 @@ void emit_block_prologue(void)
     EMIT_SW(REG_S5, 52, REG_SP);
     EMIT_SW(REG_S6, 56, REG_SP);
     EMIT_SW(REG_S7, 60, REG_SP);
+    EMIT_SW(REG_FP, 68, REG_SP);
     EMIT_MOVE(REG_S0, REG_A0); /* S0 = &cpu           */
     /* S1 = TLB-mapped VA base (0x20000000) if TLB active, else psx_ram */
     if (psx_tlb_base)
@@ -292,6 +293,7 @@ void emit_block_epilogue(void)
     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
     EMIT_MOVE(REG_V0, REG_S2);
     emit_flush_pinned();
+    EMIT_LW(REG_FP, 68, REG_SP);
     EMIT_LW(REG_S7, 60, REG_SP);
     EMIT_LW(REG_S6, 56, REG_SP);
     EMIT_LW(REG_S5, 52, REG_SP);
@@ -536,10 +538,9 @@ uint32_t *compile_block(uint32_t psx_pc)
             }
             else if (branch_type == 4)
             {
-                /* Deferred Conditional Branch (saved in cpu.branch_cond) */
-                EMIT_LW(REG_T2, CPU_BRANCH_COND, REG_S0);
+                /* Deferred Conditional Branch (cond in $fp register) */
                 uint32_t *bp = code_ptr;
-                emit(MK_I(0x05, REG_T2, REG_ZERO, 0)); /* BNE t2, zero, 0 */
+                emit(MK_I(0x05, REG_FP, REG_ZERO, 0)); /* BNE fp, zero, 0 */
                 EMIT_NOP();
 
                 branch_opcode = (uint32_t)bp;
@@ -726,7 +727,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             {
                 emit(MK_R(0, REG_ZERO, REG_T0, REG_T2, 0, 0x2A)); /* SLT t2, zero, t0 */
             }
-            EMIT_SW(REG_T2, CPU_BRANCH_COND, REG_S0); /* save cond across delay slot */
+            EMIT_MOVE(REG_FP, REG_T2); /* save cond in $fp across delay slot */
 
             branch_type = 4;
             in_delay_slot = 1;
@@ -812,7 +813,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                 emit(MK_R(0, REG_T0, REG_ZERO, REG_T2, 0, 0x2A));
                 emit(MK_I(0x0E, REG_T2, REG_T2, 1)); /* XORI t2, t2, 1 */
             }
-            EMIT_SW(REG_T2, CPU_BRANCH_COND, REG_S0); /* save cond across delay slot */
+            EMIT_MOVE(REG_FP, REG_T2); /* save cond in $fp across delay slot */
 
             branch_type = 4;
             in_delay_slot = 1;
