@@ -22,29 +22,31 @@ uint64_t gpu_estimated_pixels = 0;
  *  Invalidation: gs_state_dirty = 1 on any external state change
  *  (E1/E6 handlers, GPU reset, VRAM upload).
  * ═══════════════════════════════════════════════════════════════════ */
-static struct {
-    uint64_t tex0;      /* Last TEX0_1 written */
-    uint64_t test;      /* Last TEST_1 written */
-    uint64_t alpha;     /* Last ALPHA_1 written */
-    int      dthe;      /* Last DTHE written (0 or 1) */
-    int      valid;     /* 0 = unknown, 1 = tracked values are current */
-} gs_state = { 0, 0, 0, -1, 0 };
+static struct
+{
+    uint64_t tex0;  /* Last TEX0_1 written */
+    uint64_t test;  /* Last TEST_1 written */
+    uint64_t alpha; /* Last ALPHA_1 written */
+    int dthe;       /* Last DTHE written (0 or 1) */
+    int valid;      /* 0 = unknown, 1 = tracked values are current */
+} gs_state = {0, 0, 0, -1, 0};
 
 /* Primitive-level Decode_TexPage_Cached result cache.
  * Eliminates ~80% of redundant texture cache lookups for consecutive
  * same-texture primitives (582K → ~100K calls). */
-static struct {
-    int      valid;
-    int      tex_format;
-    int      tex_page_x, tex_page_y;
-    int      clut_x, clut_y;
+static struct
+{
+    int valid;
+    int tex_format;
+    int tex_page_x, tex_page_y;
+    int clut_x, clut_y;
     uint32_t vram_gen;
     uint32_t tw_mask_x, tw_mask_y, tw_off_x, tw_off_y;
-    int      result;    /* 0=fail, 1=SW decode, 2=HW CLUT */
-    int      out_x, out_y;
-    int      hw_clut;
-    int      hw_tbp0, hw_cbp;
-} prim_tex_cache = { 0 };
+    int result; /* 0=fail, 1=SW decode, 2=HW CLUT */
+    int out_x, out_y;
+    int hw_clut;
+    int hw_tbp0, hw_cbp;
+} prim_tex_cache = {0};
 
 /* Invalidate GS state tracking (called on E1, E6, GPU reset, etc.) */
 void Prim_InvalidateGSState(void)
@@ -100,10 +102,13 @@ static inline int prim_tex_decode(int tex_format, int tex_page_x, int tex_page_y
     prim_tex_cache.out_x = *out_x;
     prim_tex_cache.out_y = *out_y;
     prim_tex_cache.hw_clut = (result == 2) ? 1 : 0;
-    if (result == 2) {
+    if (result == 2)
+    {
         prim_tex_cache.hw_tbp0 = *out_x;
         prim_tex_cache.hw_cbp = *out_y;
-    } else {
+    }
+    else
+    {
         prim_tex_cache.hw_tbp0 = 0;
         prim_tex_cache.hw_cbp = 0;
     }
@@ -334,13 +339,16 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
 
                     int result;
                     tex_cache_hit = prim_tex_cache_lookup(tex_page_format,
-                                              poly_tex_page_x, poly_tex_page_y,
-                                              clut_x, clut_y);
-                    if (tex_cache_hit) {
+                                                          poly_tex_page_x, poly_tex_page_y,
+                                                          clut_x, clut_y);
+                    if (tex_cache_hit)
+                    {
                         result = prim_tex_cache.result;
                         poly_uv_off_u = prim_tex_cache.out_x;
                         poly_uv_off_v = prim_tex_cache.out_y;
-                    } else {
+                    }
+                    else
+                    {
                         result = prim_tex_decode(tex_page_format,
                                                  poly_tex_page_x, poly_tex_page_y,
                                                  clut_x, clut_y,
@@ -366,12 +374,16 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 int want_dthe = use_dither;
                 uint64_t want_alpha = is_semi_trans ? Get_Alpha_Reg(semi_trans_mode) : 0;
                 uint64_t want_test = is_textured
-                    ? ((uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST()) : 0;
+                                         ? ((uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST())
+                                         : 0;
                 uint64_t want_tex0 = 0;
                 int need_texflush = 0;
-                if (is_textured) {
-                    if (poly_clut_decoded) {
-                        if (poly_hw_clut) {
+                if (is_textured)
+                {
+                    if (poly_clut_decoded)
+                    {
+                        if (poly_hw_clut)
+                        {
                             int psm = (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8;
                             want_tex0 |= (uint64_t)poly_hw_tbp0;
                             want_tex0 |= (uint64_t)4 << 14;
@@ -383,7 +395,9 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                             want_tex0 |= (uint64_t)poly_hw_cbp << 37;
                             want_tex0 |= (uint64_t)GS_PSM_16 << 51;
                             want_tex0 |= (uint64_t)1 << 61;
-                        } else {
+                        }
+                        else
+                        {
                             want_tex0 |= (uint64_t)4096;
                             want_tex0 |= (uint64_t)PSX_VRAM_FBW << 14;
                             want_tex0 |= (uint64_t)GS_PSM_16S << 20;
@@ -393,7 +407,9 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                             want_tex0 |= (uint64_t)(is_raw_tex ? 1 : 0) << 35;
                         }
                         need_texflush = !tex_cache_hit;
-                    } else {
+                    }
+                    else
+                    {
                         /* Non-CLUT 15BPP: default VRAM view */
                         want_tex0 |= (uint64_t)PSX_VRAM_FBW << 14;
                         want_tex0 |= (uint64_t)GS_PSM_16S << 20;
@@ -405,34 +421,53 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 }
 
                 /* Determine which GS registers actually need updating */
-                int emit_dthe  = (!gs_state.valid || gs_state.dthe  != want_dthe);
+                int emit_dthe = (!gs_state.valid || gs_state.dthe != want_dthe);
                 int emit_alpha = (is_semi_trans && (!gs_state.valid || gs_state.alpha != want_alpha));
-                int emit_tex0  = (is_textured  && (!gs_state.valid || gs_state.tex0  != want_tex0 || need_texflush));
-                int emit_test  = (is_textured  && (!gs_state.valid || gs_state.test  != want_test));
-                int state_qws  = emit_dthe + emit_alpha + emit_tex0 * 2 + emit_test;
+                int emit_tex0 = (is_textured && (!gs_state.valid || gs_state.tex0 != want_tex0 || need_texflush));
+                int emit_test = (is_textured && (!gs_state.valid || gs_state.test != want_test));
+                int state_qws = emit_dthe + emit_alpha + emit_tex0 * 2 + emit_test;
 
                 for (int t = 0; t < 2; t++)
                 {
                     int ndata = is_textured ? 10 : 7; /* PRIM + 3×(UV+RGBAQ+XYZ) or 3×(RGBAQ+XYZ) */
-                    if (t == 0) ndata += state_qws;
+                    if (t == 0)
+                        ndata += state_qws;
                     Push_GIF_Tag(GIF_TAG_LO(ndata, (t == 1) ? 1 : 0, 0, 0, 0, 1), GIF_REG_AD);
 
                     if (t == 0)
                     {
-                        if (emit_dthe)  Push_GIF_Data((uint64_t)want_dthe, GS_REG_DTHE);
-                        if (emit_alpha) Push_GIF_Data(want_alpha, GS_REG_ALPHA_1);
-                        if (emit_tex0)  { Push_GIF_Data(want_tex0, GS_REG_TEX0); Push_GIF_Data(0, GS_REG_TEXFLUSH); }
-                        if (emit_test)  Push_GIF_Data(want_test, GS_REG_TEST_1);
+                        if (emit_dthe)
+                            Push_GIF_Data((uint64_t)want_dthe, GS_REG_DTHE);
+                        if (emit_alpha)
+                            Push_GIF_Data(want_alpha, GS_REG_ALPHA_1);
+                        if (emit_tex0)
+                        {
+                            Push_GIF_Data(want_tex0, GS_REG_TEX0);
+                            Push_GIF_Data(0, GS_REG_TEXFLUSH);
+                        }
+                        if (emit_test)
+                            Push_GIF_Data(want_test, GS_REG_TEST_1);
                         /* Update lazy tracking */
-                        if (!gs_state.valid) {
+                        if (!gs_state.valid)
+                        {
                             /* Transitioning from unknown: sentinel for unemitted regs
                              * so stale values can't accidentally match future prims */
-                            if (!is_textured)  { gs_state.tex0 = ~0ULL; gs_state.test = ~0ULL; }
-                            if (!is_semi_trans) gs_state.alpha = ~0ULL;
+                            if (!is_textured)
+                            {
+                                gs_state.tex0 = ~0ULL;
+                                gs_state.test = ~0ULL;
+                            }
+                            if (!is_semi_trans)
+                                gs_state.alpha = ~0ULL;
                         }
                         gs_state.dthe = want_dthe;
-                        if (is_semi_trans) gs_state.alpha = want_alpha;
-                        if (is_textured) { gs_state.tex0 = want_tex0; gs_state.test = want_test; }
+                        if (is_semi_trans)
+                            gs_state.alpha = want_alpha;
+                        if (is_textured)
+                        {
+                            gs_state.tex0 = want_tex0;
+                            gs_state.test = want_test;
+                        }
                         gs_state.valid = 1;
                     }
 
@@ -487,13 +522,16 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
 
                 int result;
                 tri_cache_hit = prim_tex_cache_lookup(tex_page_format,
-                                          poly_tex_page_x, poly_tex_page_y,
-                                          clut_x, clut_y);
-                if (tri_cache_hit) {
+                                                      poly_tex_page_x, poly_tex_page_y,
+                                                      clut_x, clut_y);
+                if (tri_cache_hit)
+                {
                     result = prim_tex_cache.result;
                     tri_uv_off_u = prim_tex_cache.out_x;
                     tri_uv_off_v = prim_tex_cache.out_y;
-                } else {
+                }
+                else
+                {
                     result = prim_tex_decode(tex_page_format,
                                              poly_tex_page_x, poly_tex_page_y,
                                              clut_x, clut_y,
@@ -518,12 +556,16 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
             int tw_dthe = use_dither_tri;
             uint64_t tw_alpha = is_semi_trans_tri ? Get_Alpha_Reg(semi_trans_mode) : 0;
             uint64_t tw_test = is_textured
-                ? ((uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST()) : 0;
+                                   ? ((uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST())
+                                   : 0;
             uint64_t tw_tex0 = 0;
             int tw_texflush = 0;
-            if (is_textured) {
-                if (tri_clut_decoded) {
-                    if (tri_hw_clut) {
+            if (is_textured)
+            {
+                if (tri_clut_decoded)
+                {
+                    if (tri_hw_clut)
+                    {
                         int psm = (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8;
                         tw_tex0 |= (uint64_t)tri_hw_tbp0;
                         tw_tex0 |= (uint64_t)4 << 14;
@@ -535,7 +577,9 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                         tw_tex0 |= (uint64_t)tri_hw_cbp << 37;
                         tw_tex0 |= (uint64_t)GS_PSM_16 << 51;
                         tw_tex0 |= (uint64_t)1 << 61;
-                    } else {
+                    }
+                    else
+                    {
                         tw_tex0 |= (uint64_t)4096;
                         tw_tex0 |= (uint64_t)PSX_VRAM_FBW << 14;
                         tw_tex0 |= (uint64_t)GS_PSM_16S << 20;
@@ -545,7 +589,9 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                         tw_tex0 |= (uint64_t)(is_raw_tex_tri ? 1 : 0) << 35;
                     }
                     tw_texflush = !tri_cache_hit;
-                } else {
+                }
+                else
+                {
                     /* Non-CLUT 15BPP: default VRAM view */
                     tw_tex0 |= (uint64_t)PSX_VRAM_FBW << 14;
                     tw_tex0 |= (uint64_t)GS_PSM_16S << 20;
@@ -557,29 +603,47 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
             }
 
             /* Determine which GS registers actually need updating */
-            int e_dthe  = (!gs_state.valid || gs_state.dthe  != tw_dthe);
+            int e_dthe = (!gs_state.valid || gs_state.dthe != tw_dthe);
             int e_alpha = (is_semi_trans_tri && (!gs_state.valid || gs_state.alpha != tw_alpha));
-            int e_tex0  = (is_textured && (!gs_state.valid || gs_state.tex0 != tw_tex0 || tw_texflush));
-            int e_test  = (is_textured && (!gs_state.valid || gs_state.test != tw_test));
+            int e_tex0 = (is_textured && (!gs_state.valid || gs_state.tex0 != tw_tex0 || tw_texflush));
+            int e_test = (is_textured && (!gs_state.valid || gs_state.test != tw_test));
 
             int ndata = is_textured ? 10 : 7;
             ndata += e_dthe + e_alpha + e_tex0 * 2 + e_test;
             Push_GIF_Tag(GIF_TAG_LO(ndata, 1, 0, 0, 0, 1), GIF_REG_AD);
 
-            if (e_dthe)  Push_GIF_Data((uint64_t)tw_dthe, GS_REG_DTHE);
-            if (e_alpha) Push_GIF_Data(tw_alpha, GS_REG_ALPHA_1);
-            if (e_tex0)  { Push_GIF_Data(tw_tex0, GS_REG_TEX0); Push_GIF_Data(0, GS_REG_TEXFLUSH); }
-            if (e_test)  Push_GIF_Data(tw_test, GS_REG_TEST_1);
+            if (e_dthe)
+                Push_GIF_Data((uint64_t)tw_dthe, GS_REG_DTHE);
+            if (e_alpha)
+                Push_GIF_Data(tw_alpha, GS_REG_ALPHA_1);
+            if (e_tex0)
+            {
+                Push_GIF_Data(tw_tex0, GS_REG_TEX0);
+                Push_GIF_Data(0, GS_REG_TEXFLUSH);
+            }
+            if (e_test)
+                Push_GIF_Data(tw_test, GS_REG_TEST_1);
 
             /* Update lazy tracking */
-            if (!gs_state.valid) {
+            if (!gs_state.valid)
+            {
                 /* Transitioning from unknown: sentinel for unemitted regs */
-                if (!is_textured)      { gs_state.tex0 = ~0ULL; gs_state.test = ~0ULL; }
-                if (!is_semi_trans_tri) gs_state.alpha = ~0ULL;
+                if (!is_textured)
+                {
+                    gs_state.tex0 = ~0ULL;
+                    gs_state.test = ~0ULL;
+                }
+                if (!is_semi_trans_tri)
+                    gs_state.alpha = ~0ULL;
             }
             gs_state.dthe = tw_dthe;
-            if (is_semi_trans_tri) gs_state.alpha = tw_alpha;
-            if (is_textured) { gs_state.tex0 = tw_tex0; gs_state.test = tw_test; }
+            if (is_semi_trans_tri)
+                gs_state.alpha = tw_alpha;
+            if (is_textured)
+            {
+                gs_state.tex0 = tw_tex0;
+                gs_state.test = tw_test;
+            }
             gs_state.valid = 1;
 
             Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
@@ -612,7 +676,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
         }
     }
     else if ((cmd & 0xE0) == 0x60)
-    { // Rectangle (Sprite) - use GS SPRITE primitive for reliable rendering
+    {                       // Rectangle (Sprite) - use GS SPRITE primitive for reliable rendering
         gs_state.valid = 0; /* Rect path does unconditional state setup/restore */
         int is_textured = (cmd & 0x04) != 0;
         int is_var_size = (cmd & 0x18) == 0x00;
@@ -698,11 +762,14 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
                 int result;
                 if (prim_tex_cache_lookup(tex_page_format,
                                           tex_page_x, tex_page_y,
-                                          clut_x, clut_y)) {
+                                          clut_x, clut_y))
+                {
                     result = prim_tex_cache.result;
                     cache_slot_x = prim_tex_cache.out_x;
                     cache_slot_y = prim_tex_cache.out_y;
-                } else {
+                }
+                else
+                {
                     result = prim_tex_decode(tex_page_format,
                                              tex_page_x, tex_page_y,
                                              clut_x, clut_y,
@@ -1032,7 +1099,7 @@ void Translate_GP0_to_GS(uint32_t *psx_cmd)
     fillrect_done:;
     }
     else if ((cmd & 0xE0) == 0x40)
-    { // Line
+    {                       // Line
         gs_state.valid = 0; /* Line path does unconditional state writes */
         int is_shaded = (cmd & 0x10) != 0;
         int is_semi_trans = (cmd & 0x02) != 0;

@@ -44,9 +44,10 @@ uint32_t ReadHardware(uint32_t phys)
      * then fine-grained checks within each block.  The compiler generates a
      * compact jump table for the outer switch (32 entries max).
      */
-    uint32_t off = phys - 0x1F801000;  /* 0x0000-0x1FFF */
+    uint32_t off = phys - 0x1F801000; /* 0x0000-0x1FFF */
 
-    switch (off >> 8) {
+    switch (off >> 8)
+    {
     case 0x00: /* 0x1F801000-0x1F8010FF: memctrl, SIO, IRQ, DMA */
         if (phys < 0x1F801024)
             return mem_ctrl[(phys - 0x1F801000) >> 2];
@@ -66,7 +67,8 @@ uint32_t ReadHardware(uint32_t phys)
         return Timers_Read(phys);
 
     case 0x08: /* 0x1F801800-0x1F8018FF: CDROM, GPU, MDEC */
-        if (phys <= 0x1F801803) {
+        if (phys <= 0x1F801803)
+        {
             uint32_t byte_val = CDROM_Read(phys) & 0xFF;
             return byte_val | (byte_val << 8) | (byte_val << 16) | (byte_val << 24);
         }
@@ -92,10 +94,22 @@ uint32_t ReadHardware(uint32_t phys)
         return lo | (hi << 16);
     }
 
-    case 0x10: case 0x11: case 0x12: case 0x13: /* Expansion 2 */
-    case 0x14: case 0x15: case 0x16: case 0x17:
-    case 0x18: case 0x19: case 0x1A: case 0x1B:
-    case 0x1C: case 0x1D: case 0x1E: case 0x1F:
+    case 0x10:
+    case 0x11:
+    case 0x12:
+    case 0x13: /* Expansion 2 */
+    case 0x14:
+    case 0x15:
+    case 0x16:
+    case 0x17:
+    case 0x18:
+    case 0x19:
+    case 0x1A:
+    case 0x1B:
+    case 0x1C:
+    case 0x1D:
+    case 0x1E:
+    case 0x1F:
         return 0xFFFFFFFF;
 
     default:
@@ -107,21 +121,26 @@ void WriteHardware(uint32_t phys, uint32_t data, int size)
 {
     uint32_t off = phys - 0x1F801000;
 
-    switch (off >> 8) {
+    switch (off >> 8)
+    {
     case 0x00: /* 0x1F801000-0x1F8010FF: memctrl, SIO, IRQ, DMA */
-        if (phys < 0x1F801024) {
+        if (phys < 0x1F801024)
+        {
             mem_ctrl[(phys - 0x1F801000) >> 2] = data;
             return;
         }
-        if (phys >= 0x1F801040 && phys <= 0x1F80105E) {
+        if (phys >= 0x1F801040 && phys <= 0x1F80105E)
+        {
             SIO_Write(phys, data);
             return;
         }
-        if (phys == 0x1F801060) {
+        if (phys == 0x1F801060)
+        {
             ram_size = data;
             return;
         }
-        if (phys == 0x1F801070) {
+        if (phys == 0x1F801070)
+        {
             cpu.i_stat &= data;
             /* CD-ROM level-triggered re-assertion: if the game acknowledged
              * bit 2 but the CD-ROM IRQ condition is still active, re-set it
@@ -139,14 +158,16 @@ void WriteHardware(uint32_t phys, uint32_t data, int size)
             }
             return;
         }
-        if (phys == 0x1F801074) {
+        if (phys == 0x1F801074)
+        {
             cpu.i_mask = data & 0xFFFF07FF;
             DLOG("I_MASK = %08X (VSync=%d CD=%d Timer0=%d Timer1=%d Timer2=%d)\n",
                  (unsigned)cpu.i_mask, (int)(cpu.i_mask & 1), (int)((cpu.i_mask >> 2) & 1),
                  (int)((cpu.i_mask >> 4) & 1), (int)((cpu.i_mask >> 5) & 1), (int)((cpu.i_mask >> 6) & 1));
             return;
         }
-        if (phys >= 0x1F801080) {
+        if (phys >= 0x1F801080)
+        {
             DMA_Write(phys, data);
             return;
         }
@@ -157,15 +178,18 @@ void WriteHardware(uint32_t phys, uint32_t data, int size)
         return;
 
     case 0x08: /* 0x1F801800-0x1F8018FF: CDROM, GPU, MDEC */
-        if (phys <= 0x1F801803) {
+        if (phys <= 0x1F801803)
+        {
             CDROM_Write(phys, data);
             return;
         }
-        if (phys == 0x1F801810) {
+        if (phys == 0x1F801810)
+        {
             GPU_WriteGP0(data);
             return;
         }
-        if (phys == 0x1F801814) {
+        if (phys == 0x1F801814)
+        {
             GPU_WriteGP1(data);
             return;
         }
@@ -184,10 +208,22 @@ void WriteHardware(uint32_t phys, uint32_t data, int size)
         return;
     }
 
-    case 0x10: case 0x11: case 0x12: case 0x13: /* Expansion 2 */
-    case 0x14: case 0x15: case 0x16: case 0x17:
-    case 0x18: case 0x19: case 0x1A: case 0x1B:
-    case 0x1C: case 0x1D: case 0x1E: case 0x1F:
+    case 0x10:
+    case 0x11:
+    case 0x12:
+    case 0x13: /* Expansion 2 */
+    case 0x14:
+    case 0x15:
+    case 0x16:
+    case 0x17:
+    case 0x18:
+    case 0x19:
+    case 0x1A:
+    case 0x1B:
+    case 0x1C:
+    case 0x1D:
+    case 0x1E:
+    case 0x1F:
         if (phys == 0x1F802002)
             printf("%c", (char)data);
         return;

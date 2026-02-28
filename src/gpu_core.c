@@ -59,7 +59,6 @@ volatile int gpu_pending_vblank_flush = 0;
 
 /* Debug log file */
 
-
 /* VRAM transfer tracking for shadow writes */
 int vram_tx_x = 0, vram_tx_y = 0, vram_tx_w = 0, vram_tx_h = 0, vram_tx_pixel = 0;
 
@@ -192,11 +191,11 @@ uint32_t GPU_ReadStatus(void)
     {
         uint32_t dma_dir = (final_stat >> 29) & 3;
         if (dma_dir == 1)
-            final_stat |= 0x02000000;                           /* FIFO always ready */
+            final_stat |= 0x02000000; /* FIFO always ready */
         else if (dma_dir == 2)
-            final_stat |= 0x02000000;                           /* Mirror bit 28 (forced 1) */
+            final_stat |= 0x02000000; /* Mirror bit 28 (forced 1) */
         else if (dma_dir == 3 && (final_stat & 0x08000000))
-            final_stat |= 0x02000000;                           /* Mirror bit 27 */
+            final_stat |= 0x02000000; /* Mirror bit 27 */
     }
 
     return final_stat;

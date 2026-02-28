@@ -79,7 +79,6 @@ static void clear_gpu_param_cache(void)
     cache_gp1_08 = 0xFFFFFFFF;
 }
 
-
 /* ── GP0 Write ───────────────────────────────────────────────────── */
 
 void GPU_WriteGP0(uint32_t data)
@@ -357,7 +356,7 @@ void GPU_WriteGP0(uint32_t data)
                     uint16_t *tbuf = (uint16_t *)memalign(64, buf_qwc * 16);
                     if (tbuf)
                     {
-                        Flush_GIF_Sync();  /* Must wait: direct GIF channel use follows */
+                        Flush_GIF_Sync(); /* Must wait: direct GIF channel use follows */
 
                         unsigned __int128 rb_packet[8] __attribute__((aligned(16)));
                         uint64_t *rp = (uint64_t *)rb_packet;
@@ -667,7 +666,8 @@ void GPU_WriteGP0(uint32_t data)
          * when the interrupt source transitions from false to true.
          * GPUSTAT.24 is the source line for I_STAT bit 1 (GPU IRQ).
          * Only fire SignalInterrupt when GPUSTAT.24 was previously 0. */
-        if (!(gpu_stat & 0x01000000)) {
+        if (!(gpu_stat & 0x01000000))
+        {
             gpu_stat |= 0x01000000;
             SignalInterrupt(1); /* Rising edge → set I_STAT bit 1 */
         }
@@ -776,8 +776,8 @@ void GPU_WriteGP1(uint32_t data)
         gpu_transfer_words = 0;
         polyline_active = 0;
         break;
-    case 0x02: // Ack IRQ
-        gpu_stat &= ~0x01000000;   /* Clear GPUSTAT bit 24 (IRQ flag) */
+    case 0x02:                   // Ack IRQ
+        gpu_stat &= ~0x01000000; /* Clear GPUSTAT bit 24 (IRQ flag) */
         /* I_STAT bit 1 is NOT cleared here — software must clear it
          * by writing to I_STAT (0x1F801070) separately.
          * Per psx-spx interrupt acknowledge ordering, clearing the
@@ -869,12 +869,23 @@ void GPU_WriteGP1(uint32_t data)
         gp1_allow_2mb = data & 1;
         break;
     case 0x10: // Get GPU Info
-    case 0x11: case 0x12: case 0x13: case 0x14:
-    case 0x15: case 0x16: case 0x17: case 0x18:
-    case 0x19: case 0x1A: case 0x1B: case 0x1C:
-    case 0x1D: case 0x1E: case 0x1F:
+    case 0x11:
+    case 0x12:
+    case 0x13:
+    case 0x14:
+    case 0x15:
+    case 0x16:
+    case 0x17:
+    case 0x18:
+    case 0x19:
+    case 0x1A:
+    case 0x1B:
+    case 0x1C:
+    case 0x1D:
+    case 0x1E:
+    case 0x1F:
     {
-        uint32_t info_type = data & 0x0F;  /* Lower 4 bits select info type */
+        uint32_t info_type = data & 0x0F; /* Lower 4 bits select info type */
         switch (info_type)
         {
         case 2: /* Texture window: lower 20 bits, preserve upper 12 */

@@ -116,7 +116,7 @@ void Upload_Shadow_VRAM_Region(int x, int y, int w, int h)
 
 uint16_t *GS_ReadbackRegion(int x, int y, int w_aligned, int h, void *buf, int buf_qwc)
 {
-    Flush_GIF_Sync();  /* Must wait for DMA before direct GIF channel use */
+    Flush_GIF_Sync(); /* Must wait for DMA before direct GIF channel use */
 
     unsigned __int128 rb_packet[8] __attribute__((aligned(16)));
     uint64_t *rp = (uint64_t *)rb_packet;
@@ -331,7 +331,7 @@ void DumpVRAM(const char *filename)
 #endif
 
     // 1. Finish any pending rendering
-    Flush_GIF_Sync();  /* Must wait for DMA before direct GIF channel use */
+    Flush_GIF_Sync(); /* Must wait for DMA before direct GIF channel use */
 
     // 2. Prepare transfer size (CT16S = 2 bytes per pixel)
     int width = 1024;

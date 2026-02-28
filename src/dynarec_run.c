@@ -68,7 +68,7 @@ static uint32_t hblank_scanline = 0;
 static uint64_t hblank_ideal_deadline = 0;
 static uint64_t perf_frame_count = 0;
 static uint32_t cycles_per_hblank_runtime = CYCLES_PER_HBLANK_NTSC; /* Set at init based on region */
-uint64_t hblank_frame_start_cycle = 0;  /* Cycle at which current frame started (VBlank reset) */
+uint64_t hblank_frame_start_cycle = 0;                              /* Cycle at which current frame started (VBlank reset) */
 
 #ifdef ENABLE_PERF_REPORT
 static uint64_t perf_last_report_cycle = 0;
@@ -150,7 +150,8 @@ void Init_Dynarec(void)
     memset(jit_page_gen, 0, sizeof(jit_page_gen));
 
     /* Clear hash table — set all entries to unmatchable */
-    for (int i = 0; i < JIT_HT_SIZE; i++) {
+    for (int i = 0; i < JIT_HT_SIZE; i++)
+    {
         jit_ht[i].psx_pc = 0xFFFFFFFF;
         jit_ht[i].native = NULL;
     }
@@ -293,9 +294,9 @@ void Init_Dynarec(void)
         /* 1. If cycles <= 0, abort to C scheduler */
         *p++ = MK_I(0x07, REG_S2, REG_ZERO, 0); /* bgtz s2, +0 (patched below) */
         uint32_t *cyc_branch = p - 1;
-        *p++ = 0; /* delay: nop */
+        *p++ = 0;                                             /* delay: nop */
         *p++ = MK_J(2, (uint32_t)abort_trampoline_addr >> 2); /* j abort */
-        *p++ = 0; /* delay: nop */
+        *p++ = 0;                                             /* delay: nop */
 
         /* Patch the bgtz to skip the abort (target = here) */
         uint32_t *cyc_ok = p;
@@ -303,9 +304,9 @@ void Init_Dynarec(void)
         *cyc_branch = (*cyc_branch & 0xFFFF0000) | ((uint32_t)cyc_off & 0xFFFF);
 
         /* 2. Compute hash: t1 = ((t0 >> 12) ^ t0) & JIT_HT_MASK */
-        *p++ = MK_R(0, 0, REG_T0, REG_T1, 12, 0x02); /* srl  t1, t0, 12 */
+        *p++ = MK_R(0, 0, REG_T0, REG_T1, 12, 0x02);     /* srl  t1, t0, 12 */
         *p++ = MK_R(0, REG_T1, REG_T0, REG_T1, 0, 0x26); /* xor  t1, t1, t0 */
-        *p++ = MK_I(0x0C, REG_T1, REG_T1, JIT_HT_MASK); /* andi t1, t1, MASK */
+        *p++ = MK_I(0x0C, REG_T1, REG_T1, JIT_HT_MASK);  /* andi t1, t1, MASK */
 
         /* 3. Scale to byte offset: t1 <<= 3 (sizeof(JitHTEntry) = 8) */
         *p++ = MK_R(0, 0, REG_T1, REG_T1, 3, 0x00); /* sll  t1, t1, 3 */
@@ -313,7 +314,7 @@ void Init_Dynarec(void)
         /* 4. Load hash table base: t2 = &jit_ht */
         uint32_t ht_addr = (uint32_t)&jit_ht[0];
         *p++ = MK_I(0x0F, 0, REG_T2, (ht_addr >> 16) & 0xFFFF); /* lui t2, hi */
-        *p++ = MK_I(0x0D, REG_T2, REG_T2, ht_addr & 0xFFFF); /* ori t2, lo */
+        *p++ = MK_I(0x0D, REG_T2, REG_T2, ht_addr & 0xFFFF);    /* ori t2, lo */
 
         /* 5. Index into table: t1 = &jit_ht[hash] */
         *p++ = MK_R(0, REG_T1, REG_T2, REG_T1, 0, 0x21); /* addu t1, t1, t2 */
@@ -331,14 +332,14 @@ void Init_Dynarec(void)
 
         /* 8. HIT: jump to native block directly! */
         *p++ = MK_R(0, REG_AT, 0, 0, 0, 0x08); /* jr at */
-        *p++ = 0; /* delay: nop */
+        *p++ = 0;                              /* delay: nop */
 
         /* 9. @miss: fall through to abort trampoline */
         uint32_t *miss_target = p;
         int32_t miss_off = (int32_t)(miss_target - miss_branch - 1);
         *miss_branch = (*miss_branch & 0xFFFF0000) | ((uint32_t)miss_off & 0xFFFF);
         *p++ = MK_J(2, (uint32_t)abort_trampoline_addr >> 2); /* j abort */
-        *p++ = 0; /* delay: nop */
+        *p++ = 0;                                             /* delay: nop */
     }
 
     /* ---- Memory slow-path trampoline at code_buffer[128] ----
@@ -356,16 +357,16 @@ void Init_Dynarec(void)
         uint16_t pbc_lo = pbc_addr & 0xFFFF;
         uint16_t pbc_hi = (pbc_addr + 0x8000) >> 16;
 
-        *p++ = MK_I(0x2B, REG_SP, REG_RA, 64);          /* sw ra, 64(sp) */
-        *p++ = MK_I(0x2B, REG_S0, REG_T2, CPU_CURRENT_PC); /* sw t2, cpu.current_pc */
-        *p++ = MK_I(0x0F, 0, REG_AT, pbc_hi);            /* lui at, hi(&pbc) */
-        *p++ = MK_I(0x2B, REG_AT, REG_T1, (int16_t)pbc_lo); /* sw t1, lo(&pbc) */
-        *p++ = MK_I(0x2B, REG_S0, REG_S2, CPU_CYCLES_LEFT); /* sw s2, cpu.cycles_left */
+        *p++ = MK_I(0x2B, REG_SP, REG_RA, 64);                      /* sw ra, 64(sp) */
+        *p++ = MK_I(0x2B, REG_S0, REG_T2, CPU_CURRENT_PC);          /* sw t2, cpu.current_pc */
+        *p++ = MK_I(0x0F, 0, REG_AT, pbc_hi);                       /* lui at, hi(&pbc) */
+        *p++ = MK_I(0x2B, REG_AT, REG_T1, (int16_t)pbc_lo);         /* sw t1, lo(&pbc) */
+        *p++ = MK_I(0x2B, REG_S0, REG_S2, CPU_CYCLES_LEFT);         /* sw s2, cpu.cycles_left */
         *p++ = MK_J(3, (uint32_t)call_c_trampoline_lite_addr >> 2); /* jal lite_tramp */
-        *p++ = 0; /* delay: nop */
-        *p++ = MK_I(0x23, REG_SP, REG_RA, 64);           /* lw ra, 64(sp) */
-        *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08);          /* jr ra */
-        *p++ = 0; /* delay: nop */
+        *p++ = 0;                                                   /* delay: nop */
+        *p++ = MK_I(0x23, REG_SP, REG_RA, 64);                      /* lw ra, 64(sp) */
+        *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08);                      /* jr ra */
+        *p++ = 0;                                                   /* delay: nop */
     }
 
     code_ptr = code_buffer + 144;
@@ -527,7 +528,7 @@ static void Sched_HBlank_Callback(void)
         GPU_VBlank();
         gpu_pending_vblank_flush = 1;
         SignalInterrupt(0);
-        Timer_ScheduleAll();  /* Reschedule timers after VBlank reset */
+        Timer_ScheduleAll();   /* Reschedule timers after VBlank reset */
         SPU_GenerateSamples(); /* Generate all audio + submit to audio hw */
 
         perf_frame_count++;
@@ -575,16 +576,21 @@ static inline int run_jit_chain(uint64_t deadline)
         uint32_t h = jit_ht_hash(pc);
         uint32_t *ht_native = jit_ht[h].native;
         uint32_t ht_pc = jit_ht[h].psx_pc;
-        if (ht_pc == pc && ht_native != NULL) {
+        if (ht_pc == pc && ht_native != NULL)
+        {
             uint32_t *expected = block + DYNAREC_PROLOGUE_WORDS;
-            if (ht_native != expected) {
+            if (ht_native != expected)
+            {
                 printf("[JIT_HT] STALE entry! PC=%08X slot=%u ht_native=%p expected=%p\n",
-                       (unsigned)pc, h, (void*)ht_native, (void*)expected);
+                       (unsigned)pc, h, (void *)ht_native, (void *)expected);
             }
-        } else if (ht_pc != pc && ht_pc != 0xFFFFFFFF) {
+        }
+        else if (ht_pc != pc && ht_pc != 0xFFFFFFFF)
+        {
             /* Collision: a different PC occupies this slot */
             static uint32_t ht_collision_count = 0;
-            if (++ht_collision_count <= 20) {
+            if (++ht_collision_count <= 20)
+            {
                 printf("[JIT_HT] Collision: slot=%u old_pc=%08X new_pc=%08X\n",
                        h, (unsigned)ht_pc, (unsigned)pc);
             }
@@ -615,7 +621,8 @@ static inline int run_jit_chain(uint64_t deadline)
                     /* Clear stale hash table entry to prevent dispatch
                      * trampoline from jumping to invalidated code */
                     uint32_t h = jit_ht_hash(pc);
-                    if (jit_ht[h].psx_pc == pc) {
+                    if (jit_ht[h].psx_pc == pc)
+                    {
                         jit_ht[h].psx_pc = 0xFFFFFFFF;
                         jit_ht[h].native = NULL;
                     }
@@ -728,6 +735,9 @@ void Run_CPU(void)
 
     Timer_ScheduleAll();
     binary_loaded = 0;
+    static uint32_t bios_trace_count = 0;
+    static uint32_t bios_last_pc = 0;
+    static uint32_t bios_same_count = 0;
 
     /* Phase 1: BIOS */
     printf("DYNAREC: Phase 1 - BIOS Booting...\n");
@@ -741,6 +751,27 @@ void Run_CPU(void)
         {
             if (handle_bios_boot_hook(cpu.pc))
                 break;
+            bios_trace_count++;
+            if (cpu.pc == bios_last_pc)
+            {
+                bios_same_count++;
+                if (bios_same_count == 10000)
+                {
+                    printf("[BIOS-STUCK] PC=%08X stuck for 10000 iters at cycle %llu\n",
+                           (unsigned)cpu.pc, (unsigned long long)global_cycles);
+                    /* Dump some register state */
+                    printf("[BIOS-STUCK] regs: v0=%08X v1=%08X a0=%08X a1=%08X sp=%08X ra=%08X\n",
+                           (unsigned)cpu.regs[2], (unsigned)cpu.regs[3],
+                           (unsigned)cpu.regs[4], (unsigned)cpu.regs[5],
+                           (unsigned)cpu.regs[29], (unsigned)cpu.regs[31]);
+                    fflush(stdout);
+                }
+            }
+            else
+            {
+                bios_last_pc = cpu.pc;
+                bios_same_count = 0;
+            }
             if (run_jit_chain(deadline) == RUN_RES_BREAK)
                 break;
         }
