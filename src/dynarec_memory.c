@@ -353,6 +353,7 @@ void cold_slow_emit_all(void)
  */
 void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_signed)
 {
+    reg_cache_invalidate();
     uint32_t const_addr = 0;
     int is_const = 0;
 
@@ -624,6 +625,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         e->load_defer = (uint8_t)dynarec_load_defer;
         e->rt_psx = rt_psx;
     }
+    reg_cache_invalidate();
 }
 
 void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t offset)
@@ -636,6 +638,7 @@ void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t offset)
 
 void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
 {
+    reg_cache_invalidate();
     uint32_t const_addr = 0;
     int is_const = 0;
 
@@ -891,6 +894,7 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         e->load_defer = 0;
         e->rt_psx = 0;
     }
+    reg_cache_invalidate();
 }
 
 /*
@@ -904,6 +908,7 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
  */
 void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int use_load_delay)
 {
+    reg_cache_invalidate();
     /* Load current rt value (merge target) */
     if (use_load_delay)
         EMIT_LW(REG_V0, CPU_LOAD_DELAY_VAL, REG_S0);
@@ -959,6 +964,7 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
         e->load_defer = (uint8_t)dynarec_load_defer;
         e->rt_psx = rt_psx;
     }
+    reg_cache_invalidate();
 }
 
 /*
@@ -971,6 +977,7 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
  */
 void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
 {
+    reg_cache_invalidate();
     /* Compute effective address into T0, data into T2 */
     emit_load_psx_reg(REG_T0, rs_psx);
     EMIT_ADDIU(REG_T0, REG_T0, offset);
@@ -1024,4 +1031,5 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
         e->load_defer = 0;
         e->rt_psx = 0;
     }
+    reg_cache_invalidate();
 }
