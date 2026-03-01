@@ -7,6 +7,7 @@
  * GIF buffer before flushing.
  */
 #include "gpu_state.h"
+#include "profiler.h"
 
 /* ── GPU pixel cost accumulator for cycle-accurate rendering delay ── */
 uint64_t gpu_estimated_pixels = 0;
@@ -27,9 +28,10 @@ static struct
     uint64_t tex0;  /* Last TEX0_1 written */
     uint64_t test;  /* Last TEST_1 written */
     uint64_t alpha; /* Last ALPHA_1 written */
+    uint64_t clamp; /* Last CLAMP_1 written */
     int dthe;       /* Last DTHE written (0 or 1) */
     int valid;      /* 0 = unknown, 1 = tracked values are current */
-} gs_state = {0, 0, 0, -1, 0};
+} gs_state = {0, 0, 0, 0, -1, 0};
 
 /* Primitive-level Decode_TexPage_Cached result cache.
  * Eliminates ~80% of redundant texture cache lookups for consecutive
@@ -41,8 +43,7 @@ static struct
     int tex_page_x, tex_page_y;
     int clut_x, clut_y;
     uint32_t vram_gen;
-    uint32_t tw_mask_x, tw_mask_y, tw_off_x, tw_off_y;
-    int result; /* 0=fail, 1=SW decode, 2=HW CLUT */
+    int result; /* 0=not cached (15BPP), 2=HW CLUT */
     int out_x, out_y;
     int hw_clut;
     int hw_tbp0, hw_cbp;
@@ -52,6 +53,26 @@ static struct
 void Prim_InvalidateGSState(void)
 {
     gs_state.valid = 0;
+}
+
+/* Compute GS CLAMP_1 value for PSX texture window.
+ * When texture window is active, use REGION_REPEAT (mode 3) which
+ * implements exactly the PSX formula:
+ *   U_result = (U & MINU) | MAXU
+ *   V_result = (V & MINV) | MAXV
+ * PSX:
+ *   texX = (texX & ~(mask_x*8)) | ((off_x & mask_x)*8)
+ * Mapping: MINU=~(mask_x*8)&0xFF, MAXU=(off_x&mask_x)*8
+ * When no texture window: REPEAT mode (0,0). */
+static inline uint64_t Compute_TexWin_Clamp(void)
+{
+    if (tex_win_mask_x == 0 && tex_win_mask_y == 0)
+        return GS_SET_CLAMP(0, 0, 0, 0, 0, 0); /* REPEAT */
+    uint32_t minu = ~(tex_win_mask_x * 8) & 0xFF;
+    uint32_t maxu = (tex_win_off_x & tex_win_mask_x) * 8;
+    uint32_t minv = ~(tex_win_mask_y * 8) & 0xFF;
+    uint32_t maxv = (tex_win_off_y & tex_win_mask_y) * 8;
+    return GS_SET_CLAMP(3, 3, minu, maxu, minv, maxv); /* REGION_REPEAT */
 }
 
 /* Invalidate primitive texture cache (called on VRAM writes) */
@@ -71,11 +92,7 @@ static inline int prim_tex_cache_lookup(int tex_format, int tex_page_x, int tex_
         prim_tex_cache.tex_page_y == tex_page_y &&
         prim_tex_cache.clut_x == clut_x &&
         prim_tex_cache.clut_y == clut_y &&
-        prim_tex_cache.vram_gen == vram_gen_counter &&
-        prim_tex_cache.tw_mask_x == tex_win_mask_x &&
-        prim_tex_cache.tw_mask_y == tex_win_mask_y &&
-        prim_tex_cache.tw_off_x == tex_win_off_x &&
-        prim_tex_cache.tw_off_y == tex_win_off_y)
+        prim_tex_cache.vram_gen == vram_gen_counter)
         return 1;
     return 0;
 }
@@ -85,8 +102,10 @@ static inline int prim_tex_decode(int tex_format, int tex_page_x, int tex_page_y
                                   int clut_x, int clut_y,
                                   int *out_x, int *out_y)
 {
+    PROF_PUSH(PROF_GPU_TEXCACHE);
     int result = Decode_TexPage_Cached(tex_format, tex_page_x, tex_page_y,
                                        clut_x, clut_y, out_x, out_y);
+    PROF_POP(PROF_GPU_TEXCACHE);
     prim_tex_cache.valid = 1;
     prim_tex_cache.tex_format = tex_format;
     prim_tex_cache.tex_page_x = tex_page_x;
@@ -94,10 +113,6 @@ static inline int prim_tex_decode(int tex_format, int tex_page_x, int tex_page_y
     prim_tex_cache.clut_x = clut_x;
     prim_tex_cache.clut_y = clut_y;
     prim_tex_cache.vram_gen = vram_gen_counter;
-    prim_tex_cache.tw_mask_x = tex_win_mask_x;
-    prim_tex_cache.tw_mask_y = tex_win_mask_y;
-    prim_tex_cache.tw_off_x = tex_win_off_x;
-    prim_tex_cache.tw_off_y = tex_win_off_y;
     prim_tex_cache.result = result;
     prim_tex_cache.out_x = *out_x;
     prim_tex_cache.out_y = *out_y;
@@ -377,6 +392,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                          ? ((uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST())
                                          : 0;
                 uint64_t want_tex0 = 0;
+                uint64_t want_clamp = 0;
                 int need_texflush = 0;
                 if (is_textured)
                 {
@@ -395,6 +411,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                             want_tex0 |= (uint64_t)poly_hw_cbp << 37;
                             want_tex0 |= (uint64_t)GS_PSM_16 << 51;
                             want_tex0 |= (uint64_t)1 << 61;
+                            /* GS CLAMP_1 handles PSX texture window via REGION_REPEAT */
+                            want_clamp = Compute_TexWin_Clamp();
                         }
                         else
                         {
@@ -425,7 +443,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 int emit_alpha = (is_semi_trans && (!gs_state.valid || gs_state.alpha != want_alpha));
                 int emit_tex0 = (is_textured && (!gs_state.valid || gs_state.tex0 != want_tex0 || need_texflush));
                 int emit_test = (is_textured && (!gs_state.valid || gs_state.test != want_test));
-                int state_qws = emit_dthe + emit_alpha + emit_tex0 * 2 + emit_test;
+                int emit_clamp = (is_textured && poly_hw_clut && (!gs_state.valid || gs_state.clamp != want_clamp));
+                int state_qws = emit_dthe + emit_alpha + emit_tex0 * 2 + emit_test + emit_clamp;
 
                 for (int t = 0; t < 2; t++)
                 {
@@ -440,6 +459,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                             Push_GIF_Data((uint64_t)want_dthe, GS_REG_DTHE);
                         if (emit_alpha)
                             Push_GIF_Data(want_alpha, GS_REG_ALPHA_1);
+                        if (emit_clamp)
+                            Push_GIF_Data(want_clamp, GS_REG_CLAMP_1);
                         if (emit_tex0)
                         {
                             Push_GIF_Data(want_tex0, GS_REG_TEX0);
@@ -456,6 +477,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                             {
                                 gs_state.tex0 = ~0ULL;
                                 gs_state.test = ~0ULL;
+                                gs_state.clamp = ~0ULL;
                             }
                             if (!is_semi_trans)
                                 gs_state.alpha = ~0ULL;
@@ -467,6 +489,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                         {
                             gs_state.tex0 = want_tex0;
                             gs_state.test = want_test;
+                            if (poly_hw_clut)
+                                gs_state.clamp = want_clamp;
                         }
                         gs_state.valid = 1;
                     }
@@ -559,6 +583,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                    ? ((uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST())
                                    : 0;
             uint64_t tw_tex0 = 0;
+            uint64_t tw_clamp = 0;
             int tw_texflush = 0;
             if (is_textured)
             {
@@ -577,6 +602,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                         tw_tex0 |= (uint64_t)tri_hw_cbp << 37;
                         tw_tex0 |= (uint64_t)GS_PSM_16 << 51;
                         tw_tex0 |= (uint64_t)1 << 61;
+                        /* GS CLAMP_1 handles PSX texture window via REGION_REPEAT */
+                        tw_clamp = Compute_TexWin_Clamp();
                     }
                     else
                     {
@@ -607,15 +634,18 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             int e_alpha = (is_semi_trans_tri && (!gs_state.valid || gs_state.alpha != tw_alpha));
             int e_tex0 = (is_textured && (!gs_state.valid || gs_state.tex0 != tw_tex0 || tw_texflush));
             int e_test = (is_textured && (!gs_state.valid || gs_state.test != tw_test));
+            int e_clamp = (is_textured && tri_hw_clut && (!gs_state.valid || gs_state.clamp != tw_clamp));
 
             int ndata = is_textured ? 10 : 7;
-            ndata += e_dthe + e_alpha + e_tex0 * 2 + e_test;
+            ndata += e_dthe + e_alpha + e_tex0 * 2 + e_test + e_clamp;
             Push_GIF_Tag(GIF_TAG_LO(ndata, 1, 0, 0, 0, 1), GIF_REG_AD);
 
             if (e_dthe)
                 Push_GIF_Data((uint64_t)tw_dthe, GS_REG_DTHE);
             if (e_alpha)
                 Push_GIF_Data(tw_alpha, GS_REG_ALPHA_1);
+            if (e_clamp)
+                Push_GIF_Data(tw_clamp, GS_REG_CLAMP_1);
             if (e_tex0)
             {
                 Push_GIF_Data(tw_tex0, GS_REG_TEX0);
@@ -632,6 +662,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 {
                     gs_state.tex0 = ~0ULL;
                     gs_state.test = ~0ULL;
+                    gs_state.clamp = ~0ULL;
                 }
                 if (!is_semi_trans_tri)
                     gs_state.alpha = ~0ULL;
@@ -643,6 +674,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             {
                 gs_state.tex0 = tw_tex0;
                 gs_state.test = tw_test;
+                if (tri_hw_clut)
+                    gs_state.clamp = tw_clamp;
             }
             gs_state.valid = 1;
 
@@ -848,17 +881,25 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     u_right_i = (int32_t)(u0_raw + w) + (int32_t)tex_page_x;
                 }
 
+                /* Reset CLAMP to REPEAT — flip path uses raw VRAM STQ coords,
+                 * REGION_REPEAT from a previous HW CLUT prim would corrupt them */
+                int need_reset_clamp = (!gs_state.valid || gs_state.clamp != 0);
+
                 int nregs_tri = 15; // DTHE + TEST + PRIM + 4×3 vertices (no restore needed)
                 if (is_semi_trans)
                     nregs_tri += 1;
                 if (is_raw_texture)
                     nregs_tri += 2; // TEX0 + TEXFLUSH only (no restore)
+                if (need_reset_clamp)
+                    nregs_tri += 1;
 
                 Push_GIF_Tag(GIF_TAG_LO(nregs_tri, 1, 0, 0, 0, 1), GIF_REG_AD);
                 Push_GIF_Data(GS_SET_DTHE(0), GS_REG_DTHE); // DTHE = 0
 
                 if (is_semi_trans)
                     Push_GIF_Data(Get_Alpha_Reg(semi_trans_mode), GS_REG_ALPHA_1);
+                if (need_reset_clamp)
+                    Push_GIF_Data(0, GS_REG_CLAMP_1); /* REPEAT mode */
 
                 if (is_raw_texture)
                 {
@@ -909,6 +950,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
 
                 /* Update lazy state — no restore needed */
                 gs_state.dthe = 0;
+                gs_state.clamp = 0; /* REPEAT */
                 if (is_semi_trans)
                     gs_state.alpha = Get_Alpha_Reg(semi_trans_mode);
                 else if (!gs_state.valid)
@@ -967,6 +1009,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 uint64_t want_alpha_r = is_semi_trans ? Get_Alpha_Reg(semi_trans_mode) : 0;
                 uint64_t want_test_r = (uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST();
                 uint64_t want_tex0_r = 0;
+                uint64_t want_clamp_r = 0;
                 int need_texflush_r = 0;
                 if (clut_decoded || is_raw_texture)
                 {
@@ -983,6 +1026,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                         want_tex0_r |= (uint64_t)rect_hw_cbp << 37;
                         want_tex0_r |= (uint64_t)GS_PSM_16 << 51;
                         want_tex0_r |= (uint64_t)1 << 61;
+                        /* GS CLAMP_1 handles PSX texture window via REGION_REPEAT */
+                        want_clamp_r = Compute_TexWin_Clamp();
                     }
                     else if (clut_decoded)
                     {
@@ -1011,7 +1056,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 int emit_tex0_r = ((clut_decoded || is_raw_texture) &&
                                    (!gs_state.valid || gs_state.tex0 != want_tex0_r || need_texflush_r));
                 int emit_test_r = (!gs_state.valid || gs_state.test != want_test_r);
-                int state_qws_r = emit_dthe_r + emit_alpha_r + emit_tex0_r * 2 + emit_test_r;
+                int emit_clamp_r = (rect_hw_clut && (!gs_state.valid || gs_state.clamp != want_clamp_r));
+                int state_qws_r = emit_dthe_r + emit_alpha_r + emit_tex0_r * 2 + emit_test_r + emit_clamp_r;
 
                 int nregs = 1 + 6 + state_qws_r; /* PRIM + 2×(UV+RGBAQ+XYZ) + state */
 
@@ -1021,6 +1067,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     Push_GIF_Data(0, GS_REG_DTHE);
                 if (emit_alpha_r)
                     Push_GIF_Data(want_alpha_r, GS_REG_ALPHA_1);
+                if (emit_clamp_r)
+                    Push_GIF_Data(want_clamp_r, GS_REG_CLAMP_1);
                 if (emit_tex0_r)
                 {
                     Push_GIF_Data(want_tex0_r, GS_REG_TEX0);
@@ -1037,6 +1085,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     if (!(clut_decoded || is_raw_texture))
                     {
                         gs_state.tex0 = ~0ULL;
+                        gs_state.clamp = ~0ULL;
                     }
                 }
                 gs_state.dthe = want_dthe_r;
@@ -1044,6 +1093,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     gs_state.alpha = want_alpha_r;
                 if (clut_decoded || is_raw_texture)
                     gs_state.tex0 = want_tex0_r;
+                if (rect_hw_clut)
+                    gs_state.clamp = want_clamp_r;
                 gs_state.test = want_test_r;
                 gs_state.valid = 1;
 
@@ -1097,6 +1148,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             {
                 gs_state.tex0 = ~0ULL;
                 gs_state.test = ~0ULL;
+                gs_state.clamp = ~0ULL;
             }
             gs_state.valid = 1;
 
