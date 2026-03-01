@@ -251,7 +251,10 @@ void Tex_Cache_DirtyRegion(int x, int y, int w, int h)
 
 /* ── gpu_primitives.c interface ─────────────────────────────────────── */
 
-void Translate_GP0_to_GS(uint32_t *psx_cmd) { (void)psx_cmd; }
+int Translate_GP0_to_GS(uint32_t *psx_cmd) { 
+    (void)psx_cmd; 
+    return 0;
+}
 void Prim_InvalidateGSState(void) {}
 void Prim_InvalidateTexCache(void) {}
 
