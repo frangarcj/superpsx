@@ -30,6 +30,8 @@
 /* Exported: the TLB-mapped base address for JIT S1 register */
 uint32_t psx_tlb_base = 0;
 
+#ifdef ENABLE_PSX_TLB
+
 /* Buffer for the original TLB refill handler code (copied from 0x80000000) */
 static uint32_t orig_handler_copy[32] __attribute__((aligned(64)));
 
@@ -347,6 +349,8 @@ static void install_tlb_handler(void)
     printf("  TLB handler installed at 0x80000000 (%d instructions)\n", n);
 }
 
+#endif /* ENABLE_PSX_TLB */
+
 /* ================================================================
  *  Setup_PSX_TLB: Called once after psx_ram allocation.
  *
@@ -356,6 +360,11 @@ static void install_tlb_handler(void)
  * ================================================================ */
 void Setup_PSX_TLB(void)
 {
+#ifndef ENABLE_PSX_TLB
+    psx_tlb_base = 0;
+    printf("TLB disabled (build without ENABLE_PSX_TLB)\n");
+    return;
+#else
     printf("Setting up PSX TLB mapping...\n");
 
     /* ---- 1. RAM: VA 0x20000000, 1MB pages (1 entry = 2MB) ---- */
@@ -457,4 +466,5 @@ void Setup_PSX_TLB(void)
 
     printf("  TLB fast-path active: JIT S1 = 0x%08lX\n", (unsigned long)psx_tlb_base);
     printf("  TLB entries used: 3 of 48 (RAM + Scratchpad + BIOS)\n");
+#endif /* ENABLE_PSX_TLB */
 }

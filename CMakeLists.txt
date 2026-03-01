@@ -27,6 +27,7 @@ option(ENABLE_PROFILING "Build with gprof instrumentation (libprofglue)" OFF)
 option(ENABLE_LTO "Enable Link-Time Optimization" OFF)
 option(ENABLE_DYNAREC_STATS "Enable dynarec execution statistics" OFF)
 option(ENABLE_SUBSYSTEM_PROFILER "Enable per-subsystem wall-clock profiler" ON)
+option(ENABLE_PSX_TLB "Enable TLB fast-path for PSX RAM (experimental)" OFF)
 option(HEADLESS "Build without GPU/video output (no-op GPU stubs)" OFF)
 
 # ============================================================================
@@ -108,6 +109,10 @@ endif()
 
 if(ENABLE_SUBSYSTEM_PROFILER)
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_SUBSYSTEM_PROFILER)
+endif()
+
+if(ENABLE_PSX_TLB)
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_PSX_TLB)
 endif()
 
 if(HEADLESS)
