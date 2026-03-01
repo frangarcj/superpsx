@@ -1547,6 +1547,191 @@ static void gte_cmd_rtpt_vu0(R3000CPU *cpu, int lm)
     gte_rtps_core_vu0(cpu, 2, lm, 1);
 }
 
+/* ================================================================
+ * VU0 MVMVA Fast Path
+ *
+ * Extends VU0 matrix caching to all 3 usable matrices (RT, Light, Color)
+ * and 3 translation vectors (TR, BK, None).
+ * Falls back to C for mx=3 (garbage matrix), cv=2 (FC bugged), sf=0.
+ * ================================================================ */
+
+/* Light matrix cached float columns (mx=1, ctrl[8..12]) */
+static float vu0_lt_col1[4] __attribute__((aligned(16)));
+static float vu0_lt_col2[4] __attribute__((aligned(16)));
+static float vu0_lt_col3[4] __attribute__((aligned(16)));
+static uint32_t vu0_lt_snapshot[5];
+
+static void vu0_refresh_lt_matrix(R3000CPU *cpu)
+{
+    int16_t l11 = lo16(C(c_L11L12)), l12 = hi16(C(c_L11L12));
+    int16_t l13 = lo16(C(c_L13L21)), l21 = hi16(C(c_L13L21));
+    int16_t l22 = lo16(C(c_L22L23)), l23 = hi16(C(c_L22L23));
+    int16_t l31 = lo16(C(c_L31L32)), l32 = hi16(C(c_L31L32));
+    int16_t l33 = lo16(C(c_L33));
+
+    const float s = 1.0f / 4096.0f;
+    vu0_lt_col1[0] = (float)l11 * s;  vu0_lt_col1[1] = (float)l21 * s;
+    vu0_lt_col1[2] = (float)l31 * s;  vu0_lt_col1[3] = 0.0f;
+    vu0_lt_col2[0] = (float)l12 * s;  vu0_lt_col2[1] = (float)l22 * s;
+    vu0_lt_col2[2] = (float)l32 * s;  vu0_lt_col2[3] = 0.0f;
+    vu0_lt_col3[0] = (float)l13 * s;  vu0_lt_col3[1] = (float)l23 * s;
+    vu0_lt_col3[2] = (float)l33 * s;  vu0_lt_col3[3] = 0.0f;
+
+    for (int i = 0; i < 5; i++)
+        vu0_lt_snapshot[i] = C(8 + i);
+}
+
+static inline int vu0_lt_is_dirty(R3000CPU *cpu)
+{
+    for (int i = 0; i < 5; i++)
+        if (vu0_lt_snapshot[i] != C(8 + i))
+            return 1;
+    return 0;
+}
+
+/* Color matrix cached float columns (mx=2, ctrl[16..20]) */
+static float vu0_lc_col1[4] __attribute__((aligned(16)));
+static float vu0_lc_col2[4] __attribute__((aligned(16)));
+static float vu0_lc_col3[4] __attribute__((aligned(16)));
+static uint32_t vu0_lc_snapshot[5];
+
+static void vu0_refresh_lc_matrix(R3000CPU *cpu)
+{
+    int16_t lr1 = lo16(C(c_LR1LR2)), lr2 = hi16(C(c_LR1LR2));
+    int16_t lr3 = lo16(C(c_LR3LG1)), lg1 = hi16(C(c_LR3LG1));
+    int16_t lg2 = lo16(C(c_LG2LG3)), lg3 = hi16(C(c_LG2LG3));
+    int16_t lb1 = lo16(C(c_LB1LB2)), lb2 = hi16(C(c_LB1LB2));
+    int16_t lb3 = lo16(C(c_LB3));
+
+    const float s = 1.0f / 4096.0f;
+    vu0_lc_col1[0] = (float)lr1 * s;  vu0_lc_col1[1] = (float)lg1 * s;
+    vu0_lc_col1[2] = (float)lb1 * s;  vu0_lc_col1[3] = 0.0f;
+    vu0_lc_col2[0] = (float)lr2 * s;  vu0_lc_col2[1] = (float)lg2 * s;
+    vu0_lc_col2[2] = (float)lb2 * s;  vu0_lc_col2[3] = 0.0f;
+    vu0_lc_col3[0] = (float)lr3 * s;  vu0_lc_col3[1] = (float)lg3 * s;
+    vu0_lc_col3[2] = (float)lb3 * s;  vu0_lc_col3[3] = 0.0f;
+
+    for (int i = 0; i < 5; i++)
+        vu0_lc_snapshot[i] = C(16 + i);
+}
+
+static inline int vu0_lc_is_dirty(R3000CPU *cpu)
+{
+    for (int i = 0; i < 5; i++)
+        if (vu0_lc_snapshot[i] != C(16 + i))
+            return 1;
+    return 0;
+}
+
+/* BK translation cached float (cv=1, ctrl[13..15]) */
+static float vu0_bk_trans[4] __attribute__((aligned(16)));
+static uint32_t vu0_bk_snapshot[3];
+
+static void vu0_refresh_bk_trans(R3000CPU *cpu)
+{
+    vu0_bk_trans[0] = (float)(int32_t)C(c_RBK);
+    vu0_bk_trans[1] = (float)(int32_t)C(c_GBK);
+    vu0_bk_trans[2] = (float)(int32_t)C(c_BBK);
+    vu0_bk_trans[3] = 0.0f;
+
+    for (int i = 0; i < 3; i++)
+        vu0_bk_snapshot[i] = C(c_RBK + i);
+}
+
+static inline int vu0_bk_is_dirty(R3000CPU *cpu)
+{
+    for (int i = 0; i < 3; i++)
+        if (vu0_bk_snapshot[i] != C(c_RBK + i))
+            return 1;
+    return 0;
+}
+
+/* Zero translation for cv=3 (None) */
+static float vu0_zero_trans[4] __attribute__((aligned(16))) = {0.0f, 0.0f, 0.0f, 0.0f};
+
+/* MVMVA VU0: generic matrix × vector + translation (sf=1 only) */
+static void gte_mvmva_vu0(R3000CPU *cpu, int lm, int mx, int v, int cv)
+{
+    /* Select and refresh matrix columns */
+    float *col1, *col2, *col3;
+    switch (mx) {
+    case 0: /* RT */
+        if (vu0_rt_is_dirty(cpu))
+            vu0_refresh_rt_matrix(cpu);
+        col1 = vu0_rt_col1; col2 = vu0_rt_col2; col3 = vu0_rt_col3;
+        break;
+    case 1: /* Light */
+        if (vu0_lt_is_dirty(cpu))
+            vu0_refresh_lt_matrix(cpu);
+        col1 = vu0_lt_col1; col2 = vu0_lt_col2; col3 = vu0_lt_col3;
+        break;
+    default: /* Color (mx=2) */
+        if (vu0_lc_is_dirty(cpu))
+            vu0_refresh_lc_matrix(cpu);
+        col1 = vu0_lc_col1; col2 = vu0_lc_col2; col3 = vu0_lc_col3;
+        break;
+    }
+
+    /* Select and refresh translation */
+    float *trans;
+    switch (cv) {
+    case 0: /* TR — part of RT cache (ctrl[5-7]) */
+        if (mx != 0 && vu0_rt_is_dirty(cpu))
+            vu0_refresh_rt_matrix(cpu);
+        trans = vu0_rt_trans;
+        break;
+    case 1: /* BK */
+        if (vu0_bk_is_dirty(cpu))
+            vu0_refresh_bk_trans(cpu);
+        trans = vu0_bk_trans;
+        break;
+    default: /* None (cv=3) */
+        trans = vu0_zero_trans;
+        break;
+    }
+
+    /* Get vertex as float */
+    int16_t vx = get_vector(cpu, v, 0);
+    int16_t vy = get_vector(cpu, v, 1);
+    int16_t vz = get_vector(cpu, v, 2);
+
+    float vert[4] __attribute__((aligned(16)));
+    vert[0] = (float)vx;
+    vert[1] = (float)vy;
+    vert[2] = (float)vz;
+    vert[3] = 0.0f;
+
+    float result[4] __attribute__((aligned(16)));
+
+    /* VU0: result.xyz = matrix * vertex + translation */
+    __asm__ __volatile__(
+        "lqc2    $vf1, 0(%0)\n\t"
+        "lqc2    $vf2, 0(%1)\n\t"
+        "lqc2    $vf3, 0(%2)\n\t"
+        "lqc2    $vf4, 0(%3)\n\t"
+        "lqc2    $vf5, 0(%4)\n\t"
+        "vmulax.xyz   $ACC, $vf1, $vf5x\n\t"
+        "vmadday.xyz  $ACC, $vf2, $vf5y\n\t"
+        "vmaddz.xyz   $vf6, $vf3, $vf5z\n\t"
+        "vadd.xyz     $vf6, $vf6, $vf4\n\t"
+        "sqc2    $vf6, 0(%5)\n\t"
+        : /* no outputs */
+        : "r"(col1), "r"(col2), "r"(col3), "r"(trans), "r"(vert), "r"(result)
+        : "memory"
+    );
+
+    int32_t mac1 = (int32_t)result[0];
+    int32_t mac2 = (int32_t)result[1];
+    int32_t mac3 = (int32_t)result[2];
+
+    D(d_MAC1) = (uint32_t)mac1;
+    D(d_MAC2) = (uint32_t)mac2;
+    D(d_MAC3) = (uint32_t)mac3;
+    D(d_IR1) = (uint32_t)saturate_ir(mac1, 1, lm);
+    D(d_IR2) = (uint32_t)saturate_ir(mac2, 2, lm);
+    D(d_IR3) = (uint32_t)saturate_ir(mac3, 3, lm);
+}
+
 #endif /* _EE */
 
 /* ================================================================
@@ -1613,7 +1798,14 @@ void GTE_Inline_MVMVA(R3000CPU *cpu, uint32_t packed)
     int v = (packed >> 4) & 3;
     int cv = (packed >> 6) & 3;
     flag_reset();
-    gte_cmd_mvmva(cpu, sf, lm, mx, v, cv);
+#ifdef _EE
+    if (gte_use_vu0 && sf && mx != 3 && cv != 2) {
+        gte_mvmva_vu0(cpu, lm, mx, v, cv);
+    } else
+#endif
+    {
+        gte_cmd_mvmva(cpu, sf, lm, mx, v, cv);
+    }
     flag_update_bit31();
     C(c_FLAG) = gte_flag;
 }
