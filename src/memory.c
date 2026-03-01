@@ -100,8 +100,10 @@ void Init_Memory(void)
 {
     printf("Initializing Memory Map...\n");
 
-    /* Allocate PSX RAM and BIOS dynamically to avoid ELF overlap */
-    psx_ram = (uint8_t *)memalign(128, PSX_RAM_SIZE);
+    /* Allocate PSX RAM and BIOS dynamically to avoid ELF overlap.
+     * RAM must be 1MB-aligned for the TLB 1MB page mapping.
+     * BIOS must be 256KB-aligned for the TLB 256KB page mapping. */
+    psx_ram = (uint8_t *)memalign(0x100000, PSX_RAM_SIZE);   /* 1MB align for TLB */
     psx_bios = (uint8_t *)memalign(262144, PSX_BIOS_SIZE);  /* 256KB align for TLB */
 
     if (!psx_ram || !psx_bios)

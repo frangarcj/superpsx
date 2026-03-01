@@ -552,9 +552,9 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3  (phys) */
     }
 
-    /* Range check: skip if TLB is active (TLB handles non-RAM via exception) */
+    /* Range check: always present — non-RAM (phys >= 2MB) goes to cold path
+     * via C helpers.  RAM hits TLB fast path (S1 = 0x20000000). */
     uint32_t *range_branch = NULL;
-    if (!psx_tlb_base)
     {
         emit(MK_R(0, 0, REG_T1, REG_T2, 21, 0x02));  /* srl  t2, t1, 21      */
         range_branch = code_ptr;
@@ -833,9 +833,8 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3  (phys) */
     }
 
-    /* Range check: skip if TLB active */
+    /* Range check: always present — non-RAM goes to cold path (WriteWord). */
     uint32_t *range_branch = NULL;
-    if (!psx_tlb_base)
     {
         emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02)); /* srl  a0, t1, 21      */
         range_branch = code_ptr;
@@ -922,10 +921,9 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
     /* Flush lazy consts before conditional fast/slow split */
     flush_dirty_consts();
 
-    /* Direct address fast path: S3 = 0x1FFFFFFF, S1 = psx_ram or TLB base */
+    /* Direct address fast path: S3 = 0x1FFFFFFF, S1 = TLB base or psx_ram */
     emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3 (phys) */
     uint32_t *range_branch = NULL;
-    if (!psx_tlb_base)
     {
         emit(MK_R(0, 0, REG_T1, REG_T2, 21, 0x02));    /* srl  t2, t1, 21 (range) */
         range_branch = code_ptr;
@@ -997,7 +995,6 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     /* Direct address fast path (S3 = 0x1FFFFFFF, S1 = TLB base or psx_ram) */
     emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3 (phys) */
     uint32_t *range_branch = NULL;
-    if (!psx_tlb_base)
     {
         emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02));    /* srl  a0, t1, 21 (range) */
         range_branch = code_ptr;

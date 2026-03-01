@@ -1100,9 +1100,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         emit(MK_I(0x05, REG_T1, REG_ZERO, 0));          /* bne → slow */
         emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24)); /* [delay] and t1, t0, s3 (phys) */
 
-        /* Range check: phys < 2MB (skip when TLB active) */
+        /* Range check: always present — non-RAM goes to SP/slow path */
         uint32_t *range_swc2 = NULL;
-        if (!psx_tlb_base)
         {
             emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02)); /* srl  a0, t1, 21 */
             range_swc2 = code_ptr;
@@ -1117,10 +1116,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
         EMIT_NOP();
 
-        /* Scratchpad inline check for SWC2 (skip when TLB active) */
+        /* Scratchpad inline check for SWC2 */
         uint32_t *sp_miss_swc2 = NULL;
         uint32_t *sp_done_swc2 = NULL;
-        if (!psx_tlb_base)
         {
             {
                 int32_t s2 = (int32_t)(code_ptr - range_swc2 - 1);
