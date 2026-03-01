@@ -18,6 +18,7 @@ typedef struct {
     int  region_pal;          /* 0 = NTSC (default), 1 = PAL */
     int  disable_audio;       /* 1 = skip SPU processing (profiling) */
     int  disable_gpu;         /* 1 = skip GS rendering (profiling) */
+    int  frame_limit;         /* 1 = cap at 60fps NTSC / 50fps PAL (default 1) */
 } PSXConfig;
 
 extern PSXConfig psx_config;

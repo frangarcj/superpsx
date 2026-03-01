@@ -40,6 +40,7 @@ int load_config_file(void)
     psx_config.boot_bios_only      = 0;
     psx_config.disable_audio       = 0;
     psx_config.disable_gpu         = 0;
+    psx_config.frame_limit         = 1;
     strncpy(psx_config.bios_path, BIOS_PATH_DEFAULT, sizeof(psx_config.bios_path) - 1);
     psx_config.bios_path[sizeof(psx_config.bios_path) - 1] = '\0';
 
@@ -116,6 +117,11 @@ int load_config_file(void)
         {
             psx_config.disable_gpu = (atoi(val) != 0 || strcasecmp(val, "true") == 0);
             printf("CONFIG: disable_gpu = %d\n", psx_config.disable_gpu);
+        }
+        else if (strcasecmp(key, "frame_limit") == 0)
+        {
+            psx_config.frame_limit = (atoi(val) != 0 && strcasecmp(val, "false") != 0);
+            printf("CONFIG: frame_limit = %d\n", psx_config.frame_limit);
         }
     }
 
