@@ -806,8 +806,69 @@ void SPU_GenerateChunk(int num_samples)
         int32_t comb_vol_l = (v_vol_l * last_adsr_vol) >> 15;
         int32_t comb_vol_r = (v_vol_r * last_adsr_vol) >> 15;
 
-        for (int s = 0; s < num_samples; s++)
+        int s = 0;
+        while (s < num_samples && v->active)
         {
+            if (__builtin_expect(!v->block_decoded, 0))
+            {
+                decode_adpcm_block(v, v->current_addr);
+                if (!v->active)
+                    break;
+            }
+
+            /* ---- Compute safe batch: samples with constant ADSR volume ---- */
+            int32_t ci = v->adsr_ci;
+            if (__builtin_expect(v->adsr_exp & v->adsr_inc & (v->adsr_vol > 0x6000), 0))
+                ci >>= 2;
+            if (ci <= 0)
+                ci = 1;
+
+            /* Samples before ADSR counter overflows (volume stays constant) */
+            int batch = (v->adsr_counter < 0x8000)
+                            ? ((0x7FFF - v->adsr_counter) / ci)
+                            : 0;
+
+            /* Limit by decoded ADPCM block boundary */
+            if (v_pitch > 0)
+            {
+                int blk_lim = ((28 << 12) - (int)v->sample_pos - 1) / (int)v_pitch + 1;
+                if (blk_lim > 0 && blk_lim < batch)
+                    batch = blk_lim;
+            }
+
+            /* Limit by remaining samples */
+            int remain = num_samples - s;
+            if (batch > remain)
+                batch = remain;
+
+            /* ---- Tight batch loop: constant volume, no ADSR tick ---- */
+            for (int b = 0; b < batch; b++)
+            {
+                uint32_t si = v->sample_pos >> 12;
+                int16_t pcm = v->decoded[si];
+                mix_buf_l[offset + s] += ((int32_t)pcm * comb_vol_l) >> 15;
+                mix_buf_r[offset + s] += ((int32_t)pcm * comb_vol_r) >> 15;
+                v->sample_pos += v_pitch;
+                s++;
+            }
+            v->adsr_counter += ci * batch;
+
+            /* Handle ADPCM block boundary */
+            if (__builtin_expect((v->sample_pos >> 12) >= 28, 0))
+            {
+                do
+                {
+                    v->sample_pos -= (28 << 12);
+                    v->current_addr += 16;
+                    v->current_addr &= (SPU_RAM_SIZE - 1);
+                } while ((v->sample_pos >> 12) >= 28);
+                v->block_decoded = 0;
+            }
+
+            if (s >= num_samples)
+                break;
+
+            /* ---- Single sample with full ADSR tick (handles overflow) ---- */
             if (__builtin_expect(!v->block_decoded, 0))
             {
                 decode_adpcm_block(v, v->current_addr);
@@ -829,15 +890,14 @@ void SPU_GenerateChunk(int num_samples)
                 comb_vol_r = (v_vol_r * last_adsr_vol) >> 15;
             }
 
-            uint32_t sample_idx = v->sample_pos >> 12;
-            int16_t pcm = v->decoded[sample_idx];
-
-            int32_t voiced_l = ((int32_t)pcm * comb_vol_l) >> 15;
-            int32_t voiced_r = ((int32_t)pcm * comb_vol_r) >> 15;
-            mix_buf_l[offset + s] += voiced_l;
-            mix_buf_r[offset + s] += voiced_r;
-
-            v->sample_pos += v_pitch;
+            {
+                uint32_t si = v->sample_pos >> 12;
+                int16_t pcm = v->decoded[si];
+                mix_buf_l[offset + s] += ((int32_t)pcm * comb_vol_l) >> 15;
+                mix_buf_r[offset + s] += ((int32_t)pcm * comb_vol_r) >> 15;
+                v->sample_pos += v_pitch;
+                s++;
+            }
 
             if (__builtin_expect((v->sample_pos >> 12) >= 28, 0))
             {
@@ -848,9 +908,6 @@ void SPU_GenerateChunk(int num_samples)
                     v->current_addr &= (SPU_RAM_SIZE - 1);
                 } while ((v->sample_pos >> 12) >= 28);
                 v->block_decoded = 0;
-                decode_adpcm_block(v, v->current_addr);
-                if (!v->active)
-                    break;
             }
         }
     }
