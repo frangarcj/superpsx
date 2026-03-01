@@ -595,6 +595,7 @@ static void Sched_HBlank_Callback(void)
 
         hblank_frame_start_cycle = global_cycles;
         GPU_VBlank();
+        GTE_VBlankUpdate();
         gpu_pending_vblank_flush = 1;
         SignalInterrupt(0);
         Timer_ScheduleAll();   /* Reschedule timers after VBlank reset */
