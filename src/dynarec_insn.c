@@ -252,7 +252,6 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));
             }
             EMIT_SW(REG_T0, CPU_HI, REG_S0);
-            reg_cache_invalidate();
             break;
         case 0x19: /* MULTU */
             emit_load_psx_reg(REG_T0, rs);
@@ -272,7 +271,6 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));
             }
             EMIT_SW(REG_T0, CPU_HI, REG_S0);
-            reg_cache_invalidate();
             break;
         case 0x1A: /* DIV — inline with div-by-zero handling */
         {
@@ -300,7 +298,6 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 int32_t off = (int32_t)(code_ptr - b_end_div - 1);
                 *b_end_div = (*b_end_div & 0xFFFF0000) | (off & 0xFFFF);
             }
-            reg_cache_invalidate();
             break;
         }
         case 0x1B: /* DIVU — inline with div-by-zero handling */
@@ -327,7 +324,6 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 int32_t off = (int32_t)(code_ptr - b_end_divu - 1);
                 *b_end_divu = (*b_end_divu & 0xFFFF0000) | (off & 0xFFFF);
             }
-            reg_cache_invalidate();
             break;
         }
         case 0x20: /* ADD — treat as ADDU (overflow exceptions extremely rare in PSX games) */
@@ -618,8 +614,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         }
         else if (rs == 0x10 && func == 0x10)
         {
-            /* RFE — clobbers T0/T1 with COP0 SR manipulation */
-            reg_cache_invalidate();
+            /* RFE */
             EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
             EMIT_MOVE(REG_T1, REG_T0);
             emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x02));
@@ -635,7 +630,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* COP1 */
     case 0x11:
     {
-        flush_dirty_consts(); reg_cache_invalidate(); /* Flush before COP-usable conditional */
+        flush_dirty_consts(); /* Flush before COP-usable conditional */
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 1);
         EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
@@ -652,7 +647,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* COP2 (GTE) */
     case 0x12:
     {
-        flush_dirty_consts(); reg_cache_invalidate(); /* Flush before COP-usable conditional */
+        flush_dirty_consts(); /* Flush before COP-usable conditional */
         EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
         emit(MK_R(0, 0, REG_T0, REG_T0, 30, 0x02));
         emit(MK_I(0x0C, REG_T0, REG_T0, 1));
@@ -909,7 +904,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* COP3 */
     case 0x13:
     {
-        flush_dirty_consts(); reg_cache_invalidate(); /* Flush before COP-usable conditional */
+        flush_dirty_consts(); /* Flush before COP-usable conditional */
         EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
         emit(MK_R(0, 0, REG_T0, REG_T0, 31, 0x02));
         uint32_t *skip_cu3 = code_ptr;
@@ -982,7 +977,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* LWC0 */
     case 0x30:
     {
-        flush_dirty_consts(); reg_cache_invalidate(); /* Flush before COP-usable conditional */
+        flush_dirty_consts(); /* Flush before COP-usable conditional */
         EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
         emit(MK_R(0, 0, REG_T0, REG_T0, 28, 0x02));
         emit(MK_I(0x0C, REG_T0, REG_T0, 1));
@@ -999,7 +994,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* LWC2 */
     case 0x32:
     {
-        flush_dirty_consts(); reg_cache_invalidate(); /* Flush before COP-usable conditional */
+        flush_dirty_consts(); /* Flush before COP-usable conditional */
         EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
         emit(MK_R(0, 0, REG_T0, REG_T0, 30, 0x02));
         emit(MK_I(0x0C, REG_T0, REG_T0, 1));
@@ -1028,7 +1023,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* LWC3 */
     case 0x33:
     {
-        flush_dirty_consts(); reg_cache_invalidate(); /* Flush before COP-usable conditional */
+        flush_dirty_consts(); /* Flush before COP-usable conditional */
         EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
         emit(MK_R(0, 0, REG_T0, REG_T0, 31, 0x02));
         uint32_t *skip_lwc3 = code_ptr;
@@ -1044,7 +1039,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* SWC0 */
     case 0x38:
     {
-        flush_dirty_consts(); reg_cache_invalidate(); /* Flush before COP-usable conditional */
+        flush_dirty_consts(); /* Flush before COP-usable conditional */
         EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
         emit(MK_R(0, 0, REG_T0, REG_T0, 28, 0x02));
         emit(MK_I(0x0C, REG_T0, REG_T0, 1));
@@ -1061,7 +1056,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* SWC2 */
     case 0x3A:
     {
-        flush_dirty_consts(); reg_cache_invalidate(); /* Flush before COP-usable conditional */
+        flush_dirty_consts(); /* Flush before COP-usable conditional */
         EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
         emit(MK_R(0, 0, REG_T0, REG_T0, 30, 0x02));
         emit(MK_I(0x0C, REG_T0, REG_T0, 1));
@@ -1182,7 +1177,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* SWC3 */
     case 0x3B:
     {
-        flush_dirty_consts(); reg_cache_invalidate(); /* Flush before COP-usable conditional */
+        flush_dirty_consts(); /* Flush before COP-usable conditional */
         EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
         emit(MK_R(0, 0, REG_T0, REG_T0, 31, 0x02));
         uint32_t *skip_swc3 = code_ptr;

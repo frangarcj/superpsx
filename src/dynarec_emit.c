@@ -26,31 +26,12 @@ const int psx_pinned_reg[32] = {
 RegStatus vregs[32];
 uint32_t dirty_const_mask;
 
-/* ---- Scratch register cache for non-pinned PSX registers ----
- * Tracks which PSX register was most recently loaded or stored
- * via T0/T1, to eliminate redundant LW from cpu.regs[] when the
- * same PSX register is read by consecutive instructions.
- * Must be invalidated when T0/T1 are used for non-PSX purposes
- * (addresses, C call targets, etc.) or when a cached PSX reg
- * is written via a path that doesn't go through T0/T1. */
-int t0_cached_psx_reg = -1;
-int t1_cached_psx_reg = -1;
-
-void reg_cache_invalidate(void)
-{
-    t0_cached_psx_reg = -1;
-    t1_cached_psx_reg = -1;
-}
-
 /* Load PSX register 'r' from cpu struct into hw reg 'hwreg' */
 void emit_load_psx_reg(int hwreg, int r)
 {
     if (r == 0)
     {
         EMIT_MOVE(hwreg, REG_ZERO); /* $0 is always 0 */
-        /* Invalidate cache — hwreg no longer holds a PSX reg */
-        if (hwreg == REG_T0) t0_cached_psx_reg = -1;
-        else if (hwreg == REG_T1) t1_cached_psx_reg = -1;
     }
     else if (vregs[r].is_const && vregs[r].is_dirty)
     {
@@ -63,29 +44,15 @@ void emit_load_psx_reg(int hwreg, int r)
             EMIT_SW(hwreg, CPU_REG(r), REG_S0);
         vregs[r].is_dirty = 0;
         dirty_const_mask &= ~(1u << r);
-        /* Update cache: hwreg now holds r */
-        if (hwreg == REG_T0) t0_cached_psx_reg = r;
-        else if (hwreg == REG_T1) t1_cached_psx_reg = r;
     }
     else if (psx_pinned_reg[r])
     {
         if (hwreg != psx_pinned_reg[r]) /* avoid self-move */
             EMIT_MOVE(hwreg, psx_pinned_reg[r]);
-        /* Update cache: hwreg now holds r */
-        if (hwreg == REG_T0) t0_cached_psx_reg = r;
-        else if (hwreg == REG_T1) t1_cached_psx_reg = r;
     }
     else
     {
-        /* Cache check: skip LW if this scratch already holds r */
-        if (hwreg == REG_T0 && t0_cached_psx_reg == r)
-            return;
-        if (hwreg == REG_T1 && t1_cached_psx_reg == r)
-            return;
         EMIT_LW(hwreg, CPU_REG(r), REG_S0);
-        /* Update cache: hwreg now holds r */
-        if (hwreg == REG_T0) t0_cached_psx_reg = r;
-        else if (hwreg == REG_T1) t1_cached_psx_reg = r;
     }
 }
 
@@ -99,27 +66,14 @@ int emit_use_reg(int r, int scratch)
         int dst = psx_pinned_reg[r] ? psx_pinned_reg[r] : scratch;
         emit_load_imm32(dst, vregs[r].value);
         if (!psx_pinned_reg[r])
-        {
             EMIT_SW(dst, CPU_REG(r), REG_S0);
-            /* Update scratch cache: dst now holds r */
-            if (dst == REG_T0) { t0_cached_psx_reg = r; if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1; }
-            else if (dst == REG_T1) { t1_cached_psx_reg = r; if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1; }
-        }
         vregs[r].is_dirty = 0;
         dirty_const_mask &= ~(1u << r);
         return dst;
     }
     if (psx_pinned_reg[r])
         return psx_pinned_reg[r];
-    /* Scratch cache check: skip LW if this scratch already holds r */
-    if (scratch == REG_T0 && t0_cached_psx_reg == r)
-        return REG_T0;
-    if (scratch == REG_T1 && t1_cached_psx_reg == r)
-        return REG_T1;
     EMIT_LW(scratch, CPU_REG(r), REG_S0);
-    /* Update scratch cache */
-    if (scratch == REG_T0) t0_cached_psx_reg = r;
-    else if (scratch == REG_T1) t1_cached_psx_reg = r;
     return scratch;
 }
 
@@ -142,11 +96,6 @@ void emit_store_psx_reg(int r, int hwreg)
         return;
     }
     EMIT_SW(hwreg, CPU_REG(r), REG_S0);
-    /* Update scratch cache: hwreg holds r's latest value;
-     * invalidate any OTHER scratch that claimed to hold r (stale). */
-    if (hwreg == REG_T0) { t0_cached_psx_reg = r; if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1; }
-    else if (hwreg == REG_T1) { t1_cached_psx_reg = r; if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1; }
-    else { if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1; if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1; }
 }
 
 void emit_sync_reg(int r, int host_reg)
@@ -154,10 +103,6 @@ void emit_sync_reg(int r, int host_reg)
     if (r == 0 || psx_pinned_reg[r])
         return;
     EMIT_SW(host_reg, CPU_REG(r), REG_S0);
-    /* Update scratch cache: host_reg now holds r's latest value */
-    if (host_reg == REG_T0) { t0_cached_psx_reg = r; if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1; }
-    else if (host_reg == REG_T1) { t1_cached_psx_reg = r; if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1; }
-    else { if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1; if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1; }
 }
 
 /* Materialize all lazy (dirty) constants into native registers / cpu.regs[].
@@ -185,9 +130,6 @@ void flush_dirty_consts(void)
             {
                 emit_load_imm32(REG_AT, vregs[r].value);
                 EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
-                /* cpu.regs[r] changed via AT, scratch caches may be stale */
-                if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1;
-                if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1;
             }
             vregs[r].is_dirty = 0;
         }
@@ -246,8 +188,6 @@ void emit_call_c(uint32_t func_addr)
     emit_load_imm32(REG_T0, func_addr);
     EMIT_JAL_ABS((uint32_t)call_c_trampoline_addr);
     EMIT_NOP();
-    /* C call clobbers T0/T1 at runtime */
-    reg_cache_invalidate();
 }
 
 void emit_call_c_lite(uint32_t func_addr)
@@ -262,8 +202,6 @@ void emit_call_c_lite(uint32_t func_addr)
     emit_load_imm32(REG_T0, func_addr);
     EMIT_JAL_ABS((uint32_t)call_c_trampoline_lite_addr);
     EMIT_NOP();
-    /* C call clobbers T0/T1 at runtime */
-    reg_cache_invalidate();
 }
 
 /*
@@ -356,9 +294,6 @@ void mark_vreg_var(int r)
         {
             emit_load_imm32(REG_AT, vregs[r].value);
             EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
-            /* cpu.regs[r] changed via AT, scratch caches may be stale */
-            if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1;
-            if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1;
         }
     }
     vregs[r].is_const = 0;
@@ -384,7 +319,6 @@ void reset_vregs(void)
 {
     memset(vregs, 0, sizeof(vregs));
     dirty_const_mask = 0;
-    reg_cache_invalidate();
     /* $0 is special, but memset already handles it by setting is_const=0.
      * However, is_vreg_const(0) handles it specifically. */
 }

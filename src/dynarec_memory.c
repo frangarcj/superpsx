@@ -353,8 +353,6 @@ void cold_slow_emit_all(void)
  */
 void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_signed)
 {
-    /* Memory emitters clobber T0/T1/T2 as scratch */
-    reg_cache_invalidate();
     uint32_t const_addr = 0;
     int is_const = 0;
 
@@ -638,8 +636,6 @@ void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t offset)
 
 void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
 {
-    /* Memory emitters clobber T0/T1/T2 as scratch */
-    reg_cache_invalidate();
     uint32_t const_addr = 0;
     int is_const = 0;
 
@@ -908,8 +904,6 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
  */
 void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int use_load_delay)
 {
-    /* Memory emitters clobber T0/T1/T2 as scratch */
-    reg_cache_invalidate();
     /* Load current rt value (merge target) */
     if (use_load_delay)
         EMIT_LW(REG_V0, CPU_LOAD_DELAY_VAL, REG_S0);
@@ -977,8 +971,6 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
  */
 void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
 {
-    /* Memory emitters clobber T0/T1/T2 as scratch */
-    reg_cache_invalidate();
     /* Compute effective address into T0, data into T2 */
     emit_load_psx_reg(REG_T0, rs_psx);
     EMIT_ADDIU(REG_T0, REG_T0, offset);
