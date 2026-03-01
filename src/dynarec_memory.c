@@ -660,13 +660,30 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
             else
                 EMIT_SB(REG_T2, 0, REG_T1);
 
-            /* SMC detection: call handler that bumps page gen AND flushes
-             * stale jit_ht entries for this page.  Required because the asm
-             * dispatch trampoline bypasses the C-side page_gen check. */
+            /* SMC detection: inline check of jit_l1_ram[page] before calling
+             * the full handler.  Most pages have no compiled blocks, so the
+             * inline NULL check (3-4 instrs) avoids the expensive trampoline
+             * call (~30 instrs with reg save/restore) in the common case. */
             if (size == 4)
             {
+                uint32_t page = phys >> 12;
+                flush_dirty_consts();
+                emit_load_imm32(REG_T0, (uint32_t)&jit_l1_ram[page]);
+                EMIT_LW(REG_T0, 0, REG_T0);     /* t0 = jit_l1_ram[page] */
+                uint32_t *beq_ptr = code_ptr;
+                EMIT_BEQ(REG_T0, REG_ZERO, 0);   /* skip if NULL (placeholder) */
+                EMIT_NOP();
+
+                /* Only reached when page has compiled blocks */
                 emit_load_imm32(REG_A0, phys);
-                emit_call_c_lite((uint32_t)jit_smc_handler);
+                EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
+                emit_load_imm32(REG_T0, (uint32_t)jit_smc_handler);
+                EMIT_JAL_ABS((uint32_t)call_c_trampoline_lite_addr);
+                EMIT_NOP();
+
+                /* Fixup BEQ target to skip the handler call */
+                int32_t skip = (int32_t)(code_ptr - beq_ptr - 2);
+                *beq_ptr = MK_I(4, REG_T0, REG_ZERO, skip & 0xFFFF);
             }
             return;
         }
