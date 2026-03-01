@@ -1005,7 +1005,6 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     }
                     need_texflush_r = !gs_state.valid || gs_state.tex0 != want_tex0_r;
                 }
-                }
 
                 int emit_dthe_r = (!gs_state.valid || gs_state.dthe != want_dthe_r);
                 int emit_alpha_r = (is_semi_trans && (!gs_state.valid || gs_state.alpha != want_alpha_r));
