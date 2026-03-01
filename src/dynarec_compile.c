@@ -555,14 +555,16 @@ uint32_t *compile_block(uint32_t psx_pc)
     dce_prescan(psx_code, DCE_MAX_SCAN);
     emit_block_prologue();
 
-    /* Inject BIOS HLE hooks natively so that DBL jumps do not bypass them */
+    /* Inject BIOS HLE hooks natively so that DBL jumps do not bypass them.
+     * Charge a nominal 10 cycles for HLE overhead (the block's instructions
+     * haven't been compiled yet so block_cycle_count is still 0). */
     uint32_t phys_pc = psx_pc & 0x1FFFFFFF;
     if (phys_pc == 0xA0)
     {
         emit_call_c((uint32_t)BIOS_HLE_A);
         EMIT_BEQ(REG_V0, REG_ZERO, 3);
         EMIT_NOP(); /* Delay slot */
-        EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
+        EMIT_ADDIU(REG_S2, REG_S2, -10);
         EMIT_J_ABS((uint32_t)abort_trampoline_addr);
         EMIT_NOP();
     }
@@ -571,7 +573,7 @@ uint32_t *compile_block(uint32_t psx_pc)
         emit_call_c((uint32_t)BIOS_HLE_B);
         EMIT_BEQ(REG_V0, REG_ZERO, 3);
         EMIT_NOP(); /* Delay slot */
-        EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
+        EMIT_ADDIU(REG_S2, REG_S2, -10);
         EMIT_J_ABS((uint32_t)abort_trampoline_addr);
         EMIT_NOP();
     }
@@ -580,7 +582,7 @@ uint32_t *compile_block(uint32_t psx_pc)
         emit_call_c((uint32_t)BIOS_HLE_C);
         EMIT_BEQ(REG_V0, REG_ZERO, 3);
         EMIT_NOP(); /* Delay slot */
-        EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
+        EMIT_ADDIU(REG_S2, REG_S2, -10);
         EMIT_J_ABS((uint32_t)abort_trampoline_addr);
         EMIT_NOP();
     }

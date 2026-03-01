@@ -269,14 +269,16 @@ void emit_call_c_lite(uint32_t func_addr)
  *   nop
  * @skip:
  */
-void emit_abort_check(void)
+void emit_abort_check(uint32_t cycles)
 {
     EMIT_LW(REG_T0, CPU_BLOCK_ABORTED, REG_S0); /* t0 = cpu.block_aborted */
     EMIT_BEQ(REG_T0, REG_ZERO, 4);              /* skip next 3 instrs if zero */
     EMIT_NOP();
 
-    /* Inside abort path: subtract cycles up to this instruction */
-    EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
+    /* Inside abort path: subtract only the cycles consumed up to this
+     * instruction, not the full block total.  For deferred cold/TLB paths
+     * this is the per-instruction cycle_offset stored at emit time. */
+    EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)cycles);
     EMIT_J_ABS((uint32_t)abort_trampoline_addr);
     EMIT_NOP();
 }

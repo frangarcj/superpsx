@@ -339,7 +339,7 @@ void emit_flush_pinned(void);
 void emit_reload_pinned(void);
 void emit_call_c(uint32_t func_addr);
 void emit_call_c_lite(uint32_t func_addr);
-void emit_abort_check(void);
+void emit_abort_check(uint32_t cycles);
 void emit_load_imm32(int hwreg, uint32_t val);
 
 void mark_vreg_const(int r, uint32_t val);

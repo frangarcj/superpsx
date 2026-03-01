@@ -205,7 +205,7 @@ void tlb_patch_emit_all(void)
         EMIT_NOP();
 
         if (e->type == 0 && e->size >= 2)
-            emit_abort_check();
+            emit_abort_check((uint32_t)e->cycle_offset);
 
         /* Sign extension for signed loads */
         if (e->type == 0 && e->is_signed && e->size < 4)
@@ -302,7 +302,7 @@ void cold_slow_emit_all(void)
         EMIT_NOP();
 
         if (e->has_abort)
-            emit_abort_check();
+            emit_abort_check((uint32_t)e->cycle_offset);
 
         /* Sign extension for signed byte/halfword reads */
         if (e->type == 0 && e->is_signed && e->size < 4)
