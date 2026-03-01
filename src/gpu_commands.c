@@ -195,7 +195,7 @@ void GPU_WriteGP0(uint32_t data)
             // Flush GS texture cache after VRAM upload
             Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), GIF_REG_AD);
             Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH); // TEXFLUSH
-            Flush_GIF();            // Keep this one for VRAM-to-CPU sync
+            Flush_GIF();                                        // Keep this one for VRAM-to-CPU sync
 
             if (vram_tx_x + vram_tx_w > 1024)
             {
@@ -316,17 +316,56 @@ void GPU_WriteGP0(uint32_t data)
                 {
                     vram_gen_counter++;
                     Tex_Cache_DirtyRegion(dx, dy, w, h);
-                    for (int row = 0; row < h; row++)
+
+                    /* Fast path: no wrapping → row-level memcpy/memmove */
+                    if (sx + w <= 1024 && dx + w <= 1024 &&
+                        sy + h <= 512 && dy + h <= 512)
                     {
-                        for (int col = 0; col < w; col++)
+                        if (sy == dy && !(sx >= dx + w || dx >= sx + w))
                         {
-                            int src_px = ((sy + row) & 0x1FF) * 1024 + ((sx + col) & 0x3FF);
-                            int dst_px = ((dy + row) & 0x1FF) * 1024 + ((dx + col) & 0x3FF);
-                            psx_vram_shadow[dst_px] = psx_vram_shadow[src_px];
+                            /* Same row, horizontal overlap → memmove */
+                            for (int row = 0; row < h; row++)
+                            {
+                                memmove(&psx_vram_shadow[(dy + row) * 1024 + dx],
+                                        &psx_vram_shadow[(sy + row) * 1024 + sx],
+                                        w * sizeof(uint16_t));
+                            }
+                        }
+                        else if (dy > sy && dy < sy + h)
+                        {
+                            /* Downward overlap → copy bottom-to-top */
+                            for (int row = h - 1; row >= 0; row--)
+                            {
+                                memcpy(&psx_vram_shadow[(dy + row) * 1024 + dx],
+                                       &psx_vram_shadow[(sy + row) * 1024 + sx],
+                                       w * sizeof(uint16_t));
+                            }
+                        }
+                        else
+                        {
+                            /* No overlap or upward overlap → simple memcpy */
+                            for (int row = 0; row < h; row++)
+                            {
+                                memcpy(&psx_vram_shadow[(dy + row) * 1024 + dx],
+                                       &psx_vram_shadow[(sy + row) * 1024 + sx],
+                                       w * sizeof(uint16_t));
+                            }
+                        }
+                    }
+                    else
+                    {
+                        /* Wrapping path: pixel-by-pixel (rare) */
+                        for (int row = 0; row < h; row++)
+                        {
+                            for (int col = 0; col < w; col++)
+                            {
+                                int src_px = ((sy + row) & 0x1FF) * 1024 + ((sx + col) & 0x3FF);
+                                int dst_px = ((dy + row) & 0x1FF) * 1024 + ((dx + col) & 0x3FF);
+                                psx_vram_shadow[dst_px] = psx_vram_shadow[src_px];
+                            }
                         }
                     }
                 }
-
 
                 int y_overlap_down = (dy > sy) && (dy < sy + h);
 
@@ -404,8 +443,8 @@ void GPU_WriteGP0(uint32_t data)
                         }
 
                         Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
-                        Push_GIF_Data(GS_SET_BITBLTBUF(0,0,0, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF);
-                        Push_GIF_Data(GS_SET_TRXPOS(0,0,dx,dy,0), GS_REG_TRXPOS);
+                        Push_GIF_Data(GS_SET_BITBLTBUF(0, 0, 0, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF);
+                        Push_GIF_Data(GS_SET_TRXPOS(0, 0, dx, dy, 0), GS_REG_TRXPOS);
                         Push_GIF_Data(GS_SET_TRXREG(w, h), GS_REG_TRXREG);
                         Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR);
                         Flush_GIF();
@@ -657,7 +696,7 @@ void GPU_WriteGP0(uint32_t data)
         {
             Push_GIF_Tag(GIF_TAG_LO(2, 1, 0, 0, 0, 1), GIF_REG_AD);
             Push_GIF_Data(GS_SET_FBA(mask_set_bit), GS_REG_FBA_1); // FBA_1 via SDK macro
-            Push_GIF_Data(Get_Base_TEST(), GS_REG_TEST_1);        // TEST_1 (now composed via GS_SET_TEST)
+            Push_GIF_Data(Get_Base_TEST(), GS_REG_TEST_1);         // TEST_1 (now composed via GS_SET_TEST)
         }
         Prim_InvalidateGSState();
         break;

@@ -659,6 +659,15 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
                 EMIT_SH(REG_T2, 0, REG_T1);
             else
                 EMIT_SB(REG_T2, 0, REG_T1);
+
+            /* SMC detection: call handler that bumps page gen AND flushes
+             * stale jit_ht entries for this page.  Required because the asm
+             * dispatch trampoline bypasses the C-side page_gen check. */
+            if (size == 4)
+            {
+                emit_load_imm32(REG_A0, phys);
+                emit_call_c_lite((uint32_t)jit_smc_handler);
+            }
             return;
         }
         /* Scratchpad access? */

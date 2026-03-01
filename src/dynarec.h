@@ -163,6 +163,10 @@ static inline uint8_t jit_get_page_gen(uint32_t phys_addr)
     return 0;
 }
 
+/* SMC handler: bumps page gen + flushes jit_ht for the affected page.
+ * Called from the JIT const-address word-store fast path. */
+void jit_smc_handler(uint32_t phys_addr);
+
 extern BlockEntry *block_node_pool;
 extern int block_node_pool_idx;
 

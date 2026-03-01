@@ -24,22 +24,22 @@
 /*=== CPU State ===*/
 typedef struct
 {
-    uint32_t regs[32];       /* 0x00: GPR */
-    uint32_t pc;             /* 0x80: Program Counter */
-    uint32_t hi;             /* 0x84 */
-    uint32_t lo;             /* 0x88 */
-    uint32_t cop0[32];       /* 0x8C: COP0 registers */
-    uint32_t cp2_data[32];   /* 0x10C: GTE Data Registers (V0, V1, V2, etc.) */
-    uint32_t cp2_ctrl[32];   /* 0x18C: GTE Control Registers (Matrices, etc.) */
-    uint32_t current_pc;     /* PC of the currently executing instruction (for exceptions) */
-    uint32_t load_delay_reg; /* Load delay slot: target register index (0=none) */
-    uint32_t load_delay_val; /* Load delay slot: pending value */
-    uint32_t i_stat;         /* Interrupt Status Register */
-    uint32_t i_mask;         /* Interrupt Mask Register */
-    uint32_t block_aborted;  /* Set by PSX_Exception mid-block; checked by JIT */
-    uint32_t branch_cond;    /* Scratch: branch condition saved across delay slot */
+    uint32_t regs[32];            /* 0x00: GPR */
+    uint32_t pc;                  /* 0x80: Program Counter */
+    uint32_t hi;                  /* 0x84 */
+    uint32_t lo;                  /* 0x88 */
+    uint32_t cop0[32];            /* 0x8C: COP0 registers */
+    uint32_t cp2_data[32];        /* 0x10C: GTE Data Registers (V0, V1, V2, etc.) */
+    uint32_t cp2_ctrl[32];        /* 0x18C: GTE Control Registers (Matrices, etc.) */
+    uint32_t current_pc;          /* PC of the currently executing instruction (for exceptions) */
+    uint32_t load_delay_reg;      /* Load delay slot: target register index (0=none) */
+    uint32_t load_delay_val;      /* Load delay slot: pending value */
+    uint32_t i_stat;              /* Interrupt Status Register */
+    uint32_t i_mask;              /* Interrupt Mask Register */
+    uint32_t block_aborted;       /* Set by PSX_Exception mid-block; checked by JIT */
+    uint32_t branch_cond;         /* Scratch: branch condition saved across delay slot */
     uint32_t initial_cycles_left; /* Used to compute elapsed cycles during JIT execution */
-    uint32_t cycles_left;    /* Maintained by JIT, sync'd to cpu on C calls */
+    uint32_t cycles_left;         /* Maintained by JIT, sync'd to cpu on C calls */
 } R3000CPU;
 
 /* Struct offsets for asm code generation */
@@ -79,7 +79,7 @@ extern uint8_t *psx_ram;
 extern uint8_t *psx_bios;
 extern uint8_t scratchpad_buf[];
 extern uint8_t **mem_lut;
-extern uint32_t psx_tlb_base;  /* 0x20000000 if TLB active, 0 otherwise */
+extern uint32_t psx_tlb_base; /* 0x20000000 if TLB active, 0 otherwise */
 
 #define MEM_LUT_SIZE 65536
 
@@ -118,10 +118,28 @@ uint32_t GTE_ReadCtrl(R3000CPU *cpu, int reg);
 void GTE_WriteCtrl(R3000CPU *cpu, int reg, uint32_t val);
 
 /* GTE inline command wrappers (skip GTE_Execute dispatcher) */
+void GTE_Inline_RTPS(R3000CPU *cpu, int sf, int lm);
 void GTE_Inline_NCLIP(R3000CPU *cpu);
+void GTE_Inline_OP(R3000CPU *cpu, int sf, int lm);
+void GTE_Inline_DPCS(R3000CPU *cpu, int sf, int lm);
+void GTE_Inline_INTPL(R3000CPU *cpu, int sf, int lm);
+void GTE_Inline_MVMVA(R3000CPU *cpu, uint32_t packed); /* packed = sf|(lm<<1)|(mx<<2)|(v<<4)|(cv<<6) */
+void GTE_Inline_NCDS(R3000CPU *cpu, int sf, int lm);
+void GTE_Inline_CDP(R3000CPU *cpu, int sf, int lm);
+void GTE_Inline_NCDT(R3000CPU *cpu, int sf, int lm);
+void GTE_Inline_NCCS(R3000CPU *cpu, int sf, int lm);
+void GTE_Inline_CC(R3000CPU *cpu, int sf, int lm);
+void GTE_Inline_NCS(R3000CPU *cpu, int sf, int lm);
+void GTE_Inline_NCT(R3000CPU *cpu, int sf, int lm);
 void GTE_Inline_SQR(R3000CPU *cpu, int sf, int lm);
+void GTE_Inline_DCPL(R3000CPU *cpu, int sf, int lm);
+void GTE_Inline_DPCT(R3000CPU *cpu, int sf, int lm);
 void GTE_Inline_AVSZ3(R3000CPU *cpu);
 void GTE_Inline_AVSZ4(R3000CPU *cpu);
+void GTE_Inline_RTPT(R3000CPU *cpu, int sf, int lm);
+void GTE_Inline_GPF(R3000CPU *cpu, int sf, int lm);
+void GTE_Inline_GPL(R3000CPU *cpu, int sf, int lm);
+void GTE_Inline_NCCT(R3000CPU *cpu, int sf, int lm);
 
 /*=== CPU Helper Functions (called from dynarec) ===*/
 uint32_t Helper_LWL(uint32_t addr, uint32_t cur_rt);

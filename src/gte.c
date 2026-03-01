@@ -1344,6 +1344,14 @@ void GTE_Execute(uint32_t opcode, R3000CPU *cpu)
  * runtime opcode re-read from RAM.
  * ================================================================ */
 
+void GTE_Inline_RTPS(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_rtps(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
 void GTE_Inline_NCLIP(R3000CPU *cpu)
 {
     flag_reset();
@@ -1352,10 +1360,120 @@ void GTE_Inline_NCLIP(R3000CPU *cpu)
     C(c_FLAG) = gte_flag;
 }
 
+void GTE_Inline_OP(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_op(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_DPCS(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_dpcs(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_INTPL(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_intpl(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_MVMVA(R3000CPU *cpu, uint32_t packed)
+{
+    /* packed = sf | (lm<<1) | (mx<<2) | (v<<4) | (cv<<6) */
+    int sf = packed & 1;
+    int lm = (packed >> 1) & 1;
+    int mx = (packed >> 2) & 3;
+    int v = (packed >> 4) & 3;
+    int cv = (packed >> 6) & 3;
+    flag_reset();
+    gte_cmd_mvmva(cpu, sf, lm, mx, v, cv);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_NCDS(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_ncds(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_CDP(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_cdp(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_NCDT(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_ncdt(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_NCCS(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_nccs(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_CC(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_cc(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_NCS(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_ncs(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_NCT(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_nct(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
 void GTE_Inline_SQR(R3000CPU *cpu, int sf, int lm)
 {
     flag_reset();
     gte_cmd_sqr(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_DCPL(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_dcpl(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_DPCT(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_dpct(cpu, sf, lm);
     flag_update_bit31();
     C(c_FLAG) = gte_flag;
 }
@@ -1372,6 +1490,38 @@ void GTE_Inline_AVSZ4(R3000CPU *cpu)
 {
     flag_reset();
     gte_cmd_avsz4(cpu);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_RTPT(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_rtpt(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_GPF(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_gpf(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_GPL(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_gpl(cpu, sf, lm);
+    flag_update_bit31();
+    C(c_FLAG) = gte_flag;
+}
+
+void GTE_Inline_NCCT(R3000CPU *cpu, int sf, int lm)
+{
+    flag_reset();
+    gte_cmd_ncct(cpu, sf, lm);
     flag_update_bit31();
     C(c_FLAG) = gte_flag;
 }

@@ -281,18 +281,18 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             EMIT_NOP();
             /* Common path: native signed divide */
             emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x1A)); /* div t0, t1 */
-            emit(MK_R(0, 0, 0, REG_T2, 0, 0x12));       /* mflo t2 */
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));       /* mfhi t0 */
+            emit(MK_R(0, 0, 0, REG_T2, 0, 0x12));      /* mflo t2 */
+            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));      /* mfhi t0 */
             EMIT_SW(REG_T2, CPU_LO, REG_S0);
             uint32_t *b_end_div = code_ptr;
             emit(MK_I(4, REG_ZERO, REG_ZERO, 0)); /* beq zero,zero,@end (placeholder) */
-            EMIT_SW(REG_T0, CPU_HI, REG_S0); /* delay slot */
+            EMIT_SW(REG_T0, CPU_HI, REG_S0);      /* delay slot */
             /* @divz: lo = (rs >= 0) ? -1 : 1, hi = rs */
-            EMIT_SW(REG_T0, CPU_HI, REG_S0); /* hi = rs (T0 still has rs) */
-            emit(MK_R(0, 0, REG_T0, REG_T1, 31, 0x03)); /* sra t1, t0, 31 */
-            emit(MK_R(0, 0, REG_T1, REG_T1, 1, 0x00));  /* sll t1, t1, 1  */
+            EMIT_SW(REG_T0, CPU_HI, REG_S0);                  /* hi = rs (T0 still has rs) */
+            emit(MK_R(0, 0, REG_T0, REG_T1, 31, 0x03));       /* sra t1, t0, 31 */
+            emit(MK_R(0, 0, REG_T1, REG_T1, 1, 0x00));        /* sll t1, t1, 1  */
             emit(MK_R(0, REG_T1, REG_ZERO, REG_T1, 0, 0x27)); /* nor t1, t1, zero */
-            EMIT_SW(REG_T1, CPU_LO, REG_S0); /* lo = result */
+            EMIT_SW(REG_T1, CPU_LO, REG_S0);                  /* lo = result */
             /* @end: patch the branch */
             {
                 int32_t off = (int32_t)(code_ptr - b_end_div - 1);
@@ -309,16 +309,16 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             EMIT_NOP();
             /* Common path: native unsigned divide */
             emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x1B)); /* divu t0, t1 */
-            emit(MK_R(0, 0, 0, REG_T2, 0, 0x12));       /* mflo t2 */
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));       /* mfhi t0 */
+            emit(MK_R(0, 0, 0, REG_T2, 0, 0x12));      /* mflo t2 */
+            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));      /* mfhi t0 */
             EMIT_SW(REG_T2, CPU_LO, REG_S0);
             uint32_t *b_end_divu = code_ptr;
             emit(MK_I(4, REG_ZERO, REG_ZERO, 0)); /* beq zero,zero,@end (placeholder) */
-            EMIT_SW(REG_T0, CPU_HI, REG_S0); /* delay slot */
+            EMIT_SW(REG_T0, CPU_HI, REG_S0);      /* delay slot */
             /* @divz: lo = 0xFFFFFFFF, hi = rs */
-            EMIT_SW(REG_T0, CPU_HI, REG_S0); /* hi = rs (T0 still has rs) */
+            EMIT_SW(REG_T0, CPU_HI, REG_S0);  /* hi = rs (T0 still has rs) */
             EMIT_ADDIU(REG_T0, REG_ZERO, -1); /* t0 = 0xFFFFFFFF */
-            EMIT_SW(REG_T0, CPU_LO, REG_S0); /* lo = 0xFFFFFFFF */
+            EMIT_SW(REG_T0, CPU_LO, REG_S0);  /* lo = 0xFFFFFFFF */
             /* @end: patch the branch */
             {
                 int32_t off = (int32_t)(code_ptr - b_end_divu - 1);
@@ -713,24 +713,125 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         else
         {
             uint32_t gte_func = opcode & 0x3F;
+            int gte_sf = (opcode >> 19) & 1;
+            int gte_lm = (opcode >> 10) & 1;
             switch (gte_func)
             {
+            case 0x01: /* RTPS */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_RTPS);
+                break;
             case 0x06: /* NCLIP */
                 EMIT_MOVE(REG_A0, REG_S0);
                 emit_flush_partial_cycles();
                 emit_call_c_lite((uint32_t)GTE_Inline_NCLIP);
                 break;
-            case 0x28: /* SQR */
+            case 0x0C: /* OP */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_OP);
+                break;
+            case 0x10: /* DPCS */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_DPCS);
+                break;
+            case 0x11: /* INTPL */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_INTPL);
+                break;
+            case 0x12: /* MVMVA */
             {
-                int gte_sf = (opcode >> 19) & 1;
-                int gte_lm = (opcode >> 10) & 1;
+                int mx = (opcode >> 17) & 3;
+                int v = (opcode >> 15) & 3;
+                int cv = (opcode >> 13) & 3;
+                uint32_t packed = gte_sf | (gte_lm << 1) | (mx << 2) | (v << 4) | (cv << 6);
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, packed);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_MVMVA);
+                break;
+            }
+            case 0x13: /* NCDS */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_NCDS);
+                break;
+            case 0x14: /* CDP */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_CDP);
+                break;
+            case 0x16: /* NCDT */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_NCDT);
+                break;
+            case 0x1B: /* NCCS */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_NCCS);
+                break;
+            case 0x1C: /* CC */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_CC);
+                break;
+            case 0x1E: /* NCS */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_NCS);
+                break;
+            case 0x20: /* NCT */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_NCT);
+                break;
+            case 0x28: /* SQR */
                 EMIT_MOVE(REG_A0, REG_S0);
                 emit_load_imm32(REG_A1, gte_sf);
                 emit_load_imm32(REG_A2, gte_lm);
                 emit_flush_partial_cycles();
                 emit_call_c_lite((uint32_t)GTE_Inline_SQR);
                 break;
-            }
+            case 0x29: /* DCPL */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_DCPL);
+                break;
+            case 0x2A: /* DPCT */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_DPCT);
+                break;
             case 0x2D: /* AVSZ3 */
                 EMIT_MOVE(REG_A0, REG_S0);
                 emit_flush_partial_cycles();
@@ -741,8 +842,37 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 emit_flush_partial_cycles();
                 emit_call_c_lite((uint32_t)GTE_Inline_AVSZ4);
                 break;
+            case 0x30: /* RTPT */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_RTPT);
+                break;
+            case 0x3D: /* GPF */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_GPF);
+                break;
+            case 0x3E: /* GPL */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_GPL);
+                break;
+            case 0x3F: /* NCCT */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, gte_sf);
+                emit_load_imm32(REG_A2, gte_lm);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_Inline_NCCT);
+                break;
             default:
             {
+                /* Unknown GTE op: fall back to generic dispatcher */
                 uint32_t phys = psx_pc & 0x1FFFFFFF;
                 emit_load_imm32(REG_T0, phys);
                 EMIT_ADDU(REG_T0, REG_T0, REG_S1);
@@ -945,12 +1075,13 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         /* Alignment check */
         emit(MK_I(0x0C, REG_T0, REG_T1, 3)); /* andi t1, t0, 3 */
         uint32_t *align_swc2 = code_ptr;
-        emit(MK_I(0x05, REG_T1, REG_ZERO, 0)); /* bne → slow */
+        emit(MK_I(0x05, REG_T1, REG_ZERO, 0));          /* bne → slow */
         emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24)); /* [delay] and t1, t0, s3 (phys) */
 
         /* Range check: phys < 2MB (skip when TLB active) */
         uint32_t *range_swc2 = NULL;
-        if (!psx_tlb_base) {
+        if (!psx_tlb_base)
+        {
             emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02)); /* srl  a0, t1, 21 */
             range_swc2 = code_ptr;
             emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne → slow */
@@ -967,7 +1098,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         /* Scratchpad inline check for SWC2 (skip when TLB active) */
         uint32_t *sp_miss_swc2 = NULL;
         uint32_t *sp_done_swc2 = NULL;
-        if (!psx_tlb_base) {
+        if (!psx_tlb_base)
+        {
             {
                 int32_t s2 = (int32_t)(code_ptr - range_swc2 - 1);
                 *range_swc2 = (*range_swc2 & 0xFFFF0000) | ((uint32_t)s2 & 0xFFFF);
@@ -996,7 +1128,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             *isc_swc2 = (*isc_swc2 & 0xFFFF0000) | ((uint32_t)s0 & 0xFFFF);
             int32_t s1 = (int32_t)(code_ptr - align_swc2 - 1);
             *align_swc2 = (*align_swc2 & 0xFFFF0000) | ((uint32_t)s1 & 0xFFFF);
-            if (sp_miss_swc2) {
+            if (sp_miss_swc2)
+            {
                 int32_t s_sp = (int32_t)(code_ptr - sp_miss_swc2 - 1);
                 *sp_miss_swc2 = (*sp_miss_swc2 & 0xFFFF0000) | ((uint32_t)s_sp & 0xFFFF);
             }
@@ -1018,7 +1151,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         {
             int32_t d0 = (int32_t)(code_ptr - done_swc2 - 1);
             *done_swc2 = (*done_swc2 & 0xFFFF0000) | ((uint32_t)d0 & 0xFFFF);
-            if (sp_done_swc2) {
+            if (sp_done_swc2)
+            {
                 int32_t d_sp = (int32_t)(code_ptr - sp_done_swc2 - 1);
                 *sp_done_swc2 = (*sp_done_swc2 & 0xFFFF0000) | ((uint32_t)d_sp & 0xFFFF);
             }

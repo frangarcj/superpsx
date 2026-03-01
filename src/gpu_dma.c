@@ -226,15 +226,29 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                     }
                     else if ((cmd_byte & 0xE0) == 0x80)
                     {
-                        /* VRAM-to-VRAM copy: word-by-word until done */
-                        GPU_WriteGP0(cmd_word);
-                        i++;
-                        addr = (addr + 4) & 0x1FFFFC;
-                        while (i < count && gpu_cmd_remaining > 0)
+                        /* VRAM-to-VRAM copy: fast path if all 4 words available */
+                        if (i + 3 < count)
                         {
-                            GPU_WriteGP0(*(uint32_t *)&psx_ram[addr]);
+                            /* Feed all 4 words directly without looping */
+                            GPU_WriteGP0(cmd_ptr[0]);
+                            GPU_WriteGP0(cmd_ptr[1]);
+                            GPU_WriteGP0(cmd_ptr[2]);
+                            GPU_WriteGP0(cmd_ptr[3]);
+                            i += 4;
+                            addr = (addr + 16) & 0x1FFFFC;
+                        }
+                        else
+                        {
+                            /* Fallback: word-by-word */
+                            GPU_WriteGP0(cmd_word);
                             i++;
                             addr = (addr + 4) & 0x1FFFFC;
+                            while (i < count && gpu_cmd_remaining > 0)
+                            {
+                                GPU_WriteGP0(*(uint32_t *)&psx_ram[addr]);
+                                i++;
+                                addr = (addr + 4) & 0x1FFFFC;
+                            }
                         }
                     }
                     else

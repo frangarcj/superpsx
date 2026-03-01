@@ -14,6 +14,37 @@ jit_l2_t jit_l1_bios[JIT_L1_BIOS_PAGES];
 /* ---- SMC page generation counters ---- */
 uint8_t jit_page_gen[JIT_L1_RAM_PAGES];
 
+/*
+ * SMC (Self-Modifying Code) handler for the JIT inline write fast path.
+ * Called when a const-address word store writes to a RAM page.
+ * Bumps the page generation counter AND removes stale jit_ht entries
+ * for all blocks on the affected page.  Without the jit_ht removal,
+ * the asm dispatch trampoline would bypass the C-side page_gen check
+ * and execute stale compiled code.
+ */
+void jit_smc_handler(uint32_t phys_addr)
+{
+    uint32_t page = phys_addr >> 12;
+    if (page >= JIT_L1_RAM_PAGES)
+        return;
+    jit_l2_t l2 = jit_l1_ram[page];
+    if (!l2)
+        return;
+    /* Bump generation so C-side check also detects staleness */
+    jit_page_gen[page]++;
+    /* Remove all jit_ht entries for blocks on this page */
+    uint32_t base_kseg0 = (page << 12) | 0x80000000u;
+    BlockEntry **entries = *l2;
+    for (int i = 0; i < 1024; i++)
+    {
+        if (entries[i] && entries[i]->native)
+        {
+            uint32_t pc = base_kseg0 | ((uint32_t)i << 2);
+            jit_ht_remove(pc);
+        }
+    }
+}
+
 BlockEntry *block_node_pool;
 int block_node_pool_idx = 0;
 
