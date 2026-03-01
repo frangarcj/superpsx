@@ -26,6 +26,17 @@ const int psx_pinned_reg[32] = {
 RegStatus vregs[32];
 uint32_t dirty_const_mask;
 
+/* Scratch register cache: tracks which PSX GPR value is in T0/T1.
+ * -1 means the register holds no cached PSX GPR value. */
+int t0_cached_psx_reg = -1;
+int t1_cached_psx_reg = -1;
+
+void reg_cache_invalidate(void)
+{
+    t0_cached_psx_reg = -1;
+    t1_cached_psx_reg = -1;
+}
+
 /* Load PSX register 'r' from cpu struct into hw reg 'hwreg' */
 void emit_load_psx_reg(int hwreg, int r)
 {
@@ -52,8 +63,17 @@ void emit_load_psx_reg(int hwreg, int r)
     }
     else
     {
+        /* Non-pinned, non-dirty-const: use scratch cache */
+        if (hwreg == REG_T0 && t0_cached_psx_reg == r) return;
+        if (hwreg == REG_T1 && t1_cached_psx_reg == r) return;
         EMIT_LW(hwreg, CPU_REG(r), REG_S0);
+        if (hwreg == REG_T0) t0_cached_psx_reg = r;
+        else if (hwreg == REG_T1) t1_cached_psx_reg = r;
+        return;
     }
+    /* Non-cacheable paths (r=0, dirty const, pinned): invalidate scratch */
+    if (hwreg == REG_T0) t0_cached_psx_reg = -1;
+    else if (hwreg == REG_T1) t1_cached_psx_reg = -1;
 }
 
 int emit_use_reg(int r, int scratch)
@@ -69,11 +89,19 @@ int emit_use_reg(int r, int scratch)
             EMIT_SW(dst, CPU_REG(r), REG_S0);
         vregs[r].is_dirty = 0;
         dirty_const_mask &= ~(1u << r);
+        /* Const materialized into scratch: invalidate cached entry */
+        if (dst == REG_T0) t0_cached_psx_reg = -1;
+        else if (dst == REG_T1) t1_cached_psx_reg = -1;
         return dst;
     }
     if (psx_pinned_reg[r])
         return psx_pinned_reg[r];
+    /* Non-pinned: check scratch register cache */
+    if (scratch == REG_T0 && t0_cached_psx_reg == r) return REG_T0;
+    if (scratch == REG_T1 && t1_cached_psx_reg == r) return REG_T1;
     EMIT_LW(scratch, CPU_REG(r), REG_S0);
+    if (scratch == REG_T0) t0_cached_psx_reg = r;
+    else if (scratch == REG_T1) t1_cached_psx_reg = r;
     return scratch;
 }
 
@@ -96,6 +124,14 @@ void emit_store_psx_reg(int r, int hwreg)
         return;
     }
     EMIT_SW(hwreg, CPU_REG(r), REG_S0);
+    /* Update cache: hwreg now holds cpu.regs[r] */
+    if (hwreg == REG_T0) {
+        t0_cached_psx_reg = r;
+        if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1;
+    } else if (hwreg == REG_T1) {
+        t1_cached_psx_reg = r;
+        if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1;
+    }
 }
 
 void emit_sync_reg(int r, int host_reg)
@@ -103,6 +139,14 @@ void emit_sync_reg(int r, int host_reg)
     if (r == 0 || psx_pinned_reg[r])
         return;
     EMIT_SW(host_reg, CPU_REG(r), REG_S0);
+    /* Update cache: host_reg now holds cpu.regs[r] */
+    if (host_reg == REG_T0) {
+        t0_cached_psx_reg = r;
+        if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1;
+    } else if (host_reg == REG_T1) {
+        t1_cached_psx_reg = r;
+        if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1;
+    }
 }
 
 /* Materialize all lazy (dirty) constants into native registers / cpu.regs[].
@@ -130,6 +174,9 @@ void flush_dirty_consts(void)
             {
                 emit_load_imm32(REG_AT, vregs[r].value);
                 EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
+                /* cpu.regs[r] changed; invalidate stale cache entry */
+                if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1;
+                if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1;
             }
             vregs[r].is_dirty = 0;
         }
@@ -188,6 +235,7 @@ void emit_call_c(uint32_t func_addr)
     emit_load_imm32(REG_T0, func_addr);
     EMIT_JAL_ABS((uint32_t)call_c_trampoline_addr);
     EMIT_NOP();
+    reg_cache_invalidate();
 }
 
 void emit_call_c_lite(uint32_t func_addr)
@@ -202,6 +250,7 @@ void emit_call_c_lite(uint32_t func_addr)
     emit_load_imm32(REG_T0, func_addr);
     EMIT_JAL_ABS((uint32_t)call_c_trampoline_lite_addr);
     EMIT_NOP();
+    reg_cache_invalidate();
 }
 
 /*
@@ -294,6 +343,9 @@ void mark_vreg_var(int r)
         {
             emit_load_imm32(REG_AT, vregs[r].value);
             EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
+            /* cpu.regs[r] changed; invalidate stale cache entry */
+            if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1;
+            if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1;
         }
     }
     vregs[r].is_const = 0;
@@ -319,6 +371,58 @@ void reset_vregs(void)
 {
     memset(vregs, 0, sizeof(vregs));
     dirty_const_mask = 0;
+    reg_cache_invalidate();
     /* $0 is special, but memset already handles it by setting is_const=0.
      * However, is_vreg_const(0) handles it specifically. */
+}
+
+/* ---- Compile-loop helpers ----
+ * These helpers use AT (or direct pinned regs) instead of T0/T1 for
+ * non-GPR temporaries.  This keeps T0/T1 free for the scratch register
+ * cache (Phase 2), and also saves 1 instruction when the destination
+ * PSX register is pinned (direct load instead of load+move). */
+
+/* Copy a CPU struct field (HI, LO, COP0, load_delay_val, etc.) into a
+ * PSX general-purpose register.  Uses AT for non-pinned regs. */
+void emit_cpu_field_to_psx_reg(int field_offset, int r)
+{
+    mark_vreg_var(r);
+    if (r == 0) return;
+    if (psx_pinned_reg[r])
+    {
+        EMIT_LW(psx_pinned_reg[r], field_offset, REG_S0);
+    }
+    else
+    {
+        EMIT_LW(REG_AT, field_offset, REG_S0);
+        EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
+        /* cpu.regs[r] changed via AT; invalidate stale scratch entries */
+        if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1;
+        if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1;
+    }
+}
+
+/* Store an immediate value into a PSX register.  Uses AT for non-pinned. */
+void emit_materialize_psx_imm(int r, uint32_t value)
+{
+    if (r == 0) return;
+    if (psx_pinned_reg[r])
+    {
+        emit_load_imm32(psx_pinned_reg[r], value);
+    }
+    else
+    {
+        emit_load_imm32(REG_AT, value);
+        EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
+        /* cpu.regs[r] changed via AT; invalidate stale scratch entries */
+        if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1;
+        if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1;
+    }
+}
+
+/* Store an immediate value into a cpu struct field.  Uses AT. */
+void emit_imm_to_cpu_field(int field_offset, uint32_t value)
+{
+    emit_load_imm32(REG_AT, value);
+    EMIT_SW(REG_AT, field_offset, REG_S0);
 }

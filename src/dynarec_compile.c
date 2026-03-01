@@ -500,9 +500,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             /* Apply any pending load delay before the delay slot instruction */
             if (pending_load_reg != 0 && pending_load_apply_now)
             {
-                mark_vreg_var(pending_load_reg);
-                EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
-                emit_store_psx_reg(pending_load_reg, REG_T0);
+                emit_cpu_field_to_psx_reg(CPU_LOAD_DELAY_VAL, pending_load_reg);
                 pending_load_reg = 0;
                 pending_load_apply_now = 0;
             }
@@ -525,9 +523,7 @@ uint32_t *compile_block(uint32_t psx_pc)
 
             if (pending_load_reg != 0)
             {
-                mark_vreg_var(pending_load_reg);
-                EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
-                emit_store_psx_reg(pending_load_reg, REG_T0);
+                emit_cpu_field_to_psx_reg(CPU_LOAD_DELAY_VAL, pending_load_reg);
                 pending_load_reg = 0;
             }
 
@@ -583,8 +579,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             if (op == 0x03)
             {
                 mark_vreg_const(31, cur_pc + 8);
-                emit_load_imm32(REG_T0, cur_pc + 8);
-                emit_store_psx_reg(31, REG_T0);
+                emit_materialize_psx_imm(31, cur_pc + 8);
             }
             branch_target = ((cur_pc + 4) & 0xF0000000) | (TARGET(opcode) << 2);
             branch_type = 1;
@@ -593,9 +588,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             {
                 if (pending_load_apply_now)
                 {
-                    mark_vreg_var(pending_load_reg);
-                    EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
-                    emit_store_psx_reg(pending_load_reg, REG_T0);
+                    emit_cpu_field_to_psx_reg(CPU_LOAD_DELAY_VAL, pending_load_reg);
                     pending_load_reg = 0;
                     pending_load_apply_now = 0;
                 }
@@ -616,13 +609,11 @@ uint32_t *compile_block(uint32_t psx_pc)
             emit_load_psx_reg(REG_T0, rs);
             EMIT_SW(REG_T0, CPU_PC, REG_S0);
             /* Save current_pc so AdEL exception can set EPC = JR/JALR instr */
-            emit_load_imm32(REG_T1, cur_pc);
-            EMIT_SW(REG_T1, CPU_CURRENT_PC, REG_S0);
+            emit_imm_to_cpu_field(CPU_CURRENT_PC, cur_pc);
             if (FUNC(opcode) == 0x09 && rd != 0)
             {
                 mark_vreg_const(rd, cur_pc + 8);
-                emit_load_imm32(REG_T1, cur_pc + 8);
-                emit_store_psx_reg(rd, REG_T1);
+                emit_materialize_psx_imm(rd, cur_pc + 8);
             }
             branch_type = 3;
             in_delay_slot = 1;
@@ -630,9 +621,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             {
                 if (pending_load_apply_now)
                 {
-                    mark_vreg_var(pending_load_reg);
-                    EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
-                    emit_store_psx_reg(pending_load_reg, REG_T0);
+                    emit_cpu_field_to_psx_reg(CPU_LOAD_DELAY_VAL, pending_load_reg);
                     pending_load_reg = 0;
                     pending_load_apply_now = 0;
                 }
@@ -689,9 +678,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                 {
                     if (pending_load_apply_now)
                     {
-                        mark_vreg_var(pending_load_reg);
-                        EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
-                        emit_store_psx_reg(pending_load_reg, REG_T0);
+                        emit_cpu_field_to_psx_reg(CPU_LOAD_DELAY_VAL, pending_load_reg);
                         pending_load_reg = 0;
                         pending_load_apply_now = 0;
                     }
@@ -732,9 +719,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             {
                 if (pending_load_apply_now)
                 {
-                    mark_vreg_var(pending_load_reg);
-                    EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
-                    emit_store_psx_reg(pending_load_reg, REG_T0);
+                    emit_cpu_field_to_psx_reg(CPU_LOAD_DELAY_VAL, pending_load_reg);
                     pending_load_reg = 0;
                     pending_load_apply_now = 0;
                 }
@@ -766,8 +751,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                 if (rt == 0x10 || rt == 0x11)
                 {
                     mark_vreg_const(31, cur_pc + 8);
-                    emit_load_imm32(REG_T1, cur_pc + 8);
-                    emit_store_psx_reg(31, REG_T1);
+                    emit_materialize_psx_imm(31, cur_pc + 8);
                 }
                 branch_type = 1;
                 in_delay_slot = 1;
@@ -775,9 +759,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                 {
                     if (pending_load_apply_now)
                     {
-                        mark_vreg_var(pending_load_reg);
-                        EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
-                        emit_store_psx_reg(pending_load_reg, REG_T0);
+                        emit_cpu_field_to_psx_reg(CPU_LOAD_DELAY_VAL, pending_load_reg);
                         pending_load_reg = 0;
                         pending_load_apply_now = 0;
                     }
@@ -797,8 +779,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             if (rt == 0x10 || rt == 0x11)
             {
                 mark_vreg_const(31, cur_pc + 8);
-                emit_load_imm32(REG_T1, cur_pc + 8);
-                emit_store_psx_reg(31, REG_T1);
+                emit_materialize_psx_imm(31, cur_pc + 8);
             }
 
             if ((rt & 1) == 0)
@@ -818,9 +799,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             {
                 if (pending_load_apply_now)
                 {
-                    mark_vreg_var(pending_load_reg);
-                    EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
-                    emit_store_psx_reg(pending_load_reg, REG_T0);
+                    emit_cpu_field_to_psx_reg(CPU_LOAD_DELAY_VAL, pending_load_reg);
                     pending_load_reg = 0;
                     pending_load_apply_now = 0;
                 }
@@ -872,9 +851,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                 }
                 else
                 {
-                    mark_vreg_var(pending_load_reg);
-                    EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
-                    emit_store_psx_reg(pending_load_reg, REG_T0);
+                    emit_cpu_field_to_psx_reg(CPU_LOAD_DELAY_VAL, pending_load_reg);
                     pending_load_reg = 0;
                     pending_load_apply_now = 0;
                 }
@@ -907,9 +884,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             {
                 if (pending_load_reg != 0 && pending_load_reg != load_target)
                 {
-                    mark_vreg_var(pending_load_reg);
-                    EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
-                    emit_store_psx_reg(pending_load_reg, REG_T0);
+                    emit_cpu_field_to_psx_reg(CPU_LOAD_DELAY_VAL, pending_load_reg);
                 }
                 EMIT_SW(REG_V0, CPU_LOAD_DELAY_VAL, REG_S0);
                 pending_load_reg = load_target;
@@ -923,9 +898,7 @@ uint32_t *compile_block(uint32_t psx_pc)
         {
             if (pending_load_reg != 0)
             {
-                mark_vreg_var(pending_load_reg);
-                EMIT_LW(REG_T0, CPU_LOAD_DELAY_VAL, REG_S0);
-                emit_store_psx_reg(pending_load_reg, REG_T0);
+                emit_cpu_field_to_psx_reg(CPU_LOAD_DELAY_VAL, pending_load_reg);
                 pending_load_reg = 0;
             }
             emit_branch_epilogue(cur_pc);

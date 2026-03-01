@@ -350,6 +350,16 @@ uint32_t get_vreg_const(int r);
 void reset_vregs(void);
 void flush_dirty_consts(void);
 
+/* Scratch register cache: tracks which PSX GPR is in T0/T1 */
+extern int t0_cached_psx_reg;
+extern int t1_cached_psx_reg;
+void reg_cache_invalidate(void);
+
+/* Compile-loop helpers: use AT instead of T0/T1 for non-GPR temporaries */
+void emit_cpu_field_to_psx_reg(int field_offset, int r);
+void emit_materialize_psx_imm(int r, uint32_t value);
+void emit_imm_to_cpu_field(int field_offset, uint32_t value);
+
 /* ================================================================
  *  Function prototypes — dynarec_cache.c
  * ================================================================ */
