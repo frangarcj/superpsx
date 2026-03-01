@@ -880,9 +880,13 @@ void SPU_FlushAudio(void)
     int32_t eff_vol_r = get_effective_volume(main_vol_r);
     SPU_Mix_And_Clamp(mix_buf_l, mix_buf_r, mix_buffer, total, eff_vol_l, eff_vol_r);
 
-    /* Output to audsrv */
+    /* Output to audsrv — non-blocking: IOP-side play_audio copies
+     * whatever fits into the ring buffer (MIN(size, available)) and
+     * returns immediately.  Removing the blocking wait_audio() saves
+     * ~3ms/frame that was spent sleeping on the IOP queue semaphore.
+     * If the ring buffer is momentarily full, samples are silently
+     * dropped — acceptable trade-off for emulation speed. */
     int size = total * 2 * sizeof(int16_t);
-    audsrv_wait_audio(size);
     audsrv_play_audio((char *)mix_buffer, size);
 
     spu_samples_generated = 0;

@@ -71,6 +71,11 @@ static uint64_t perf_frame_count = 0;
 static uint32_t cycles_per_hblank_runtime = CYCLES_PER_HBLANK_NTSC; /* Set at init based on region */
 uint64_t hblank_frame_start_cycle = 0;                              /* Cycle at which current frame started (VBlank reset) */
 
+/* Frame limiter: wall-clock target for next VBlank */
+static uint32_t frame_limit_next_ms = 0;
+static const uint32_t FRAME_TIME_NTSC_US = 16667; /* 1000000 / 60 */
+static const uint32_t FRAME_TIME_PAL_US  = 20000; /* 1000000 / 50 */
+
 #ifdef ENABLE_PERF_REPORT
 static uint64_t perf_last_report_cycle = 0;
 static uint32_t perf_last_report_tick = 0;
@@ -548,6 +553,27 @@ static void Sched_HBlank_Callback(void)
         SignalInterrupt(0);
         Timer_ScheduleAll();   /* Reschedule timers after VBlank reset */
         SPU_GenerateSamples(); /* Generate all audio + submit to audio hw */
+
+        /* Frame limiter: busy-wait until the wall-clock frame budget is met.
+         * clock() on PS2 gives microsecond resolution via EE timer. */
+        if (psx_config.frame_limit)
+        {
+            uint32_t frame_us = psx_config.region_pal ? FRAME_TIME_PAL_US : FRAME_TIME_NTSC_US;
+            uint32_t now_us = (uint32_t)clock();
+            if (frame_limit_next_ms == 0)
+                frame_limit_next_ms = now_us + frame_us; /* first frame */
+            else
+            {
+                while ((int32_t)(frame_limit_next_ms - (uint32_t)clock()) > 0)
+                    ; /* busy-wait */
+                now_us = (uint32_t)clock();
+                /* If we overshot by more than 2 frames, resync to avoid catch-up burst */
+                if ((int32_t)(now_us - frame_limit_next_ms) > (int32_t)(frame_us * 2))
+                    frame_limit_next_ms = now_us + frame_us;
+                else
+                    frame_limit_next_ms += frame_us;
+            }
+        }
 
         perf_frame_count++;
         check_profiling_exit(perf_frame_count);
