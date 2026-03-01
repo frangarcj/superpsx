@@ -506,8 +506,8 @@ uint32_t *compile_block(uint32_t psx_pc)
     {
         DLOG("Code buffer nearly full (%u/%u), flushing cache\n",
              (unsigned)used, CODE_BUFFER_SIZE);
-        code_ptr = code_buffer + 128;
-        memset(code_buffer + 128, 0, CODE_BUFFER_SIZE - 128 * sizeof(uint32_t));
+        code_ptr = code_buffer + 144;
+        memset(code_buffer + 144, 0, CODE_BUFFER_SIZE - 144 * sizeof(uint32_t));
         Free_PageTable();
         memset(jit_l1_ram, 0, sizeof(jit_l1_ram));
         memset(jit_l1_bios, 0, sizeof(jit_l1_bios));
@@ -709,9 +709,10 @@ uint32_t *compile_block(uint32_t psx_pc)
             }
             else if (branch_type == 4)
             {
-                /* Deferred Conditional Branch (cond in $fp register) */
+                /* Deferred Conditional Branch (cond saved on stack slot 72) */
+                EMIT_LW(REG_T2, 72, REG_SP); /* reload branch cond from stack */
                 uint32_t *bp = code_ptr;
-                emit(MK_I(0x05, REG_FP, REG_ZERO, 0)); /* BNE fp, zero, 0 */
+                emit(MK_I(0x05, REG_T2, REG_ZERO, 0)); /* BNE t2, zero, 0 */
                 EMIT_NOP();
 
                 /* Save vreg state: flush_dirty_consts() inside
@@ -887,7 +888,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             {
                 emit(MK_R(0, REG_ZERO, REG_T0, REG_T2, 0, 0x2A)); /* SLT t2, zero, t0 */
             }
-            EMIT_MOVE(REG_FP, REG_T2); /* save cond in $fp across delay slot */
+            EMIT_SW(REG_T2, 72, REG_SP); /* save cond to stack across delay slot */
 
             branch_type = 4;
             in_delay_slot = 1;
@@ -967,7 +968,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                 emit(MK_R(0, REG_T0, REG_ZERO, REG_T2, 0, 0x2A));
                 emit(MK_I(0x0E, REG_T2, REG_T2, 1)); /* XORI t2, t2, 1 */
             }
-            EMIT_MOVE(REG_FP, REG_T2); /* save cond in $fp across delay slot */
+            EMIT_SW(REG_T2, 72, REG_SP); /* save cond to stack across delay slot */
 
             branch_type = 4;
             in_delay_slot = 1;

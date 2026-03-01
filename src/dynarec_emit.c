@@ -18,6 +18,7 @@ const int psx_pinned_reg[32] = {
     [8] = REG_T7,  /* PSX $t0 → native $t7 */
     [9] = REG_T8,  /* PSX $t1 → native $t8 */
     [10] = REG_T9, /* PSX $t2 → native $t9 */
+    [28] = REG_FP, /* PSX $gp → native $fp */
     [29] = REG_S4, /* PSX $sp → native $s4 */
     [30] = REG_S7, /* PSX $s8 → native $s7 */
     [31] = REG_S5, /* PSX $ra → native $s5 */
@@ -197,6 +198,7 @@ void emit_flush_pinned(void)
     EMIT_SW(REG_T7, CPU_REG(8), REG_S0);  /* PSX $t0 */
     EMIT_SW(REG_T8, CPU_REG(9), REG_S0);  /* PSX $t1 */
     EMIT_SW(REG_T9, CPU_REG(10), REG_S0); /* PSX $t2 */
+    EMIT_SW(REG_FP, CPU_REG(28), REG_S0);  /* PSX $gp */
     EMIT_SW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
     EMIT_SW(REG_S7, CPU_REG(30), REG_S0); /* PSX $s8 */
     EMIT_SW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
@@ -215,6 +217,7 @@ void emit_reload_pinned(void)
     EMIT_LW(REG_T7, CPU_REG(8), REG_S0);  /* PSX $t0 */
     EMIT_LW(REG_T8, CPU_REG(9), REG_S0);  /* PSX $t1 */
     EMIT_LW(REG_T9, CPU_REG(10), REG_S0); /* PSX $t2 */
+    EMIT_LW(REG_FP, CPU_REG(28), REG_S0);  /* PSX $gp */
     EMIT_LW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
     EMIT_LW(REG_S7, CPU_REG(30), REG_S0); /* PSX $s8 */
     EMIT_LW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
