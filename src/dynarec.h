@@ -349,9 +349,6 @@ int is_vreg_const(int r);
 uint32_t get_vreg_const(int r);
 void reset_vregs(void);
 void flush_dirty_consts(void);
-void reg_cache_invalidate(void);
-extern int t0_cached_psx_reg;
-extern int t1_cached_psx_reg;
 
 /* ================================================================
  *  Function prototypes — dynarec_cache.c
