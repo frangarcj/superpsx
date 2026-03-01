@@ -553,8 +553,20 @@ static inline __attribute__((always_inline)) void store_mac_ir(R3000CPU *cpu, in
 /* ================================================================
  * MVMVA core: Multiply Matrix * Vector + Translation
  * ================================================================ */
+#ifdef _EE
+static void gte_mvmva_vu0(R3000CPU *cpu, int lm, int mx, int v, int cv);
+#endif
+
 static void gte_mvmva(R3000CPU *cpu, int sf, int lm, int mx, int v, int cv)
 {
+#ifdef _EE
+    /* VU0 fast path: skip 44-bit overflow tracking, use float multiply */
+    if (gte_use_vu0 && sf && mx != 3 && cv != 2) {
+        gte_mvmva_vu0(cpu, lm, mx, v, cv);
+        return;
+    }
+#endif
+
     int16_t vx = get_vector(cpu, v, 0);
     int16_t vy = get_vector(cpu, v, 1);
     int16_t vz = get_vector(cpu, v, 2);
@@ -1798,14 +1810,7 @@ void GTE_Inline_MVMVA(R3000CPU *cpu, uint32_t packed)
     int v = (packed >> 4) & 3;
     int cv = (packed >> 6) & 3;
     flag_reset();
-#ifdef _EE
-    if (gte_use_vu0 && sf && mx != 3 && cv != 2) {
-        gte_mvmva_vu0(cpu, lm, mx, v, cv);
-    } else
-#endif
-    {
-        gte_cmd_mvmva(cpu, sf, lm, mx, v, cv);
-    }
+    gte_cmd_mvmva(cpu, sf, lm, mx, v, cv);
     flag_update_bit31();
     C(c_FLAG) = gte_flag;
 }
