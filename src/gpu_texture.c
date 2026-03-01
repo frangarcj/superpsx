@@ -27,13 +27,19 @@ uint32_t vram_gen_counter = 0;
 /* ═══════════════════════════════════════════════════════════════════
  *  Per-VRAM-Page Dirty Tracking
  *
- *  VRAM split into 64×256 blocks (matching 4BPP texture page width).
- *  16 columns × 2 rows = 32 blocks.  Each block has a generation
+ *  VRAM split into 64×16 blocks (halfwords × scanlines).
+ *  16 columns × 32 rows = 512 blocks.  Each block has a generation
  *  counter.  Only bumped when a VRAM write actually touches that block.
- *  Cache entries store the max gen of overlapping blocks at decode time.
+ *
+ *  The fine 16-line vertical granularity is critical: it separates
+ *  framebuffer writes (y=0..239, rows 0-14) from CLUT data (y=240+,
+ *  row 15+).  With coarse 256-line rows, framebuffer draws would
+ *  falsely invalidate CLUT generation counters, causing ~10% of
+ *  texture lookups to miss and re-upload at 249μs each.
  * ═══════════════════════════════════════════════════════════════════ */
 #define VRAM_DIRTY_COLS 16
-#define VRAM_DIRTY_ROWS 2
+#define VRAM_DIRTY_ROWS 32   /* 512 lines / 16 = 32 rows */
+#define VRAM_DIRTY_ROW_SHIFT 4  /* each row = 16 scanlines (was 256) */
 static uint32_t vram_page_gen[VRAM_DIRTY_COLS * VRAM_DIRTY_ROWS];
 
 /* Bump generation for all VRAM blocks overlapping a pixel region */
@@ -44,8 +50,8 @@ void Tex_Cache_DirtyRegion(int x, int y, int w, int h)
     /* Use unsigned shifts — avoids GCC sign-extension fixup for signed / */
     unsigned int col_start = (unsigned)x >> 6;
     unsigned int col_end = (unsigned)(x + w - 1) >> 6;
-    unsigned int row_start = (unsigned)y >> 8;
-    unsigned int row_end = (unsigned)(y + h - 1) >> 8;
+    unsigned int row_start = (unsigned)y >> VRAM_DIRTY_ROW_SHIFT;
+    unsigned int row_end = (unsigned)(y + h - 1) >> VRAM_DIRTY_ROW_SHIFT;
     if (col_end >= VRAM_DIRTY_COLS)
         col_end = VRAM_DIRTY_COLS - 1;
     if (row_end >= VRAM_DIRTY_ROWS)
@@ -60,8 +66,8 @@ static inline uint32_t get_region_gen(int x, int y, int w, int h)
 {
     unsigned int col_start = (unsigned)x >> 6;
     unsigned int col_end = (unsigned)(x + w - 1) >> 6;
-    unsigned int row_start = (unsigned)y >> 8;
-    unsigned int row_end = (unsigned)(y + h - 1) >> 8;
+    unsigned int row_start = (unsigned)y >> VRAM_DIRTY_ROW_SHIFT;
+    unsigned int row_end = (unsigned)(y + h - 1) >> VRAM_DIRTY_ROW_SHIFT;
     if (col_end >= VRAM_DIRTY_COLS)
         col_end = VRAM_DIRTY_COLS - 1;
     if (row_end >= VRAM_DIRTY_ROWS)
@@ -127,23 +133,84 @@ static inline uint32_t get_tex_combined_gen(int tex_format,
 #define HW_CLUT_CBP_BASE (HW_TEX_TBP_BASE + TEX_CACHE_SLOTS * HW_TEX_TBP_STRIDE)
 #define HW_CLUT_CBP_STRIDE 32 /* 1 CT16 page = 32 blocks (64×64 pixels) */
 
+/* ── Pack texture cache key into 32 bits for O(1) hash lookup ──── */
+/* PSX texture key fields:
+ *   tex_format:   0-1       (1 bit)
+ *   tex_page_x:   0,64..960 (4 bits as /64)
+ *   tex_page_y:   0 or 256  (1 bit as /256)
+ *   clut_x:       0..1008   (10 bits)
+ *   clut_y:       0..511    (9 bits)
+ *   Total: 25 bits packed into uint32_t */
+static inline uint32_t pack_tex_key(int tf, int px, int py, int cx, int cy)
+{
+    return ((uint32_t)tf << 24) |
+           ((uint32_t)(px >> 6) << 20) |
+           ((uint32_t)(py >> 8) << 19) |
+           ((uint32_t)(cx & 0x3FF) << 9) |
+           ((uint32_t)(cy & 0x1FF));
+}
+
 typedef struct
 {
     int valid;
-    int tex_format;
-    int tex_page_x, tex_page_y;
-    int clut_x, clut_y;
+    uint32_t packed_key;   /* pack_tex_key() for single-compare matching */
     uint32_t combined_gen; /* max gen of tex data + CLUT page blocks */
     int is_hw_clut;        /* always 1 for HW CLUT path */
     int hw_tbp0;           /* HW CLUT: TBP0 for indexed texture data */
     int hw_cbp;            /* HW CLUT: CBP for CLUT palette */
     uint32_t lru_tick;
+    /* Unpacked fields kept for upload path */
+    int tex_format;
+    int tex_page_x, tex_page_y;
+    int clut_x, clut_y;
 } TexPageCacheEntry;
 
 static TexPageCacheEntry tex_page_cache[TEX_CACHE_SLOTS];
 static uint32_t tex_cache_tick = 0;
 static int last_hit_slot = 0;          /* MRU shortcut — last cache hit index */
 static uint32_t last_mru_vram_gen = 0; /* vram_gen_counter at last MRU hit */
+
+/* ── O(1) Hash Table for texture cache lookup ─────────────────── */
+/* 2-way set-associative hash: 64 sets × 2 ways = 128 virtual entries.
+ * Each set stores 2 {key, slot_idx} pairs.  On insert, way 1 is evicted
+ * (way 0 → way 1, new → way 0).  This handles one collision per set,
+ * which eliminates hash thrashing that caused 24μs linear scan fallbacks
+ * when two frequently-alternating textures collided in the same bucket. */
+#define TEX_HASH_BITS  6
+#define TEX_HASH_SETS  (1 << TEX_HASH_BITS)   /* 64 sets */
+#define TEX_HASH_MASK  (TEX_HASH_SETS - 1)
+#define TEX_HASH_WAYS  2
+
+typedef struct {
+    uint32_t key[TEX_HASH_WAYS];       /* packed_key per way */
+    int8_t   slot_idx[TEX_HASH_WAYS];  /* cache slot per way, -1 = empty */
+} TexHashSet;
+
+static TexHashSet tex_hash[TEX_HASH_SETS];
+
+/* Murmurhash-inspired mixing for 25-bit keys → 6-bit set index */
+static inline uint32_t tex_hash_fn(uint32_t key)
+{
+    key ^= key >> 13;
+    key *= 0x45D9F3BU;
+    key ^= key >> 16;
+    return key & TEX_HASH_MASK;
+}
+
+/* Insert into hash: way 0 = MRU, way 1 = victim */
+static inline void tex_hash_insert(uint32_t h, uint32_t packed_key, int slot_idx)
+{
+    /* If already in way 0, just update slot */
+    if (tex_hash[h].key[0] == packed_key) {
+        tex_hash[h].slot_idx[0] = (int8_t)slot_idx;
+        return;
+    }
+    /* Shift way 0 → way 1, insert new at way 0 */
+    tex_hash[h].key[1] = tex_hash[h].key[0];
+    tex_hash[h].slot_idx[1] = tex_hash[h].slot_idx[0];
+    tex_hash[h].key[0] = packed_key;
+    tex_hash[h].slot_idx[0] = (int8_t)slot_idx;
+}
 
 /* ── Statistics ───────────────────────────────────────────────────── */
 static struct
@@ -575,6 +642,11 @@ static void Upload_CLUT_CSM1(int cbp, int clut_x, int clut_y, int tex_format)
 /* ═══════════════════════════════════════════════════════════════════
  *  Decode_TexPage_Cached — Page-level texture cache with LRU (32 slots)
  *
+ *  Three-tier lookup hierarchy:
+ *    1. MRU shortcut (O(1), ~5μs)  — consecutive same-texture calls
+ *    2. Hash table   (O(1), ~7μs)  — direct-mapped packed_key → slot
+ *    3. Linear scan  (O(32), ~25μs)— hash collision fallback (rare)
+ *
  *  Returns:
  *    0 = not cached (15BPP — caller should use direct PSX VRAM).
  *    2 = HW CLUT (PSMT8/4).  out_slot_x = TBP0, out_slot_y = CBP.
@@ -595,26 +667,19 @@ int Decode_TexPage_Cached(int tex_format,
     if (tex_format > 1)
         return 0;
 
-    /* ── MRU shortcut: check last-hit slot before full scan ──── */
-    /* Fast path: if vram_gen_counter hasn't changed since last MRU hit,
-     * no VRAM was modified → combined_gen is unchanged, skip the
-     * expensive get_tex_combined_gen() multi-block scan (~365K calls). */
+    uint32_t packed_key = pack_tex_key(tex_format, tex_page_x, tex_page_y,
+                                       clut_x, clut_y);
+
+    /* ── Tier 1: MRU shortcut — check last-hit slot (O(1)) ──── */
+    /* Single uint32_t compare replaces 5 individual field checks. */
     int vram_unchanged = (vram_gen_counter == last_mru_vram_gen);
-    uint32_t current_gen;
 
     {
         TexPageCacheEntry *e = &tex_page_cache[last_hit_slot];
-        if (e->valid &&
-            e->tex_format == tex_format &&
-            e->tex_page_x == tex_page_x &&
-            e->tex_page_y == tex_page_y &&
-            e->clut_x == clut_x &&
-            e->clut_y == clut_y)
+        if (e->valid && e->packed_key == packed_key)
         {
-            /* Parameters match — check generation validity */
             if (vram_unchanged)
             {
-                /* No VRAM changes → cached gen still correct */
                 tex_stats.page_hits++;
                 tex_stats.pixels_saved += 256 * 256;
                 e->lru_tick = tex_cache_tick;
@@ -622,9 +687,9 @@ int Decode_TexPage_Cached(int tex_format,
                 *out_slot_y = e->hw_cbp;
                 return 2;
             }
-            /* VRAM changed — recompute gen and compare */
-            current_gen = get_tex_combined_gen(tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
-            if (e->combined_gen == current_gen)
+            uint32_t gen = get_tex_combined_gen(tex_format, tex_page_x,
+                                               tex_page_y, clut_x, clut_y);
+            if (e->combined_gen == gen)
             {
                 tex_stats.page_hits++;
                 tex_stats.pixels_saved += 256 * 256;
@@ -637,31 +702,56 @@ int Decode_TexPage_Cached(int tex_format,
         }
     }
 
-    /* current_gen is needed for the linear scan below.  The fast path
-     * (unchanged VRAM + MRU param match) already returned above.
-     * It may have been computed in the MRU block (vram changed + params
-     * matched); recompute unconditionally to cover all fall-through cases. */
-    current_gen = get_tex_combined_gen(tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
+    /* Compute generation — needed for hash and linear scan paths */
+    uint32_t current_gen = get_tex_combined_gen(tex_format, tex_page_x,
+                                                tex_page_y, clut_x, clut_y);
 
-    /* ── Search for matching entry ─────────────────────────────── */
+    /* ── Tier 2: Hash table lookup (O(1), 2-way set-associative) ── */
+    uint32_t h = tex_hash_fn(packed_key);
+    for (int way = 0; way < TEX_HASH_WAYS; way++)
+    {
+        if (tex_hash[h].key[way] == packed_key && tex_hash[h].slot_idx[way] >= 0)
+        {
+            int si = tex_hash[h].slot_idx[way];
+            TexPageCacheEntry *e = &tex_page_cache[si];
+            if (e->valid && e->packed_key == packed_key &&
+                e->combined_gen == current_gen)
+            {
+                /* Hash HIT */
+                tex_stats.page_hits++;
+                tex_stats.pixels_saved += 256 * 256;
+                e->lru_tick = tex_cache_tick;
+                last_hit_slot = si;
+                last_mru_vram_gen = vram_gen_counter;
+                /* Promote to way 0 if found in way 1 */
+                if (way == 1) {
+                    tex_hash[h].key[1] = tex_hash[h].key[0];
+                    tex_hash[h].slot_idx[1] = tex_hash[h].slot_idx[0];
+                    tex_hash[h].key[0] = packed_key;
+                    tex_hash[h].slot_idx[0] = (int8_t)si;
+                }
+                *out_slot_x = e->hw_tbp0;
+                *out_slot_y = e->hw_cbp;
+                return 2;
+            }
+        }
+    }
+
+    /* ── Tier 3: Linear scan fallback (hash collision/stale) ──── */
     for (int i = 0; i < TEX_CACHE_SLOTS; i++)
     {
         TexPageCacheEntry *e = &tex_page_cache[i];
         if (e->valid &&
-            e->combined_gen == current_gen &&
-            e->tex_format == tex_format &&
-            e->tex_page_x == tex_page_x &&
-            e->tex_page_y == tex_page_y &&
-            e->clut_x == clut_x &&
-            e->clut_y == clut_y)
+            e->packed_key == packed_key &&
+            e->combined_gen == current_gen)
         {
-            /* Cache HIT */
+            /* Cache HIT — update hash table for future O(1) access */
             tex_stats.page_hits++;
             tex_stats.pixels_saved += 256 * 256;
             e->lru_tick = tex_cache_tick;
             last_hit_slot = i;
             last_mru_vram_gen = vram_gen_counter;
-
+            tex_hash_insert(h, packed_key, i);
             *out_slot_x = e->hw_tbp0;
             *out_slot_y = e->hw_cbp;
             return 2;
@@ -670,8 +760,6 @@ int Decode_TexPage_Cached(int tex_format,
 
     /* ── Cache MISS — find slot via LRU eviction ───────────────── */
     tex_stats.page_misses++;
-    /* Invalidate primitive-level decode cache: the TBP0/CBP it cached
-     * may point to a GS VRAM slot about to be overwritten by eviction. */
     Prim_InvalidateTexCache();
 
     int evict_idx = 0;
@@ -696,7 +784,6 @@ int Decode_TexPage_Cached(int tex_format,
     /* ── Upload to GS VRAM ─────────────────────────────────────── */
     TexPageCacheEntry *e = &tex_page_cache[evict_idx];
 
-    /* HW CLUT path: upload raw indexed data + CLUT palette */
     int tbp0 = HW_TEX_TBP_BASE + evict_idx * HW_TEX_TBP_STRIDE;
     int cbp = HW_CLUT_CBP_BASE + evict_idx * HW_CLUT_CBP_STRIDE;
 
@@ -715,8 +802,9 @@ int Decode_TexPage_Cached(int tex_format,
     *out_slot_x = tbp0;
     *out_slot_y = cbp;
 
-    /* Update common cache entry fields */
+    /* Update cache entry fields */
     e->valid = 1;
+    e->packed_key = packed_key;
     e->tex_format = tex_format;
     e->tex_page_x = tex_page_x;
     e->tex_page_y = tex_page_y;
@@ -726,6 +814,9 @@ int Decode_TexPage_Cached(int tex_format,
     e->lru_tick = tex_cache_tick;
     last_hit_slot = evict_idx;
     last_mru_vram_gen = vram_gen_counter;
+
+    /* Update hash table for this new entry */
+    tex_hash_insert(h, packed_key, evict_idx);
 
     return 2;
 }
@@ -787,6 +878,8 @@ void Tex_Cache_ResetStats(void)
 {
     memset(&tex_stats, 0, sizeof(tex_stats));
     tex_stats.vram_gen_at_start = vram_gen_counter;
+    /* Reset 2-way hash table */
+    memset(tex_hash, 0, sizeof(tex_hash));
 }
 
 /* ── Per-pixel texture window decode (legacy, used as fallback) ───── */

@@ -661,21 +661,13 @@ static inline int run_jit_chain(uint64_t deadline)
     BlockEntry *be = lookup_block(pc);
     uint32_t *block = be ? be->native : NULL;
 
-    /* Populate hash table for fast JR/JALR dispatch */
+    /* Populate hash table for fast JR/JALR dispatch.
+     * Skip if PC is already in slot 0 (common in hot loops). */
     if (block)
     {
-#ifdef ENABLE_JIT_HT_DEBUG
         uint32_t h = jit_ht_hash(pc);
-        uint32_t *expected = block + DYNAREC_PROLOGUE_WORDS;
-        int found = (jit_ht[h].psx_pc[0] == pc) || (jit_ht[h].psx_pc[1] == pc);
-        if (found) {
-            uint32_t *ht_native = (jit_ht[h].psx_pc[0] == pc) ? jit_ht[h].native[0] : jit_ht[h].native[1];
-            if (ht_native && ht_native != expected)
-                printf("[JIT_HT] STALE entry! PC=%08X slot=%u ht_native=%p expected=%p\n",
-                       (unsigned)pc, h, (void *)ht_native, (void *)expected);
-        }
-#endif
-        jit_ht_add(pc, block);
+        if (__builtin_expect(jit_ht[h].psx_pc[0] != pc, 0))
+            jit_ht_add(pc, block);
     }
 
     /* Two-tier SMC detection:
