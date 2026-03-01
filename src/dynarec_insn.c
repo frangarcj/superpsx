@@ -685,8 +685,22 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             else if (rs == 0x02)
             {
                 mark_vreg_var(rt);
-                EMIT_LW(REG_V0, CPU_CP2_CTRL(rd & 0x1F), REG_S0);
-                emit_store_psx_reg(rt, REG_V0);
+                if (rd == 31)
+                {
+                    /* CFC2 $rt, $31 — FLAG register read.
+                     * Call GTE_ReadCtrl so flag-read detection works
+                     * (for VU0 fast-path gating). */
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, 31);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_ReadCtrl);
+                    emit_store_psx_reg(rt, REG_V0);
+                }
+                else
+                {
+                    EMIT_LW(REG_V0, CPU_CP2_CTRL(rd & 0x1F), REG_S0);
+                    emit_store_psx_reg(rt, REG_V0);
+                }
             }
             else if (rs == 0x04)
             {

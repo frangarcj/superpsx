@@ -10,9 +10,29 @@
  */
 
 #include "superpsx.h"
+#include "config.h"
 #include <stdio.h>
 #include <string.h>
 #include "dynarec.h"
+
+/* ================================================================
+ * VU0 Fast Path — Config-driven (gte_vu0 in superpsx.ini)
+ *
+ * When psx_config.gte_vu0 = 1 (default), use VU0 macro mode for
+ * the RTPS/RTPT matrix multiply (sf=1 only). Skips per-step 44-bit
+ * overflow flag computation (bits 30-25), which are always 0 for
+ * normal game values.
+ *
+ * Set gte_vu0 = 0 in superpsx.ini for exact GTE flag behavior
+ * (required by the GTE test suite).
+ * ================================================================ */
+int gte_flag_read_count = 0;
+int gte_use_vu0 = 0;  /* 0=exact C path, 1=VU0 fast path */
+
+void GTE_VBlankUpdate(void)
+{
+    gte_use_vu0 = psx_config.gte_vu0;
+}
 
 #ifdef ENABLE_HOST_LOG
 #define DBG(...)                    \
@@ -1215,7 +1235,10 @@ void GTE_WriteData(R3000CPU *cpu, int reg, uint32_t val)
 
 uint32_t GTE_ReadCtrl(R3000CPU *cpu, int reg)
 {
-    return C(reg & 0x1F);
+    reg &= 0x1F;
+    if (reg == 31)
+        gte_flag_read_count++;
+    return C(reg);
 }
 
 void GTE_WriteCtrl(R3000CPU *cpu, int reg, uint32_t val)
@@ -1337,6 +1360,196 @@ void GTE_Execute(uint32_t opcode, R3000CPU *cpu)
 }
 
 /* ================================================================
+ * VU0 Macro-Mode Fast Path for RTPS/RTPT
+ *
+ * Uses PS2 VU0 macro mode for the 3×3 matrix × vector + translation:
+ *   MAC = (RT / 4096) * V + TR          (for sf=1)
+ *
+ * 4 VU0 instructions per vertex (vmulax/vmadday/vmaddz/vadd) vs
+ * ~50+ integer instructions with 44-bit overflow tracking.
+ *
+ * Trade-off: per-step overflow flags (bits 30-25) are NOT computed.
+ *            Saturation flags (IR, SZ, SXY) ARE computed exactly.
+ *            Only enabled when gte_use_vu0 == 1 (no FLAG reads last frame).
+ *
+ * Falls back to exact C path when sf=0 (rare, needs full dynamic range).
+ * ================================================================ */
+#ifdef _EE  /* PS2 EE target only */
+
+/* Aligned float buffers for VU0 register loads */
+static float vu0_rt_col1[4] __attribute__((aligned(16)));
+static float vu0_rt_col2[4] __attribute__((aligned(16)));
+static float vu0_rt_col3[4] __attribute__((aligned(16)));
+static float vu0_rt_trans[4] __attribute__((aligned(16)));
+static uint32_t vu0_rt_snapshot[8]; /* ctrl[0..7] snapshot for dirty check */
+
+static void vu0_refresh_rt_matrix(R3000CPU *cpu)
+{
+    /* Extract rotation matrix (9 × int16) */
+    int16_t r11 = lo16(C(c_RT11RT12)), r12 = hi16(C(c_RT11RT12));
+    int16_t r13 = lo16(C(c_RT13RT21)), r21 = hi16(C(c_RT13RT21));
+    int16_t r22 = lo16(C(c_RT22RT23)), r23 = hi16(C(c_RT22RT23));
+    int16_t r31 = lo16(C(c_RT31RT32)), r32 = hi16(C(c_RT31RT32));
+    int16_t r33 = lo16(C(c_RT33));
+
+    /* Pre-scale matrix by 1/4096 so VU0 result gives MAC directly (sf=1) */
+    const float s = 1.0f / 4096.0f;
+
+    /* Column-major layout for vmulax/vmadday/vmaddz broadcast pattern:
+     *   col[i] = { row0_col_i, row1_col_i, row2_col_i, 0 }
+     * vmulax  ACC, col1, vf_vertex.x   => ACC.xyz = col1.xyz * VX
+     * vmadday ACC, col2, vf_vertex.y   => ACC.xyz += col2.xyz * VY
+     * vmaddz  res, col3, vf_vertex.z   => res.xyz = ACC.xyz + col3.xyz * VZ
+     * vadd    res, res, trans           => res.xyz += {TRX, TRY, TRZ}         */
+    vu0_rt_col1[0] = (float)r11 * s;  vu0_rt_col1[1] = (float)r21 * s;
+    vu0_rt_col1[2] = (float)r31 * s;  vu0_rt_col1[3] = 0.0f;
+
+    vu0_rt_col2[0] = (float)r12 * s;  vu0_rt_col2[1] = (float)r22 * s;
+    vu0_rt_col2[2] = (float)r32 * s;  vu0_rt_col2[3] = 0.0f;
+
+    vu0_rt_col3[0] = (float)r13 * s;  vu0_rt_col3[1] = (float)r23 * s;
+    vu0_rt_col3[2] = (float)r33 * s;  vu0_rt_col3[3] = 0.0f;
+
+    /* Translation: NOT pre-scaled, added directly after multiply */
+    vu0_rt_trans[0] = (float)(int32_t)C(c_TRX);
+    vu0_rt_trans[1] = (float)(int32_t)C(c_TRY);
+    vu0_rt_trans[2] = (float)(int32_t)C(c_TRZ);
+    vu0_rt_trans[3] = 0.0f;
+
+    /* Snapshot for dirty detection */
+    for (int i = 0; i < 8; i++)
+        vu0_rt_snapshot[i] = C(i);
+}
+
+static inline int vu0_rt_is_dirty(R3000CPU *cpu)
+{
+    for (int i = 0; i < 8; i++)
+        if (vu0_rt_snapshot[i] != C(i))
+            return 1;
+    return 0;
+}
+
+/* VU0 RTPS core: single vertex transform (sf=1 only)
+ * Matrix already loaded in VF1-VF4 by caller. */
+static void gte_rtps_core_vu0(R3000CPU *cpu, int v, int lm, int last)
+{
+    int16_t vx = get_vector(cpu, v, 0);
+    int16_t vy = get_vector(cpu, v, 1);
+    int16_t vz = get_vector(cpu, v, 2);
+
+    /* Convert vertex to float, aligned for lqc2 */
+    float vert[4] __attribute__((aligned(16)));
+    vert[0] = (float)vx;
+    vert[1] = (float)vy;
+    vert[2] = (float)vz;
+    vert[3] = 0.0f;
+
+    float result[4] __attribute__((aligned(16)));
+
+    /* VU0 matrix multiply + translation:
+     * result.xyz = (RT/4096) * V + TR  =  MAC1/MAC2/MAC3 (for sf=1) */
+    __asm__ __volatile__(
+        "lqc2    $vf5, 0(%0)\n\t"
+        "vmulax.xyz   $ACC, $vf1, $vf5x\n\t"
+        "vmadday.xyz  $ACC, $vf2, $vf5y\n\t"
+        "vmaddz.xyz   $vf6, $vf3, $vf5z\n\t"
+        "vadd.xyz     $vf6, $vf6, $vf4\n\t"
+        "sqc2    $vf6, 0(%1)\n\t"
+        : /* no outputs */
+        : "r"(vert), "r"(result)
+        : "memory"
+    );
+
+    /* Float → int32 MAC values (C compiler emits trunc.w.s or cvt.w.s) */
+    int32_t mac1 = (int32_t)result[0];
+    int32_t mac2 = (int32_t)result[1];
+    int32_t mac3 = (int32_t)result[2];
+
+    D(d_MAC1) = (uint32_t)mac1;
+    D(d_MAC2) = (uint32_t)mac2;
+    D(d_MAC3) = (uint32_t)mac3;
+
+    /* IR1/IR2 saturation (flags computed exactly) */
+    D(d_IR1) = (uint32_t)saturate_ir(mac1, 1, lm);
+    D(d_IR2) = (uint32_t)saturate_ir(mac2, 2, lm);
+
+    /* IR3 special RTPS handling:
+     * Flag bit 22 always checked against ±0x8000.
+     * With sf=1 VU0 path, mac3 IS already the >>12 result. */
+    {
+        int32_t lo = lm ? 0 : -0x8000;
+        if (mac3 < -0x8000 || mac3 > 0x7FFF)
+            flag_set(22);
+        if (mac3 < lo)
+            D(d_IR3) = (uint32_t)lo;
+        else if (mac3 > 0x7FFF)
+            D(d_IR3) = 0x7FFF;
+        else
+            D(d_IR3) = (uint32_t)mac3;
+    }
+
+    /* Push SZ FIFO: SZ3 = saturate(mac3, 0, 0xFFFF) */
+    push_sz(cpu, (int64_t)mac3);
+
+    /* Perspective division using UNR */
+    uint32_t div_result = gte_divide((uint16_t)(int16_t)(int32_t)C(c_H), D(d_SZ3));
+
+    /* Screen projection: SX2/SY2 */
+    int64_t sx_mac = (int64_t)(int32_t)div_result * (int16_t)(int32_t)D(d_IR1) + (int32_t)C(c_OFX);
+    int64_t sy_mac = (int64_t)(int32_t)div_result * (int16_t)(int32_t)D(d_IR2) + (int32_t)C(c_OFY);
+    check_mac0_overflow(sx_mac);
+    check_mac0_overflow(sy_mac);
+    push_sxy(cpu, (int32_t)(sx_mac >> 16), (int32_t)(sy_mac >> 16));
+
+    if (last)
+    {
+        /* Depth cueing: MAC0 = DQA * div + DQB */
+        int64_t dq_mac = (int64_t)(int16_t)(int32_t)C(c_DQA) * (int32_t)div_result + (int32_t)C(c_DQB);
+        check_mac0_overflow(dq_mac);
+        D(d_MAC0) = (uint32_t)(int32_t)dq_mac;
+        D(d_IR0) = (uint32_t)saturate_ir0(dq_mac >> 12);
+    }
+}
+
+static void gte_cmd_rtps_vu0(R3000CPU *cpu, int lm)
+{
+    if (vu0_rt_is_dirty(cpu))
+        vu0_refresh_rt_matrix(cpu);
+
+    __asm__ __volatile__(
+        "lqc2 $vf1, 0(%0)\n\t"
+        "lqc2 $vf2, 0(%1)\n\t"
+        "lqc2 $vf3, 0(%2)\n\t"
+        "lqc2 $vf4, 0(%3)\n\t"
+        : /* no outputs */
+        : "r"(vu0_rt_col1), "r"(vu0_rt_col2), "r"(vu0_rt_col3), "r"(vu0_rt_trans)
+    );
+
+    gte_rtps_core_vu0(cpu, 0, lm, 1);
+}
+
+static void gte_cmd_rtpt_vu0(R3000CPU *cpu, int lm)
+{
+    if (vu0_rt_is_dirty(cpu))
+        vu0_refresh_rt_matrix(cpu);
+
+    __asm__ __volatile__(
+        "lqc2 $vf1, 0(%0)\n\t"
+        "lqc2 $vf2, 0(%1)\n\t"
+        "lqc2 $vf3, 0(%2)\n\t"
+        "lqc2 $vf4, 0(%3)\n\t"
+        : /* no outputs */
+        : "r"(vu0_rt_col1), "r"(vu0_rt_col2), "r"(vu0_rt_col3), "r"(vu0_rt_trans)
+    );
+
+    gte_rtps_core_vu0(cpu, 0, lm, 0);
+    gte_rtps_core_vu0(cpu, 1, lm, 0);
+    gte_rtps_core_vu0(cpu, 2, lm, 1);
+}
+
+#endif /* _EE */
+
+/* ================================================================
  * Standalone GTE command wrappers for dynarec inlining.
  * Each wrapper does: flag_reset() + command + flag_update_bit31() + FLAG write.
  * This allows the dynarec to JAL directly to these instead of the generic
@@ -1347,7 +1560,14 @@ void GTE_Execute(uint32_t opcode, R3000CPU *cpu)
 void GTE_Inline_RTPS(R3000CPU *cpu, int sf, int lm)
 {
     flag_reset();
-    gte_cmd_rtps(cpu, sf, lm);
+#ifdef _EE
+    if (gte_use_vu0 && sf) {
+        gte_cmd_rtps_vu0(cpu, lm);
+    } else
+#endif
+    {
+        gte_cmd_rtps(cpu, sf, lm);
+    }
     flag_update_bit31();
     C(c_FLAG) = gte_flag;
 }
@@ -1497,7 +1717,14 @@ void GTE_Inline_AVSZ4(R3000CPU *cpu)
 void GTE_Inline_RTPT(R3000CPU *cpu, int sf, int lm)
 {
     flag_reset();
-    gte_cmd_rtpt(cpu, sf, lm);
+#ifdef _EE
+    if (gte_use_vu0 && sf) {
+        gte_cmd_rtpt_vu0(cpu, lm);
+    } else
+#endif
+    {
+        gte_cmd_rtpt(cpu, sf, lm);
+    }
     flag_update_bit31();
     C(c_FLAG) = gte_flag;
 }

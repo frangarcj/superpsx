@@ -116,6 +116,11 @@ uint32_t GTE_ReadData(R3000CPU *cpu, int reg);
 void GTE_WriteData(R3000CPU *cpu, int reg, uint32_t val);
 uint32_t GTE_ReadCtrl(R3000CPU *cpu, int reg);
 void GTE_WriteCtrl(R3000CPU *cpu, int reg, uint32_t val);
+void GTE_VBlankUpdate(void);
+
+/* VU0 fast-path state (flag-read detection) */
+extern int gte_flag_read_count;
+extern int gte_use_vu0;
 
 /* GTE inline command wrappers (skip GTE_Execute dispatcher) */
 void GTE_Inline_RTPS(R3000CPU *cpu, int sf, int lm);
