@@ -243,7 +243,7 @@ void tlb_patch_emit_all(void)
  *
  * Returns 1 if patched, 0 if entry not found.
  */
-int TLB_Backpatch(uint32_t epc)
+int __attribute__((used)) TLB_Backpatch(uint32_t epc)
 {
     int i;
     for (i = 0; i < tlb_bp_map_count; i++)
