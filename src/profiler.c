@@ -21,6 +21,8 @@ const char *prof_category_names[PROF_NUM] = {
     "JIT Execution",
     "JIT Compile",
     "GPU DMA",
+    "GPU Primitives",
+    "GPU VRAM Upload",
     "GPU Flush(GIF)",
     "GPU TexCache",
     "SPU Mix",

@@ -67,7 +67,9 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                 total_words = block_size * block_count;
             }
 
+            PROF_PUSH(PROF_GPU_PRIM);
             GPU_ProcessDmaBlock((uint32_t *)(psx_ram + (addr & 0x1FFFFC)), total_words);
+            PROF_POP(PROF_GPU_PRIM);
             addr += (total_words * 4);
 
             /* ── DMA bus + GPU processing cycle cost ── */
@@ -182,7 +184,9 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                         else
                         {
                             /* Polygons, rects, non-polyline lines → fast translate */
+                            PROF_PUSH(PROF_GPU_PRIM);
                             int size = Translate_GP0_to_GS(cmd_ptr);
+                            PROF_POP(PROF_GPU_PRIM);
                             i += size;
                             addr = (addr + size * 4) & 0x1FFFFC;
                         }
@@ -190,7 +194,9 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                     else if (cmd_byte == 0x02)
                     {
                         /* Fill-rect → fast translate */
+                        PROF_PUSH(PROF_GPU_PRIM);
                         int size = Translate_GP0_to_GS(cmd_ptr);
+                        PROF_POP(PROF_GPU_PRIM);
                         i += size;
                         addr = (addr + size * 4) & 0x1FFFFC;
                     }
@@ -203,7 +209,9 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                         /* Fast path only if the entire image block fits in this packet */
                         if (3 + image_words <= count - i)
                         {
+                            PROF_PUSH(PROF_GPU_UPLOAD);
                             GS_UploadRegionFast(coords, dims, (uint32_t *)(psx_ram + ((addr + 12) & 0x1FFFFC)), image_words);
+                            PROF_POP(PROF_GPU_UPLOAD);
                             uint32_t skip = 3 + image_words;
                             i += skip;
                             addr = (addr + skip * 4) & 0x1FFFFC;

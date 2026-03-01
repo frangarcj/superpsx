@@ -18,6 +18,8 @@ enum ProfCategory {
     PROF_JIT_EXEC = 0,   /* Time executing JIT-compiled native code       */
     PROF_JIT_COMPILE,     /* Time compiling new JIT blocks                 */
     PROF_GPU_DMA,         /* GPU DMA processing (display list parsing)     */
+    PROF_GPU_PRIM,        /* GPU primitive translation (Translate_GP0_to_GS)*/
+    PROF_GPU_UPLOAD,      /* GPU VRAM upload (GS_UploadRegionFast)         */
     PROF_GPU_FLUSH,       /* Flush_GIF — DMA send to GS hardware          */
     PROF_GPU_TEXCACHE,    /* Texture cache lookups + invalidation          */
     PROF_SPU_MIX,         /* SPU sample generation (ADPCM+ADSR+mix)       */

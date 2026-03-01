@@ -427,8 +427,7 @@ uint32_t *compile_block(uint32_t psx_pc)
     int block_ended = 0;
     int in_delay_slot = 0;
     uint32_t branch_target = 0;
-    int branch_type = 0; /* 0=none, 1=unconditional, 2=conditional, 3=register */
-    uint32_t branch_opcode = 0;
+    int branch_type = 0; /* 0=none, 1=unconditional, 3=register, 4=conditional */
 
     /* Load delay slot tracking */
     int pending_load_reg = 0;
@@ -542,8 +541,6 @@ uint32_t *compile_block(uint32_t psx_pc)
                 uint32_t *bp = code_ptr;
                 emit(MK_I(0x05, REG_FP, REG_ZERO, 0)); /* BNE fp, zero, 0 */
                 EMIT_NOP();
-
-                branch_opcode = (uint32_t)bp;
 
                 /* Save vreg state: flush_dirty_consts() inside
                  * emit_branch_epilogue clears dirty flags at compile

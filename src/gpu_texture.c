@@ -6,11 +6,10 @@
  * 1. HW CLUT (primary): Upload raw PSMT8/4 indices + CT16 CLUT palette.
  *    GS hardware performs per-pixel CLUT lookup — zero CPU decode.
  *    Requires CSM1 entry shuffle for 8BPP (256-entry) CLUTs.
+ *    Texture windows are handled by GS CLAMP_1 REGION_REPEAT mode.
  *
- * 2. SW decode (fallback): Full 256×256 CPU decode to CT16S when texture
- *    window is active (GS indexed formats cannot apply PSX tex window).
- *
- * 15BPP textures always use SW decode (direct color, no CLUT).
+ * 2. SW decode (fallback): Full 256×256 CPU decode to CT16S.
+ *    Only used for 15BPP (direct color, no CLUT) textures.
  *
  * Page-Level Cache: 16 entries with LRU eviction, keyed by
  * (format, page, clut, texwindow, vram_gen).  Per-VRAM-page dirty
@@ -102,36 +101,31 @@ static inline uint32_t get_tex_combined_gen(int tex_format,
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- *  Page-Level Texture Cache — 16 entries, LRU eviction
+ *  Page-Level Texture Cache — 32 entries, LRU eviction
  *
- *  TWO cache modes depending on texture window:
+ *  HW CLUT only (indexed 4BPP/8BPP): raw indexed data uploaded as PSMT8/4,
+ *  CLUT palette uploaded separately.  GS hardware does CLUT lookup.
+ *  Texture windows handled by GS CLAMP_1 REGION_REPEAT mode.
+ *  → Zero CPU decode.  Half the upload bandwidth (8-bit vs 16-bit).
  *
- *  1. HW CLUT (no texwindow): raw indexed data uploaded as PSMT8/4,
- *     CLUT palette uploaded separately.  GS hardware does CLUT lookup.
- *     → Zero CPU decode.  Half the upload bandwidth (8-bit vs 16-bit).
- *
- *  2. SW decode (texwindow active): full 256×256 decode to CT16S
- *     as before (fallback path).
+ *  15BPP textures bypass this cache entirely — they reference PSX VRAM
+ *  directly as CT16S with per-vertex Apply_Tex_Window.
  *
  *  GS VRAM layout (in 256-byte blocks, TBP0 units):
- *    [0..4095]       PSX VRAM (CT16S, 1MB)
- *    [4096..8191]    PSMT8/4 indexed texture cache (16 slots × 256 blocks)
- *    [8192..8703]    CT16 CLUT storage (16 slots × 32 blocks)
- *    [8704..12799]   CT16S SW decode cache (16 slots × 256 blocks)
+ *    [0..4095]         PSX VRAM (CT16S, 1MB)
+ *    [4096..12287]     PSMT8/4 indexed texture cache (32 slots × 256 blocks)
+ *    [12288..13311]    CT16 CLUT storage (32 slots × 32 blocks)
+ *    Total: 13312 / 16384 blocks used (81.2%)
  * ═══════════════════════════════════════════════════════════════════ */
-#define TEX_CACHE_SLOTS 16
+#define TEX_CACHE_SLOTS 32
 
 /* HW CLUT texture slots (PSMT8/4 format) */
 #define HW_TEX_TBP_BASE 4096
 #define HW_TEX_TBP_STRIDE 256 /* 256×256 PSMT8 = 64KB = 256 blocks */
 
 /* CLUT palette slots — one CT16 page per CLUT to avoid swizzle overlap */
-#define HW_CLUT_CBP_BASE 8192
+#define HW_CLUT_CBP_BASE (HW_TEX_TBP_BASE + TEX_CACHE_SLOTS * HW_TEX_TBP_STRIDE)
 #define HW_CLUT_CBP_STRIDE 32 /* 1 CT16 page = 32 blocks (64×64 pixels) */
-
-/* SW decode slots (CT16S format, for texwindow fallback) */
-#define SW_TEX_TBP_BASE (HW_CLUT_CBP_BASE + TEX_CACHE_SLOTS * HW_CLUT_CBP_STRIDE)
-#define SW_TEX_TBP_STRIDE 256 /* 256×256 CT16S decoded = same block count */
 
 typedef struct
 {
@@ -139,12 +133,10 @@ typedef struct
     int tex_format;
     int tex_page_x, tex_page_y;
     int clut_x, clut_y;
-    uint32_t tw_mask_x, tw_mask_y, tw_off_x, tw_off_y;
     uint32_t combined_gen; /* max gen of tex data + CLUT page blocks */
-    int is_hw_clut;        /* 1 = PSMT8/4 + CLUT (HW), 0 = CT16S (SW) */
+    int is_hw_clut;        /* always 1 for HW CLUT path */
     int hw_tbp0;           /* HW CLUT: TBP0 for indexed texture data */
     int hw_cbp;            /* HW CLUT: CBP for CLUT palette */
-    int slot_x, slot_y;    /* SW decode: position in GS VRAM */
     uint32_t lru_tick;
 } TexPageCacheEntry;
 
@@ -152,13 +144,6 @@ static TexPageCacheEntry tex_page_cache[TEX_CACHE_SLOTS];
 static uint32_t tex_cache_tick = 0;
 static int last_hit_slot = 0;          /* MRU shortcut — last cache hit index */
 static uint32_t last_mru_vram_gen = 0; /* vram_gen_counter at last MRU hit */
-
-/* SW decode slot layout — Y=512+ (v4 layout) */
-static inline void tex_cache_get_sw_slot_pos(int slot, int *x, int *y)
-{
-    *x = (slot % 4) * 256;
-    *y = CLUT_DECODED_Y + (slot / 4) * 256; /* Y=512..1792 */
-}
 
 /* ── Statistics ───────────────────────────────────────────────────── */
 static struct
@@ -190,44 +175,25 @@ static void Upload_Indexed_8BPP(int tbp0, int tex_page_x, int tex_page_y)
     /* BITBLTBUF: DBP=tbp0, DBW=4 (256/64), DPSM=PSMT8 */
     Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
     Push_GIF_Data(GS_SET_BITBLTBUF(0,0,0, tbp0, 4, GS_PSM_8), GS_REG_BITBLTBUF);
-    Push_GIF_Data(GS_SET_TRXPOS(0,0,0,0,0), GS_REG_TRXPOS);                           /* TRXPOS: (0,0)→(0,0) */
-    Push_GIF_Data(GS_SET_TRXREG(256, 256), GS_REG_TRXREG); /* TRXREG: 256×256 */
-    Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR);                           /* TRXDIR: Host→Local */
+    Push_GIF_Data(GS_SET_TRXPOS(0,0,0,0,0), GS_REG_TRXPOS);
+    Push_GIF_Data(GS_SET_TRXREG(256, 256), GS_REG_TRXREG);
+    Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR);
 
-    /* Pack raw bytes into IMAGE quadwords.
-     * Little-endian MIPS: psx_vram_shadow halfwords contain [lo=texel_even, hi=texel_odd].
-     * Reinterpreting as uint8_t* gives texels in correct order for PSMT8. */
-    buf_image_ptr = 0;
-    for (int row = 0; row < 256; row++)
+    /* 256×256 8BPP = 64KB = 4096 QWs.  Split into 4 chunks of 1024 QWs
+     * (64 rows each) for GIF buffer safety.  Direct memcpy from VRAM
+     * shadow eliminates per-QW loop overhead of the old buf_image path. */
+    for (int chunk = 0; chunk < 4; chunk++)
     {
-        const uint8_t *src = (const uint8_t *)&psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x];
-        /* 256 bytes per row, 16 bytes per quadword = 16 QWs per row */
-        for (int qw = 0; qw < 16; qw++)
+        int eop = (chunk == 3) ? 1 : 0;
+        Push_GIF_Tag(GIF_TAG_LO(1024, eop, 0, 0, 2, 0), 0);
+        for (int row = chunk * 64; row < (chunk + 1) * 64; row++)
         {
-            uint64_t lo, hi;
-            memcpy(&lo, &src[qw * 16], 8);
-            memcpy(&hi, &src[qw * 16 + 8], 8);
-            buf_image[buf_image_ptr++] = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
-
-            if (buf_image_ptr >= 1000)
-            {
-                Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 0, 0, 0, 2, 0), 0);
-                for (int j = 0; j < buf_image_ptr; j++)
-                {
-                    uint64_t *pp = (uint64_t *)&buf_image[j];
-                    Push_GIF_Data(pp[0], pp[1]);
-                }
-                buf_image_ptr = 0;
-            }
-        }
-    }
-    if (buf_image_ptr > 0)
-    {
-        Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 1, 0, 0, 2, 0), 0);
-        for (int j = 0; j < buf_image_ptr; j++)
-        {
-            uint64_t *pp = (uint64_t *)&buf_image[j];
-            Push_GIF_Data(pp[0], pp[1]);
+            /* 256 bytes/row = 16 QWs.  Source is uint16_t* reinterpreted
+             * as raw bytes (little-endian, natural PSMT8 order). */
+            memcpy(fast_gif_ptr,
+                   (const uint8_t *)&psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x],
+                   256);
+            fast_gif_ptr += 16;
         }
     }
 }
@@ -242,38 +208,21 @@ static void Upload_Indexed_4BPP(int tbp0, int tex_page_x, int tex_page_y)
     Push_GIF_Data(GS_SET_TRXREG(256, 256), GS_REG_TRXREG);
     Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR);
 
-    /* 4BPP: 128 bytes per row (256 texels / 2). PSX nibble layout matches PSMT4. */
-    buf_image_ptr = 0;
-    for (int row = 0; row < 256; row++)
+    /* 256×256 4BPP = 32KB = 2048 QWs.  Split into 2 chunks of 1024 QWs
+     * (128 rows each) for GIF buffer safety.  Direct memcpy from VRAM
+     * shadow eliminates per-QW loop overhead of the old buf_image path. */
+    for (int chunk = 0; chunk < 2; chunk++)
     {
-        const uint8_t *src = (const uint8_t *)&psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x];
-        /* 128 bytes per row, 16 bytes per QW = 8 QWs per row */
-        for (int qw = 0; qw < 8; qw++)
+        int eop = (chunk == 1) ? 1 : 0;
+        Push_GIF_Tag(GIF_TAG_LO(1024, eop, 0, 0, 2, 0), 0);
+        for (int row = chunk * 128; row < (chunk + 1) * 128; row++)
         {
-            uint64_t lo, hi;
-            memcpy(&lo, &src[qw * 16], 8);
-            memcpy(&hi, &src[qw * 16 + 8], 8);
-            buf_image[buf_image_ptr++] = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
-
-            if (buf_image_ptr >= 1000)
-            {
-                Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 0, 0, 0, 2, 0), 0);
-                for (int j = 0; j < buf_image_ptr; j++)
-                {
-                    uint64_t *pp = (uint64_t *)&buf_image[j];
-                    Push_GIF_Data(pp[0], pp[1]);
-                }
-                buf_image_ptr = 0;
-            }
-        }
-    }
-    if (buf_image_ptr > 0)
-    {
-        Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 1, 0, 0, 2, 0), 0);
-        for (int j = 0; j < buf_image_ptr; j++)
-        {
-            uint64_t *pp = (uint64_t *)&buf_image[j];
-            Push_GIF_Data(pp[0], pp[1]);
+            /* 128 bytes/row = 8 QWs.  Source is uint16_t* reinterpreted
+             * as raw bytes (little-endian, natural PSMT4 nibble order). */
+            memcpy(fast_gif_ptr,
+                   (const uint8_t *)&psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x],
+                   128);
+            fast_gif_ptr += 8;
         }
     }
 }
@@ -623,168 +572,11 @@ static void Upload_CLUT_CSM1(int cbp, int clut_x, int clut_y, int tex_format)
 
 /* Apply_Tex_Window_U/V are now static inline in gpu_state.h */
 
-/* ── Internal: Decode full 256×256 texture page (optimized) ────────── */
-
-static void Decode_FullPage(int tex_format,
-                            int tex_page_x, int tex_page_y,
-                            int clut_x, int clut_y)
-{
-    uint16_t *decoded = decode_buf;
-
-    /* Pre-expand CLUT with STP bit applied (eliminates branch per pixel) */
-    const uint16_t *raw_clut = &psx_vram_shadow[clut_y * 1024 + clut_x];
-
-    int no_texwin = (tex_win_mask_x == 0 && tex_win_mask_y == 0);
-
-    if (tex_format == 0) /* 4BPP CLUT */
-    {
-        uint16_t exp_clut[16];
-        for (int i = 0; i < 16; i++)
-        {
-            exp_clut[i] = raw_clut[i];
-            if (exp_clut[i] != 0)
-                exp_clut[i] |= 0x8000;
-        }
-
-        if (no_texwin)
-        {
-            /* Fast path: no texture window — process 4 texels per halfword */
-            for (int row = 0; row < 256; row++)
-            {
-                const uint16_t *tex_row = &psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x];
-                uint16_t *dst = &decoded[row * 256];
-
-                for (int col = 0; col < 256; col += 4)
-                {
-                    uint16_t packed = tex_row[col >> 2];
-                    dst[col + 0] = exp_clut[(packed >> 0) & 0xF];
-                    dst[col + 1] = exp_clut[(packed >> 4) & 0xF];
-                    dst[col + 2] = exp_clut[(packed >> 8) & 0xF];
-                    dst[col + 3] = exp_clut[(packed >> 12) & 0xF];
-                }
-            }
-        }
-        else
-        {
-            register uint32_t m_x = ~(tex_win_mask_x * 8) & 0xFF;
-            register uint32_t o_x = (tex_win_off_x & tex_win_mask_x) * 8;
-            register uint32_t m_y = ~(tex_win_mask_y * 8) & 0xFF;
-            register uint32_t o_y = (tex_win_off_y & tex_win_mask_y) * 8;
-
-            for (int row = 0; row < 256; row++)
-            {
-                uint32_t v_win = ((uint32_t)row & m_y) | o_y;
-                const uint16_t *tex_row = &psx_vram_shadow[(tex_page_y + v_win) * 1024];
-                uint16_t *dst = &decoded[row * 256];
-
-                for (int col = 0; col < 256; col++)
-                {
-                    uint32_t u_win = ((uint32_t)col & m_x) | o_x;
-                    uint16_t packed = tex_row[tex_page_x + (u_win >> 2)];
-                    dst[col] = exp_clut[(packed >> ((u_win & 3) * 4)) & 0xF];
-                }
-            }
-        }
-    }
-    else if (tex_format == 1) /* 8BPP CLUT */
-    {
-        uint16_t exp_clut[256];
-        for (int i = 0; i < 256; i++)
-        {
-            exp_clut[i] = raw_clut[i];
-            if (exp_clut[i] != 0)
-                exp_clut[i] |= 0x8000;
-        }
-
-        if (no_texwin)
-        {
-            /* Fast path: no texture window — process 2 texels per halfword */
-            for (int row = 0; row < 256; row++)
-            {
-                const uint16_t *tex_row = &psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x];
-                uint16_t *dst = &decoded[row * 256];
-
-                for (int col = 0; col < 256; col += 2)
-                {
-                    uint16_t packed = tex_row[col >> 1];
-                    dst[col + 0] = exp_clut[packed & 0xFF];
-                    dst[col + 1] = exp_clut[(packed >> 8) & 0xFF];
-                }
-            }
-        }
-        else
-        {
-            register uint32_t m_x = ~(tex_win_mask_x * 8) & 0xFF;
-            register uint32_t o_x = (tex_win_off_x & tex_win_mask_x) * 8;
-            register uint32_t m_y = ~(tex_win_mask_y * 8) & 0xFF;
-            register uint32_t o_y = (tex_win_off_y & tex_win_mask_y) * 8;
-
-            for (int row = 0; row < 256; row++)
-            {
-                uint32_t v_win = ((uint32_t)row & m_y) | o_y;
-                const uint16_t *tex_row = &psx_vram_shadow[(tex_page_y + v_win) * 1024];
-                uint16_t *dst = &decoded[row * 256];
-
-                for (int col = 0; col < 256; col++)
-                {
-                    uint32_t u_win = ((uint32_t)col & m_x) | o_x;
-                    uint16_t packed = tex_row[tex_page_x + (u_win >> 1)];
-                    dst[col] = exp_clut[(packed >> ((u_win & 1) * 8)) & 0xFF];
-                }
-            }
-        }
-    }
-    else /* 15BPP (format 2 or 3) */
-    {
-        if (no_texwin)
-        {
-            /* Fast path: direct memcpy with STP fixup */
-            for (int row = 0; row < 256; row++)
-            {
-                const uint16_t *tex_row = &psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x];
-                uint16_t *dst = &decoded[row * 256];
-
-                for (int col = 0; col < 256; col++)
-                {
-                    uint16_t pixel = tex_row[col];
-                    if (pixel != 0)
-                        pixel |= 0x8000;
-                    dst[col] = pixel;
-                }
-            }
-        }
-        else
-        {
-            register uint32_t m_x = ~(tex_win_mask_x * 8) & 0xFF;
-            register uint32_t o_x = (tex_win_off_x & tex_win_mask_x) * 8;
-            register uint32_t m_y = ~(tex_win_mask_y * 8) & 0xFF;
-            register uint32_t o_y = (tex_win_off_y & tex_win_mask_y) * 8;
-
-            for (int row = 0; row < 256; row++)
-            {
-                uint32_t v_win = ((uint32_t)row & m_y) | o_y;
-                const uint16_t *tex_row = &psx_vram_shadow[(tex_page_y + v_win) * 1024 + tex_page_x];
-                uint16_t *dst = &decoded[row * 256];
-
-                for (int col = 0; col < 256; col++)
-                {
-                    uint32_t u_win = ((uint32_t)col & m_x) | o_x;
-                    uint16_t pixel = tex_row[u_win];
-                    if (pixel != 0)
-                        pixel |= 0x8000;
-                    dst[col] = pixel;
-                }
-            }
-        }
-    }
-}
-
 /* ═══════════════════════════════════════════════════════════════════
- *  Decode_TexPage_Cached — Page-level texture cache with LRU
+ *  Decode_TexPage_Cached — Page-level texture cache with LRU (32 slots)
  *
  *  Returns:
- *    0 = failure
- *    1 = SW decode (CT16S).  out_slot_x/out_slot_y = UV offsets.
+ *    0 = not cached (15BPP — caller should use direct PSX VRAM).
  *    2 = HW CLUT (PSMT8/4).  out_slot_x = TBP0, out_slot_y = CBP.
  *        Caller must set TEX0 for indexed texture mode.
  * ═══════════════════════════════════════════════════════════════════ */
@@ -797,11 +589,11 @@ int Decode_TexPage_Cached(int tex_format,
     tex_stats.total_requests++;
     tex_cache_tick++;
 
-    /* Determine if HW CLUT path is usable:
-     * - Must be indexed format (4BPP or 8BPP)
-     * - Must NOT have texture window active (mask=0)
-     * 15BPP always uses SW path. */
-    int use_hw_clut = (tex_format <= 1 && tex_win_mask_x == 0 && tex_win_mask_y == 0);
+    /* 15BPP textures bypass the cache entirely — they reference PSX VRAM
+     * directly as CT16S with per-vertex Apply_Tex_Window in the callers.
+     * Only indexed formats (4BPP/8BPP) use the HW CLUT cache. */
+    if (tex_format > 1)
+        return 0;
 
     /* ── MRU shortcut: check last-hit slot before full scan ──── */
     /* Fast path: if vram_gen_counter hasn't changed since last MRU hit,
@@ -817,11 +609,7 @@ int Decode_TexPage_Cached(int tex_format,
             e->tex_page_x == tex_page_x &&
             e->tex_page_y == tex_page_y &&
             e->clut_x == clut_x &&
-            e->clut_y == clut_y &&
-            e->tw_mask_x == tex_win_mask_x &&
-            e->tw_mask_y == tex_win_mask_y &&
-            e->tw_off_x == tex_win_off_x &&
-            e->tw_off_y == tex_win_off_y)
+            e->clut_y == clut_y)
         {
             /* Parameters match — check generation validity */
             if (vram_unchanged)
@@ -830,15 +618,9 @@ int Decode_TexPage_Cached(int tex_format,
                 tex_stats.page_hits++;
                 tex_stats.pixels_saved += 256 * 256;
                 e->lru_tick = tex_cache_tick;
-                if (e->is_hw_clut)
-                {
-                    *out_slot_x = e->hw_tbp0;
-                    *out_slot_y = e->hw_cbp;
-                    return 2;
-                }
-                *out_slot_x = e->slot_x;
-                *out_slot_y = e->slot_y - CLUT_DECODED_Y;
-                return 1;
+                *out_slot_x = e->hw_tbp0;
+                *out_slot_y = e->hw_cbp;
+                return 2;
             }
             /* VRAM changed — recompute gen and compare */
             current_gen = get_tex_combined_gen(tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
@@ -848,15 +630,9 @@ int Decode_TexPage_Cached(int tex_format,
                 tex_stats.pixels_saved += 256 * 256;
                 e->lru_tick = tex_cache_tick;
                 last_mru_vram_gen = vram_gen_counter;
-                if (e->is_hw_clut)
-                {
-                    *out_slot_x = e->hw_tbp0;
-                    *out_slot_y = e->hw_cbp;
-                    return 2;
-                }
-                *out_slot_x = e->slot_x;
-                *out_slot_y = e->slot_y - CLUT_DECODED_Y;
-                return 1;
+                *out_slot_x = e->hw_tbp0;
+                *out_slot_y = e->hw_cbp;
+                return 2;
             }
         }
     }
@@ -877,11 +653,7 @@ int Decode_TexPage_Cached(int tex_format,
             e->tex_page_x == tex_page_x &&
             e->tex_page_y == tex_page_y &&
             e->clut_x == clut_x &&
-            e->clut_y == clut_y &&
-            e->tw_mask_x == tex_win_mask_x &&
-            e->tw_mask_y == tex_win_mask_y &&
-            e->tw_off_x == tex_win_off_x &&
-            e->tw_off_y == tex_win_off_y)
+            e->clut_y == clut_y)
         {
             /* Cache HIT */
             tex_stats.page_hits++;
@@ -890,18 +662,9 @@ int Decode_TexPage_Cached(int tex_format,
             last_hit_slot = i;
             last_mru_vram_gen = vram_gen_counter;
 
-            if (e->is_hw_clut)
-            {
-                *out_slot_x = e->hw_tbp0;
-                *out_slot_y = e->hw_cbp;
-                return 2;
-            }
-            else
-            {
-                *out_slot_x = e->slot_x;
-                *out_slot_y = e->slot_y - CLUT_DECODED_Y; /* relative to TBP0=4096 */
-                return 1;
-            }
+            *out_slot_x = e->hw_tbp0;
+            *out_slot_y = e->hw_cbp;
+            return 2;
         }
     }
 
@@ -933,49 +696,24 @@ int Decode_TexPage_Cached(int tex_format,
     /* ── Upload to GS VRAM ─────────────────────────────────────── */
     TexPageCacheEntry *e = &tex_page_cache[evict_idx];
 
-    if (use_hw_clut)
-    {
-        /* === HW CLUT path: upload raw indexed data + CLUT palette === */
-        int tbp0 = HW_TEX_TBP_BASE + evict_idx * HW_TEX_TBP_STRIDE;
-        int cbp = HW_CLUT_CBP_BASE + evict_idx * HW_CLUT_CBP_STRIDE;
+    /* HW CLUT path: upload raw indexed data + CLUT palette */
+    int tbp0 = HW_TEX_TBP_BASE + evict_idx * HW_TEX_TBP_STRIDE;
+    int cbp = HW_CLUT_CBP_BASE + evict_idx * HW_CLUT_CBP_STRIDE;
 
-        if (tex_format == 1)
-            Upload_Indexed_8BPP(tbp0, tex_page_x, tex_page_y);
-        else
-            Upload_Indexed_4BPP(tbp0, tex_page_x, tex_page_y);
-
-        Upload_CLUT_CSM1(cbp, clut_x, clut_y, tex_format);
-        tex_stats.hw_clut_uploads++;
-
-        e->is_hw_clut = 1;
-        e->hw_tbp0 = tbp0;
-        e->hw_cbp = cbp;
-        e->slot_x = 0;
-        e->slot_y = 0;
-
-        *out_slot_x = tbp0;
-        *out_slot_y = cbp;
-    }
+    if (tex_format == 1)
+        Upload_Indexed_8BPP(tbp0, tex_page_x, tex_page_y);
     else
-    {
-        /* === SW decode path: full 256×256 CLUT decode + CT16S upload === */
-        Decode_FullPage(tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
-        tex_stats.pixels_decoded += 256 * 256;
-        tex_stats.sw_decode_uploads++;
+        Upload_Indexed_4BPP(tbp0, tex_page_x, tex_page_y);
 
-        int slot_x, slot_y;
-        tex_cache_get_sw_slot_pos(evict_idx, &slot_x, &slot_y);
-        GS_UploadRegion(slot_x, slot_y, 256, 256, decode_buf);
+    Upload_CLUT_CSM1(cbp, clut_x, clut_y, tex_format);
+    tex_stats.hw_clut_uploads++;
 
-        e->is_hw_clut = 0;
-        e->hw_tbp0 = 0;
-        e->hw_cbp = 0;
-        e->slot_x = slot_x;
-        e->slot_y = slot_y;
+    e->is_hw_clut = 1;
+    e->hw_tbp0 = tbp0;
+    e->hw_cbp = cbp;
 
-        *out_slot_x = slot_x;
-        *out_slot_y = slot_y - CLUT_DECODED_Y; /* relative to TBP0=4096 base (Y=512) */
-    }
+    *out_slot_x = tbp0;
+    *out_slot_y = cbp;
 
     /* Update common cache entry fields */
     e->valid = 1;
@@ -984,16 +722,12 @@ int Decode_TexPage_Cached(int tex_format,
     e->tex_page_y = tex_page_y;
     e->clut_x = clut_x;
     e->clut_y = clut_y;
-    e->tw_mask_x = tex_win_mask_x;
-    e->tw_mask_y = tex_win_mask_y;
-    e->tw_off_x = tex_win_off_x;
-    e->tw_off_y = tex_win_off_y;
     e->combined_gen = current_gen;
     e->lru_tick = tex_cache_tick;
     last_hit_slot = evict_idx;
     last_mru_vram_gen = vram_gen_counter;
 
-    return use_hw_clut ? 2 : 1;
+    return 2;
 }
 
 /* ── Statistics dump (called on triangle button press) ────────────── */
