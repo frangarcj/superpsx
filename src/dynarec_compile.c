@@ -256,6 +256,166 @@ int instruction_writes_gpr(uint32_t opcode, int reg)
     return 0;
 }
 
+/* ================================================================
+ *  Dead Code Elimination (DCE) — backward liveness analysis
+ * ================================================================ */
+#define DCE_MAX_SCAN 64
+
+static uint64_t dce_dead_mask; /* bit i = 1 → instruction i is dead */
+
+/* Get the destination GPR of an instruction (0 if none or writes $zero) */
+static int dce_dest_gpr(uint32_t opcode)
+{
+    int op = OP(opcode);
+    if (op == 0x00)
+    {
+        int func = FUNC(opcode);
+        if (func >= 0x18 && func <= 0x1B) return 0; /* MULT/DIV: HI/LO only */
+        if (func == 0x08) return 0;                  /* JR */
+        if (func == 0x11 || func == 0x13) return 0;  /* MTHI/MTLO */
+        if (func == 0x0C || func == 0x0D) return 0;  /* SYSCALL/BREAK */
+        return RD(opcode);
+    }
+    if (op == 0x03) return 31;       /* JAL → $ra */
+    if (op == 0x01)                  /* REGIMM */
+    {
+        int rt = RT(opcode);
+        if (rt == 0x10 || rt == 0x11) return 31; /* BLTZAL/BGEZAL → $ra */
+        return 0;
+    }
+    if (op >= 0x08 && op <= 0x0F) return RT(opcode); /* I-type ALU */
+    /* Note: loads (0x20-0x26) are intentionally NOT listed here.
+     * On PSX, loads write their dest via the load delay slot mechanism:
+     * the value appears 1 instruction LATE.  If we reported loads as
+     * killing the dest here, we would incorrectly mark the preceding
+     * write as dead when the load delay read still needs the old value.
+     * This is conservative (fewer DCE opportunities) but correct. */
+    return 0;
+}
+
+/* Get bitmask of GPRs that an instruction reads (bit N = reads $N) */
+static uint32_t dce_read_mask(uint32_t opcode)
+{
+    uint32_t m = 0;
+    int op = OP(opcode);
+    int rs = RS(opcode), rt = RT(opcode);
+
+    if (op == 0x00)
+    {
+        int func = FUNC(opcode);
+        /* Shifts by sa: only read rt */
+        if (func <= 0x03) { if (rt) m |= (1u << rt); return m; }
+        /* MFHI/MFLO: no GPR source */
+        if (func == 0x10 || func == 0x12) return 0;
+        /* SYSCALL/BREAK: no GPR source */
+        if (func == 0x0C || func == 0x0D) return 0;
+        /* JR/JALR: read rs only */
+        if (func == 0x08 || func == 0x09) { if (rs) m |= (1u << rs); return m; }
+        /* MTHI/MTLO: read rs only */
+        if (func == 0x11 || func == 0x13) { if (rs) m |= (1u << rs); return m; }
+        /* Everything else (ALU, MULT/DIV, SLLV etc.): read rs and rt */
+        if (rs) m |= (1u << rs);
+        if (rt) m |= (1u << rt);
+        return m;
+    }
+    if (op == 0x02 || op == 0x03) return 0;  /* J/JAL */
+    if (op == 0x0F) return 0;                 /* LUI */
+    /* Branches: BEQ/BNE read rs+rt; BLEZ/BGTZ/REGIMM read rs */
+    if (op == 0x04 || op == 0x05) { if (rs) m |= (1u << rs); if (rt) m |= (1u << rt); return m; }
+    if (op >= 0x06 && op <= 0x07) { if (rs) m |= (1u << rs); return m; }
+    if (op == 0x01) { if (rs) m |= (1u << rs); return m; }
+    /* I-type ALU: read rs */
+    if (op >= 0x08 && op <= 0x0E) { if (rs) m |= (1u << rs); return m; }
+    /* Loads: read rs.  LWL/LWR also merge with rt */
+    if (op >= 0x20 && op <= 0x26)
+    {
+        if (rs) m |= (1u << rs);
+        if ((op == 0x22 || op == 0x26) && rt) m |= (1u << rt);
+        return m;
+    }
+    /* Stores: read rs (base) + rt (data) */
+    if ((op >= 0x28 && op <= 0x2E) || op == 0x3A)
+    {
+        if (rs) m |= (1u << rs);
+        if (rt) m |= (1u << rt);
+        return m;
+    }
+    /* COP0 MTC0: read rt */
+    if (op == 0x10 && (RS(opcode) == 0x04)) { if (rt) m |= (1u << rt); return m; }
+    /* COP2 MTC2/CTC2: read rt */
+    if (op == 0x12 && !((opcode) & 0x02000000))
+    {
+        int cop_rs = RS(opcode);
+        if (cop_rs == 0x04 || cop_rs == 0x06) { if (rt) m |= (1u << rt); }
+        return m;
+    }
+    /* LWC2/SWC2: read rs */
+    if (op == 0x32 || op == 0x3A) { if (rs) m |= (1u << rs); return m; }
+    return m;
+}
+
+/* Returns 1 if instruction is a pure GPR-to-GPR operation with no side effects.
+ * Only these can be safely eliminated by DCE. */
+static int dce_is_pure(uint32_t opcode)
+{
+    int op = OP(opcode);
+    if (op == 0x00)
+    {
+        int func = FUNC(opcode);
+        if (func <= 0x07) return 1;                   /* SLL-SRAV */
+        if (func == 0x10 || func == 0x12) return 1;   /* MFHI/MFLO */
+        if (func >= 0x20 && func <= 0x2B) return 1;   /* ADD-SLTU */
+        return 0;
+    }
+    if (op >= 0x08 && op <= 0x0F) return 1;  /* ADDI-LUI */
+    return 0;
+}
+
+/* Pre-scan a block and build the DCE dead-write bitmask.
+ * Called once before the main compile loop. */
+static void dce_prescan(const uint32_t *code, int max_insns)
+{
+    /* Phase 1: find block boundary (branch + delay slot or SYSCALL/BREAK) */
+    int count = 0;
+    int in_ds = 0;
+    for (int i = 0; i < max_insns && i < DCE_MAX_SCAN; i++)
+    {
+        count = i + 1;
+        if (in_ds) break;
+        int op = OP(code[i]);
+        int func = (op == 0) ? FUNC(code[i]) : 0;
+        if (op == 0x02 || op == 0x03 ||
+            (op == 0 && (func == 0x08 || func == 0x09)) ||
+            (op >= 0x04 && op <= 0x07) || op == 0x01)
+            in_ds = 1;
+        else if (op == 0 && (func == 0x0C || func == 0x0D))
+            break;
+    }
+
+    /* Phase 2: backward liveness analysis */
+    dce_dead_mask = 0;
+    uint32_t live = 0xFFFFFFFFu; /* conservative: all regs live at block exit */
+    for (int i = count - 1; i >= 0; i--)
+    {
+        uint32_t insn = code[i];
+        int dest = dce_dest_gpr(insn);
+
+        /* If dest is not live AND instruction is pure → dead */
+        if (dest != 0 && !(live & (1u << dest)) && dce_is_pure(insn))
+        {
+            dce_dead_mask |= (1ULL << i);
+            /* Don't update liveness for dead instructions */
+        }
+        else
+        {
+            /* Update liveness: kill dest, add reads */
+            if (dest != 0)
+                live &= ~(1u << dest);
+            live |= dce_read_mask(insn);
+        }
+    }
+}
+
 /* ---- Block prologue: save callee-saved regs, set up $s0-$s3, load pinned ---- */
 void emit_block_prologue(void)
 {
@@ -392,6 +552,7 @@ uint32_t *compile_block(uint32_t psx_pc)
 
     reset_vregs();
     cold_slow_reset();
+    dce_prescan(psx_code, DCE_MAX_SCAN);
     emit_block_prologue();
 
     /* Inject BIOS HLE hooks natively so that DBL jumps do not bypass them */
@@ -512,10 +673,23 @@ uint32_t *compile_block(uint32_t psx_pc)
             if (pending_load_reg != 0 && (OP(opcode) == 0x22 || OP(opcode) == 0x26) &&
                 pending_load_reg == RT(opcode))
                 dynarec_lwx_pending = 1;
-            if (emit_instruction(opcode, cur_pc, &block_mult_count) < 0)
             {
-                block_ended = 1;
-                break;
+                int dce_idx = (int)((cur_pc - psx_pc) >> 2);
+                if (dce_idx < DCE_MAX_SCAN && (dce_dead_mask >> dce_idx) & 1)
+                {
+                    /* Dead instruction — clear vreg tracking without emitting flush code */
+                    int dce_d = dce_dest_gpr(opcode);
+                    if (dce_d) {
+                        vregs[dce_d].is_const = 0;
+                        vregs[dce_d].is_dirty = 0;
+                        dirty_const_mask &= ~(1u << dce_d);
+                    }
+                }
+                else if (emit_instruction(opcode, cur_pc, &block_mult_count) < 0)
+                {
+                    block_ended = 1;
+                    break;
+                }
             }
             dynarec_lwx_pending = 0;
             cur_pc += 4;
@@ -865,10 +1039,23 @@ uint32_t *compile_block(uint32_t psx_pc)
             if (pending_load_reg != 0 && (OP(opcode) == 0x22 || OP(opcode) == 0x26) &&
                 pending_load_reg == RT(opcode))
                 dynarec_lwx_pending = 1;
-            if (emit_instruction(opcode, cur_pc, &block_mult_count) < 0)
             {
-                block_ended = 1;
-                break;
+                int dce_idx = (int)((cur_pc - psx_pc) >> 2);
+                if (dce_idx < DCE_MAX_SCAN && (dce_dead_mask >> dce_idx) & 1)
+                {
+                    /* Dead instruction — clear vreg tracking without emitting flush code */
+                    int dce_d = dce_dest_gpr(opcode);
+                    if (dce_d) {
+                        vregs[dce_d].is_const = 0;
+                        vregs[dce_d].is_dirty = 0;
+                        dirty_const_mask &= ~(1u << dce_d);
+                    }
+                }
+                else if (emit_instruction(opcode, cur_pc, &block_mult_count) < 0)
+                {
+                    block_ended = 1;
+                    break;
+                }
             }
             dynarec_lwx_pending = 0;
             dynarec_load_defer = 0;
