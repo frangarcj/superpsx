@@ -18,6 +18,58 @@ uint32_t block_pinned_dirty_mask = 0;
 int dynarec_load_defer = 0;
 int dynarec_lwx_pending = 0;
 
+/* ---- Super-block fall-through continuation ----
+ * When a conditional branch is encountered, instead of emitting both
+ * taken and not-taken epilogues, we continue compiling the fall-through
+ * path inline and defer the taken-path epilogue to cold code at the
+ * end of the super-block.  This saves ~12 native instructions per
+ * conditional branch fall-through (no cycle deduction, pc update,
+ * abort check, or direct link needed). */
+#define MAX_CONTINUATIONS 3
+#define MAX_SUPER_INSNS 200
+
+typedef struct {
+    uint32_t *branch_insn;       /* BNE instruction to patch (forward ref) */
+    uint32_t target_pc;          /* Branch target PC */
+    uint32_t cycle_count;        /* Accumulated cycles at this branch point */
+    RegStatus saved_vregs[32];   /* vreg state at branch point */
+    uint32_t saved_dirty_mask;   /* dirty_const_mask at branch point */
+} DeferredTakenEntry;
+
+static DeferredTakenEntry deferred_taken[MAX_CONTINUATIONS];
+static int deferred_taken_count = 0;
+
+/* Emit all deferred taken-path epilogues (cold code at end of super-block) */
+static void emit_deferred_taken_all(void)
+{
+    int i;
+    for (i = 0; i < deferred_taken_count; i++)
+    {
+        DeferredTakenEntry *e = &deferred_taken[i];
+
+        /* Patch the BNE forward reference to jump here */
+        int32_t off = (int32_t)(code_ptr - e->branch_insn - 1);
+        *e->branch_insn = (*e->branch_insn & 0xFFFF0000)
+                         | ((uint32_t)off & 0xFFFF);
+
+        /* Restore vreg state for this branch point */
+        memcpy(vregs, e->saved_vregs, sizeof(vregs));
+        dirty_const_mask = e->saved_dirty_mask;
+
+        /* Emit standard branch epilogue inline */
+        flush_dirty_consts();
+        emit(MK_I(0x09, REG_S2, REG_S2, (int16_t)(-(int)e->cycle_count)));
+        emit_load_imm32(REG_T0, e->target_pc);
+        EMIT_SW(REG_T0, CPU_PC, REG_S0);
+        emit(MK_I(0x07, REG_S2, REG_ZERO, 2)); /* BGTZ s2, +2 */
+        EMIT_NOP();
+        EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+        EMIT_NOP();
+        emit_direct_link(e->target_pc);
+    }
+    deferred_taken_count = 0;
+}
+
 /* ---- R3000A Instruction Cycle Cost Table ----
  * Most instructions are 1 cycle. Exceptions:
  *   MULT/MULTU: ~6 cycles (data-dependent, 6 is average)
@@ -610,8 +662,11 @@ uint32_t *compile_block(uint32_t psx_pc)
 
     uint32_t *block_start = code_ptr;
     uint32_t cur_pc = psx_pc;
+    uint32_t sub_block_start_pc = psx_pc; /* Base PC for DCE indexing within current sub-block */
+    int continuations = 0;                /* Fall-through continuations in this super-block */
     block_cycle_count = 0;
     emit_cycle_offset = 0;
+    deferred_taken_count = 0;
 
     if (blocks_compiled < 20)
     {
@@ -757,7 +812,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                 pending_load_reg == RT(opcode))
                 dynarec_lwx_pending = 1;
             {
-                int dce_idx = (int)((cur_pc - psx_pc) >> 2);
+                int dce_idx = (int)((cur_pc - sub_block_start_pc) >> 2);
                 if (dce_idx < SCAN_MAX_INSNS && (scan.dce_dead_mask >> dce_idx) & 1)
                 {
                     /* Dead instruction — clear vreg tracking without emitting flush code */
@@ -790,31 +845,61 @@ uint32_t *compile_block(uint32_t psx_pc)
             }
             else if (branch_type == 4)
             {
-                /* Deferred Conditional Branch (cond saved on stack slot 72) */
-                EMIT_LW(REG_T2, 72, REG_SP); /* reload branch cond from stack */
-                uint32_t *bp = code_ptr;
-                emit(MK_I(0x05, REG_T2, REG_ZERO, 0)); /* BNE t2, zero, 0 */
-                EMIT_NOP();
+                /* Conditional branch: check if we can continue compiling
+                 * the fall-through path inline (super-block continuation).
+                 * The taken path is deferred to cold code at end of block. */
+                int can_continue = (continuations < MAX_CONTINUATIONS) &&
+                                   ((cur_pc - psx_pc) < (MAX_SUPER_INSNS * 4)) &&
+                                   (deferred_taken_count < MAX_CONTINUATIONS);
 
-                /* Save vreg state: flush_dirty_consts() inside
-                 * emit_branch_epilogue clears dirty flags at compile
-                 * time; we need the taken path to get its own flush. */
-                RegStatus saved_vregs[32];
-                uint32_t saved_dirty_mask = dirty_const_mask;
-                memcpy(saved_vregs, vregs, sizeof(vregs));
+                if (can_continue)
+                {
+                    /* Emit BNE cond → @taken (forward ref, patched later) */
+                    EMIT_LW(REG_T2, 72, REG_SP);
+                    DeferredTakenEntry *dt = &deferred_taken[deferred_taken_count++];
+                    dt->target_pc = branch_target;
+                    dt->cycle_count = block_cycle_count;
+                    memcpy(dt->saved_vregs, vregs, sizeof(vregs));
+                    dt->saved_dirty_mask = dirty_const_mask;
+                    dt->branch_insn = code_ptr;
+                    emit(MK_I(0x05, REG_T2, REG_ZERO, 0)); /* BNE t2, zero, @taken */
+                    EMIT_NOP();
 
-                /* Not taken: fall through PC */
-                emit_branch_epilogue(cur_pc);
+                    /* Fall-through: continue compiling next sub-block.
+                     * vregs carry over — const propagation across fall-through. */
+                    sub_block_start_pc = cur_pc;
+                    block_scan(psx_code, SCAN_MAX_INSNS, &scan);
+                    continuations++;
 
-                /* Taken path target */
-                uint32_t *taken_addr = code_ptr;
-                int32_t offset = (int32_t)(taken_addr - bp - 1);
-                *bp = (*bp & 0xFFFF0000) | (offset & 0xFFFF);
+                    /* Reset branch state for next sub-block */
+                    in_delay_slot = 0;
+                    branch_type = 0;
+                    continue; /* resume main while loop */
+                }
+                else
+                {
+                    /* Standard two-path epilogue (no more continuations) */
+                    EMIT_LW(REG_T2, 72, REG_SP);
+                    uint32_t *bp = code_ptr;
+                    emit(MK_I(0x05, REG_T2, REG_ZERO, 0)); /* BNE t2, zero, 0 */
+                    EMIT_NOP();
 
-                /* Restore vreg state so taken path materializes its own consts */
-                memcpy(vregs, saved_vregs, sizeof(vregs));
-                dirty_const_mask = saved_dirty_mask;
-                emit_branch_epilogue(branch_target);
+                    RegStatus saved_vregs[32];
+                    uint32_t saved_dirty_mask = dirty_const_mask;
+                    memcpy(saved_vregs, vregs, sizeof(vregs));
+
+                    /* Not taken: fall through PC */
+                    emit_branch_epilogue(cur_pc);
+
+                    /* Taken path target */
+                    uint32_t *taken_addr = code_ptr;
+                    int32_t offset = (int32_t)(taken_addr - bp - 1);
+                    *bp = (*bp & 0xFFFF0000) | (offset & 0xFFFF);
+
+                    memcpy(vregs, saved_vregs, sizeof(vregs));
+                    dirty_const_mask = saved_dirty_mask;
+                    emit_branch_epilogue(branch_target);
+                }
             }
             else if (branch_type == 3)
             {
@@ -1124,7 +1209,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                 pending_load_reg == RT(opcode))
                 dynarec_lwx_pending = 1;
             {
-                int dce_idx = (int)((cur_pc - psx_pc) >> 2);
+                int dce_idx = (int)((cur_pc - sub_block_start_pc) >> 2);
                 if (dce_idx < SCAN_MAX_INSNS && (scan.dce_dead_mask >> dce_idx) & 1)
                 {
                     /* Dead instruction — clear vreg tracking without emitting flush code */
@@ -1165,7 +1250,7 @@ uint32_t *compile_block(uint32_t psx_pc)
         cur_pc += 4;
         total_instructions++;
 
-        if ((cur_pc - psx_pc) >= 256)
+        if ((cur_pc - sub_block_start_pc) >= 256 || (cur_pc - psx_pc) >= (MAX_SUPER_INSNS * 4))
         {
             if (pending_load_reg != 0)
             {
@@ -1176,6 +1261,9 @@ uint32_t *compile_block(uint32_t psx_pc)
             block_ended = 1;
         }
     }
+
+    /* Emit deferred taken-path epilogues (super-block continuations) */
+    emit_deferred_taken_all();
 
     /* Emit all deferred (cold) slow paths at the end of the block */
     cold_slow_emit_all();
