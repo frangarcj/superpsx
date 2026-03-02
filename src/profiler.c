@@ -8,6 +8,9 @@
 #include "profiler.h"
 #include <stdio.h>
 
+/* From dynarec_run.c — hotspot tracker */
+extern void jit_hotspot_dump_and_reset(FILE *out);
+
 /* ── Subsystem disable flags (always available) ──────────────────── */
 int prof_disable_spu = 0;
 int prof_disable_gpu_render = 0;
@@ -247,6 +250,9 @@ void profiler_frame_end(uint64_t psx_cycles_this_frame)
                              prof_grand_jit_compiles, prof_grand_gpu_pixels);
                 fprintf(prof_log_file, "\n");
             }
+
+            /* JIT hotspot report */
+            jit_hotspot_dump_and_reset(prof_log_file);
 
             fflush(prof_log_file);
         }
