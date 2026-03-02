@@ -142,8 +142,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
-            int s = emit_use_reg(rt, REG_T0);
-            int d = emit_dst_reg(rd, REG_T0);
+            int s = emit_use_reg(rt, REG_T8);
+            int d = emit_dst_reg(rd, REG_T8);
             emit(MK_R(0, 0, s, d, sa, 0x00));
             emit_sync_reg(rd, d);
             break;
@@ -156,8 +156,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
-            int s = emit_use_reg(rt, REG_T0);
-            int d = emit_dst_reg(rd, REG_T0);
+            int s = emit_use_reg(rt, REG_T8);
+            int d = emit_dst_reg(rd, REG_T8);
             emit(MK_R(0, 0, s, d, sa, 0x02));
             emit_sync_reg(rd, d);
             break;
@@ -170,8 +170,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
-            int s = emit_use_reg(rt, REG_T0);
-            int d = emit_dst_reg(rd, REG_T0);
+            int s = emit_use_reg(rt, REG_T8);
+            int d = emit_dst_reg(rd, REG_T8);
             emit(MK_R(0, 0, s, d, sa, 0x03));
             emit_sync_reg(rd, d);
             break;
@@ -179,9 +179,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         case 0x04: /* SLLV */
         {
             mark_vreg_var(rd);
-            int s1 = emit_use_reg(rt, REG_T0);
-            int s2 = emit_use_reg(rs, REG_T1);
-            int d = emit_dst_reg(rd, REG_T0);
+            int s1 = emit_use_reg(rt, REG_T8);
+            int s2 = emit_use_reg(rs, REG_T9);
+            int d = emit_dst_reg(rd, REG_T8);
             emit(MK_R(0, s2, s1, d, 0, 0x04));
             emit_sync_reg(rd, d);
             break;
@@ -189,9 +189,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         case 0x06: /* SRLV */
         {
             mark_vreg_var(rd);
-            int s1 = emit_use_reg(rt, REG_T0);
-            int s2 = emit_use_reg(rs, REG_T1);
-            int d = emit_dst_reg(rd, REG_T0);
+            int s1 = emit_use_reg(rt, REG_T8);
+            int s2 = emit_use_reg(rs, REG_T9);
+            int d = emit_dst_reg(rd, REG_T8);
             emit(MK_R(0, s2, s1, d, 0, 0x06));
             emit_sync_reg(rd, d);
             break;
@@ -199,9 +199,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         case 0x07: /* SRAV */
         {
             mark_vreg_var(rd);
-            int s1 = emit_use_reg(rt, REG_T0);
-            int s2 = emit_use_reg(rs, REG_T1);
-            int d = emit_dst_reg(rd, REG_T0);
+            int s1 = emit_use_reg(rt, REG_T8);
+            int s2 = emit_use_reg(rs, REG_T9);
+            int d = emit_dst_reg(rd, REG_T8);
             emit(MK_R(0, s2, s1, d, 0, 0x07));
             emit_sync_reg(rd, d);
             break;
@@ -220,77 +220,77 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_cpu_field_to_psx_reg(CPU_HI, rd);
             break;
         case 0x11: /* MTHI */
-            emit_load_psx_reg(REG_T0, rs);
-            EMIT_SW(REG_T0, CPU_HI, REG_S0);
+            emit_load_psx_reg(REG_T8, rs);
+            EMIT_SW(REG_T8, CPU_HI, REG_S0);
             break;
         case 0x12: /* MFLO */
             emit_cpu_field_to_psx_reg(CPU_LO, rd);
             break;
         case 0x13: /* MTLO */
-            emit_load_psx_reg(REG_T0, rs);
-            EMIT_SW(REG_T0, CPU_LO, REG_S0);
+            emit_load_psx_reg(REG_T8, rs);
+            EMIT_SW(REG_T8, CPU_LO, REG_S0);
             break;
         case 0x18: /* MULT */
-            emit_load_psx_reg(REG_T0, rs);
-            emit_load_psx_reg(REG_T1, rt);
+            emit_load_psx_reg(REG_T8, rs);
+            emit_load_psx_reg(REG_T9, rt);
             if (((*mult_count)++ & 1) == 0)
             {
-                EMIT_MULT1(REG_T0, REG_T1);
-                EMIT_MFLO1(REG_T0);
-                EMIT_SW(REG_T0, CPU_LO, REG_S0);
-                EMIT_MFHI1(REG_T0);
+                EMIT_MULT1(REG_T8, REG_T9);
+                EMIT_MFLO1(REG_T8);
+                EMIT_SW(REG_T8, CPU_LO, REG_S0);
+                EMIT_MFHI1(REG_T8);
             }
             else
             {
-                emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x18));
-                emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));
-                EMIT_SW(REG_T0, CPU_LO, REG_S0);
-                emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));
+                emit(MK_R(0, REG_T8, REG_T9, 0, 0, 0x18));
+                emit(MK_R(0, 0, 0, REG_T8, 0, 0x12));
+                EMIT_SW(REG_T8, CPU_LO, REG_S0);
+                emit(MK_R(0, 0, 0, REG_T8, 0, 0x10));
             }
-            EMIT_SW(REG_T0, CPU_HI, REG_S0);
+            EMIT_SW(REG_T8, CPU_HI, REG_S0);
             reg_cache_invalidate();
             break;
         case 0x19: /* MULTU */
-            emit_load_psx_reg(REG_T0, rs);
-            emit_load_psx_reg(REG_T1, rt);
+            emit_load_psx_reg(REG_T8, rs);
+            emit_load_psx_reg(REG_T9, rt);
             if (((*mult_count)++ & 1) == 0)
             {
-                EMIT_MULTU1(REG_T0, REG_T1);
-                EMIT_MFLO1(REG_T0);
-                EMIT_SW(REG_T0, CPU_LO, REG_S0);
-                EMIT_MFHI1(REG_T0);
+                EMIT_MULTU1(REG_T8, REG_T9);
+                EMIT_MFLO1(REG_T8);
+                EMIT_SW(REG_T8, CPU_LO, REG_S0);
+                EMIT_MFHI1(REG_T8);
             }
             else
             {
-                emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x19));
-                emit(MK_R(0, 0, 0, REG_T0, 0, 0x12));
-                EMIT_SW(REG_T0, CPU_LO, REG_S0);
-                emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));
+                emit(MK_R(0, REG_T8, REG_T9, 0, 0, 0x19));
+                emit(MK_R(0, 0, 0, REG_T8, 0, 0x12));
+                EMIT_SW(REG_T8, CPU_LO, REG_S0);
+                emit(MK_R(0, 0, 0, REG_T8, 0, 0x10));
             }
-            EMIT_SW(REG_T0, CPU_HI, REG_S0);
+            EMIT_SW(REG_T8, CPU_HI, REG_S0);
             reg_cache_invalidate();
             break;
         case 0x1A: /* DIV — inline with div-by-zero handling */
         {
-            emit_load_psx_reg(REG_T0, rs);
-            emit_load_psx_reg(REG_T1, rt);
+            emit_load_psx_reg(REG_T8, rs);
+            emit_load_psx_reg(REG_T9, rt);
             /* Branch over division if divisor == 0 */
-            EMIT_BEQ(REG_T1, REG_ZERO, 7); /* skip 7 insns to @divz */
+            EMIT_BEQ(REG_T9, REG_ZERO, 7); /* skip 7 insns to @divz */
             EMIT_NOP();
             /* Common path: native signed divide */
-            emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x1A)); /* div t0, t1 */
+            emit(MK_R(0, REG_T8, REG_T9, 0, 0, 0x1A)); /* div t0, t1 */
             emit(MK_R(0, 0, 0, REG_T2, 0, 0x12));      /* mflo t2 */
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));      /* mfhi t0 */
+            emit(MK_R(0, 0, 0, REG_T8, 0, 0x10));      /* mfhi t0 */
             EMIT_SW(REG_T2, CPU_LO, REG_S0);
             uint32_t *b_end_div = code_ptr;
             emit(MK_I(4, REG_ZERO, REG_ZERO, 0)); /* beq zero,zero,@end (placeholder) */
-            EMIT_SW(REG_T0, CPU_HI, REG_S0);      /* delay slot */
+            EMIT_SW(REG_T8, CPU_HI, REG_S0);      /* delay slot */
             /* @divz: lo = (rs >= 0) ? -1 : 1, hi = rs */
-            EMIT_SW(REG_T0, CPU_HI, REG_S0);                  /* hi = rs (T0 still has rs) */
-            emit(MK_R(0, 0, REG_T0, REG_T1, 31, 0x03));       /* sra t1, t0, 31 */
-            emit(MK_R(0, 0, REG_T1, REG_T1, 1, 0x00));        /* sll t1, t1, 1  */
-            emit(MK_R(0, REG_T1, REG_ZERO, REG_T1, 0, 0x27)); /* nor t1, t1, zero */
-            EMIT_SW(REG_T1, CPU_LO, REG_S0);                  /* lo = result */
+            EMIT_SW(REG_T8, CPU_HI, REG_S0);                  /* hi = rs (T0 still has rs) */
+            emit(MK_R(0, 0, REG_T8, REG_T9, 31, 0x03));       /* sra t1, t0, 31 */
+            emit(MK_R(0, 0, REG_T9, REG_T9, 1, 0x00));        /* sll t1, t1, 1  */
+            emit(MK_R(0, REG_T9, REG_ZERO, REG_T9, 0, 0x27)); /* nor t1, t1, zero */
+            EMIT_SW(REG_T9, CPU_LO, REG_S0);                  /* lo = result */
             /* @end: patch the branch */
             {
                 int32_t off = (int32_t)(code_ptr - b_end_div - 1);
@@ -301,23 +301,23 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         }
         case 0x1B: /* DIVU — inline with div-by-zero handling */
         {
-            emit_load_psx_reg(REG_T0, rs);
-            emit_load_psx_reg(REG_T1, rt);
+            emit_load_psx_reg(REG_T8, rs);
+            emit_load_psx_reg(REG_T9, rt);
             /* Branch over division if divisor == 0 */
-            EMIT_BEQ(REG_T1, REG_ZERO, 7); /* skip 7 insns to @divz */
+            EMIT_BEQ(REG_T9, REG_ZERO, 7); /* skip 7 insns to @divz */
             EMIT_NOP();
             /* Common path: native unsigned divide */
-            emit(MK_R(0, REG_T0, REG_T1, 0, 0, 0x1B)); /* divu t0, t1 */
+            emit(MK_R(0, REG_T8, REG_T9, 0, 0, 0x1B)); /* divu t0, t1 */
             emit(MK_R(0, 0, 0, REG_T2, 0, 0x12));      /* mflo t2 */
-            emit(MK_R(0, 0, 0, REG_T0, 0, 0x10));      /* mfhi t0 */
+            emit(MK_R(0, 0, 0, REG_T8, 0, 0x10));      /* mfhi t0 */
             EMIT_SW(REG_T2, CPU_LO, REG_S0);
             uint32_t *b_end_divu = code_ptr;
             emit(MK_I(4, REG_ZERO, REG_ZERO, 0)); /* beq zero,zero,@end (placeholder) */
-            EMIT_SW(REG_T0, CPU_HI, REG_S0);      /* delay slot */
+            EMIT_SW(REG_T8, CPU_HI, REG_S0);      /* delay slot */
             /* @divz: lo = 0xFFFFFFFF, hi = rs */
-            EMIT_SW(REG_T0, CPU_HI, REG_S0);  /* hi = rs (T0 still has rs) */
-            EMIT_ADDIU(REG_T0, REG_ZERO, -1); /* t0 = 0xFFFFFFFF */
-            EMIT_SW(REG_T0, CPU_LO, REG_S0);  /* lo = 0xFFFFFFFF */
+            EMIT_SW(REG_T8, CPU_HI, REG_S0);  /* hi = rs (T0 still has rs) */
+            EMIT_ADDIU(REG_T8, REG_ZERO, -1); /* t0 = 0xFFFFFFFF */
+            EMIT_SW(REG_T8, CPU_LO, REG_S0);  /* lo = 0xFFFFFFFF */
             /* @end: patch the branch */
             {
                 int32_t off = (int32_t)(code_ptr - b_end_divu - 1);
@@ -344,8 +344,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
-            int s1 = emit_use_reg(rs, REG_T0);
-            int s2 = emit_use_reg(rt, REG_T1);
+            int s1 = emit_use_reg(rs, REG_T8);
+            int s2 = emit_use_reg(rt, REG_T9);
 
             /* Flush current rd pinned value to cpu.regs[] so the cold path
              * (overflow) can restore it.  Pinned regs may be stale in memory
@@ -358,13 +358,13 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit(MK_R(0, s1, s2, REG_AT, 0, 0x26));           /* XOR  AT, s1, s2  (rs^rt) */
             EMIT_SW(s1, 76, REG_SP);                           /* save rs to stack */
 
-            int d = emit_dst_reg(rd, REG_T0);
+            int d = emit_dst_reg(rd, REG_T8);
             EMIT_ADDU(d, s1, s2);                              /* d = rs + rt */
 
             /* Overflow: ~(rs^rt) & (result^rs), bit31=1 => overflow.
              * Load saved rs into T2 (or T0 when d=T2 to avoid self-XOR).
              * LW scheduled before NOR to hide load-use delay on R5900. */
-            int sr = (d == REG_T2) ? REG_T0 : REG_T2;
+            int sr = (d == REG_T2) ? REG_T8 : REG_T2;
             EMIT_LW(sr, 76, REG_SP);                           /* sr = saved rs */
             emit(MK_R(0, REG_AT, REG_ZERO, REG_AT, 0, 0x27)); /* NOR  AT, AT, $0 */
             emit(MK_R(0, d, sr, sr, 0, 0x26));                 /* XOR  sr, d, sr  (result^rs) */
@@ -383,7 +383,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 
                 RegStatus saved_vregs[32];
                 uint32_t saved_dirty = dirty_const_mask;
-                int saved_t0 = t0_cached_psx_reg, saved_t1 = t1_cached_psx_reg;
+                int saved_t8 = t8_cached_psx_reg, saved_t9 = t9_cached_psx_reg;
                 memcpy(saved_vregs, vregs, sizeof(vregs));
 
                 emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
@@ -392,16 +392,16 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 
                 memcpy(vregs, saved_vregs, sizeof(vregs));
                 dirty_const_mask = saved_dirty;
-                t0_cached_psx_reg = saved_t0;
-                t1_cached_psx_reg = saved_t1;
+                t8_cached_psx_reg = saved_t8;
+                t9_cached_psx_reg = saved_t9;
             }
 
             /* Patch BGEZ: skip from patch_loc+1 to current code_ptr */
             *bgez_patch = MK_I(1, REG_AT, 1, (int16_t)(code_ptr - bgez_patch - 1));
 
             /* @no_overflow: invalidate scratch cache (XOR/NOR clobbered them) */
-            t0_cached_psx_reg = -1;
-            t1_cached_psx_reg = -1;
+            t8_cached_psx_reg = -1;
+            t9_cached_psx_reg = -1;
             emit_sync_reg(rd, d);
             break;
         }
@@ -413,9 +413,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
-            int s1 = emit_use_reg(rs, REG_T0);
-            int s2 = emit_use_reg(rt, REG_T1);
-            int d = emit_dst_reg(rd, REG_T0);
+            int s1 = emit_use_reg(rs, REG_T8);
+            int s2 = emit_use_reg(rt, REG_T9);
+            int d = emit_dst_reg(rd, REG_T8);
             EMIT_ADDU(d, s1, s2);
             emit_sync_reg(rd, d);
             break;
@@ -437,8 +437,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
-            int s1 = emit_use_reg(rs, REG_T0);
-            int s2 = emit_use_reg(rt, REG_T1);
+            int s1 = emit_use_reg(rs, REG_T8);
+            int s2 = emit_use_reg(rt, REG_T9);
 
             /* Flush pinned rd so cold path can restore from cpu.regs[] */
             if (rd != 0 && psx_pinned_reg[rd])
@@ -448,11 +448,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit(MK_R(0, s1, s2, REG_AT, 0, 0x26));           /* XOR  AT, s1, s2 */
             EMIT_SW(s1, 76, REG_SP);                           /* save rs to stack */
 
-            int d = emit_dst_reg(rd, REG_T0);
+            int d = emit_dst_reg(rd, REG_T8);
             emit(MK_R(0, s1, s2, d, 0, 0x23));                /* SUBU d, s1, s2 */
 
             /* Overflow: (rs^rt) & (result^rs), bit31=1 => overflow */
-            int sr = (d == REG_T2) ? REG_T0 : REG_T2;
+            int sr = (d == REG_T2) ? REG_T8 : REG_T2;
             EMIT_LW(sr, 76, REG_SP);                           /* sr = saved rs */
             EMIT_NOP();                                        /* load delay */
             emit(MK_R(0, d, sr, sr, 0, 0x26));                 /* XOR  sr, d, sr */
@@ -468,7 +468,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 
                 RegStatus saved_vregs[32];
                 uint32_t saved_dirty = dirty_const_mask;
-                int saved_t0 = t0_cached_psx_reg, saved_t1 = t1_cached_psx_reg;
+                int saved_t8 = t8_cached_psx_reg, saved_t9 = t9_cached_psx_reg;
                 memcpy(saved_vregs, vregs, sizeof(vregs));
 
                 emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
@@ -477,14 +477,14 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 
                 memcpy(vregs, saved_vregs, sizeof(vregs));
                 dirty_const_mask = saved_dirty;
-                t0_cached_psx_reg = saved_t0;
-                t1_cached_psx_reg = saved_t1;
+                t8_cached_psx_reg = saved_t8;
+                t9_cached_psx_reg = saved_t9;
             }
 
             *bgez_patch = MK_I(1, REG_AT, 1, (int16_t)(code_ptr - bgez_patch - 1));
 
-            t0_cached_psx_reg = -1;
-            t1_cached_psx_reg = -1;
+            t8_cached_psx_reg = -1;
+            t9_cached_psx_reg = -1;
             emit_sync_reg(rd, d);
             break;
         }
@@ -496,9 +496,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
-            int s1 = emit_use_reg(rs, REG_T0);
-            int s2 = emit_use_reg(rt, REG_T1);
-            int d = emit_dst_reg(rd, REG_T0);
+            int s1 = emit_use_reg(rs, REG_T8);
+            int s2 = emit_use_reg(rt, REG_T9);
+            int d = emit_dst_reg(rd, REG_T8);
             emit(MK_R(0, s1, s2, d, 0, 0x23));
             emit_sync_reg(rd, d);
             break;
@@ -511,9 +511,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
-            int s1 = emit_use_reg(rs, REG_T0);
-            int s2 = emit_use_reg(rt, REG_T1);
-            int d = emit_dst_reg(rd, REG_T0);
+            int s1 = emit_use_reg(rs, REG_T8);
+            int s2 = emit_use_reg(rt, REG_T9);
+            int d = emit_dst_reg(rd, REG_T8);
             emit(MK_R(0, s1, s2, d, 0, 0x24));
             emit_sync_reg(rd, d);
             break;
@@ -526,9 +526,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
-            int s1 = emit_use_reg(rs, REG_T0);
-            int s2 = emit_use_reg(rt, REG_T1);
-            int d = emit_dst_reg(rd, REG_T0);
+            int s1 = emit_use_reg(rs, REG_T8);
+            int s2 = emit_use_reg(rt, REG_T9);
+            int d = emit_dst_reg(rd, REG_T8);
             EMIT_OR(d, s1, s2);
             emit_sync_reg(rd, d);
             break;
@@ -541,9 +541,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
-            int s1 = emit_use_reg(rs, REG_T0);
-            int s2 = emit_use_reg(rt, REG_T1);
-            int d = emit_dst_reg(rd, REG_T0);
+            int s1 = emit_use_reg(rs, REG_T8);
+            int s2 = emit_use_reg(rt, REG_T9);
+            int d = emit_dst_reg(rd, REG_T8);
             emit(MK_R(0, s1, s2, d, 0, 0x26));
             emit_sync_reg(rd, d);
             break;
@@ -556,9 +556,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
-            int s1 = emit_use_reg(rs, REG_T0);
-            int s2 = emit_use_reg(rt, REG_T1);
-            int d = emit_dst_reg(rd, REG_T0);
+            int s1 = emit_use_reg(rs, REG_T8);
+            int s2 = emit_use_reg(rt, REG_T9);
+            int d = emit_dst_reg(rd, REG_T8);
             emit(MK_R(0, s1, s2, d, 0, 0x27));
             emit_sync_reg(rd, d);
             break;
@@ -571,9 +571,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
-            int s1 = emit_use_reg(rs, REG_T0);
-            int s2 = emit_use_reg(rt, REG_T1);
-            int d = emit_dst_reg(rd, REG_T0);
+            int s1 = emit_use_reg(rs, REG_T8);
+            int s2 = emit_use_reg(rt, REG_T9);
+            int d = emit_dst_reg(rd, REG_T8);
             emit(MK_R(0, s1, s2, d, 0, 0x2A));
             emit_sync_reg(rd, d);
             break;
@@ -586,9 +586,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
-            int s1 = emit_use_reg(rs, REG_T0);
-            int s2 = emit_use_reg(rt, REG_T1);
-            int d = emit_dst_reg(rd, REG_T0);
+            int s1 = emit_use_reg(rs, REG_T8);
+            int s2 = emit_use_reg(rt, REG_T9);
+            int d = emit_dst_reg(rd, REG_T8);
             emit(MK_R(0, s1, s2, d, 0, 0x2B));
             emit_sync_reg(rd, d);
             break;
@@ -619,24 +619,24 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         }
         mark_vreg_var(rt);
-        int s1 = emit_use_reg(rs, REG_T0);
+        int s1 = emit_use_reg(rs, REG_T8);
 
         /* Flush pinned rt so cold path can restore from cpu.regs[] */
         if (rt != 0 && psx_pinned_reg[rt])
             EMIT_SW(psx_pinned_reg[rt], CPU_REG(rt), REG_S0);
 
         /* Load sign-extended immediate into T1 for overflow check */
-        emit_load_imm32(REG_T1, (uint32_t)imm);
+        emit_load_imm32(REG_T9, (uint32_t)imm);
 
         /* Pre-compute rs^imm; save rs via stack */
-        emit(MK_R(0, s1, REG_T1, REG_AT, 0, 0x26));       /* XOR  AT, s1, T1 */
+        emit(MK_R(0, s1, REG_T9, REG_AT, 0, 0x26));       /* XOR  AT, s1, T1 */
         EMIT_SW(s1, 76, REG_SP);                           /* save rs to stack */
 
-        int d = emit_dst_reg(rt, REG_T0);
-        EMIT_ADDU(d, s1, REG_T1);                          /* d = rs + imm */
+        int d = emit_dst_reg(rt, REG_T8);
+        EMIT_ADDU(d, s1, REG_T9);                          /* d = rs + imm */
 
         /* Overflow: ~(rs^imm) & (result^rs), bit31=1 => overflow */
-        int sr = (d == REG_T2) ? REG_T0 : REG_T2;
+        int sr = (d == REG_T2) ? REG_T8 : REG_T2;
         EMIT_LW(sr, 76, REG_SP);                           /* sr = saved rs */
         emit(MK_R(0, REG_AT, REG_ZERO, REG_AT, 0, 0x27)); /* NOR  AT, AT, $0 */
         emit(MK_R(0, d, sr, sr, 0, 0x26));                 /* XOR  sr, d, sr */
@@ -652,7 +652,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 
             RegStatus saved_vregs[32];
             uint32_t saved_dirty = dirty_const_mask;
-            int saved_t0 = t0_cached_psx_reg, saved_t1 = t1_cached_psx_reg;
+            int saved_t8 = t8_cached_psx_reg, saved_t9 = t9_cached_psx_reg;
             memcpy(saved_vregs, vregs, sizeof(vregs));
 
             emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
@@ -661,14 +661,14 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 
             memcpy(vregs, saved_vregs, sizeof(vregs));
             dirty_const_mask = saved_dirty;
-            t0_cached_psx_reg = saved_t0;
-            t1_cached_psx_reg = saved_t1;
+            t8_cached_psx_reg = saved_t8;
+            t9_cached_psx_reg = saved_t9;
         }
 
         *bgez_patch = MK_I(1, REG_AT, 1, (int16_t)(code_ptr - bgez_patch - 1));
 
-        t0_cached_psx_reg = -1;
-        t1_cached_psx_reg = -1;
+        t8_cached_psx_reg = -1;
+        t9_cached_psx_reg = -1;
         emit_sync_reg(rt, d);
         break;
     }
@@ -680,8 +680,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         }
         mark_vreg_var(rt);
-        int s = emit_use_reg(rs, REG_T0);
-        int d = emit_dst_reg(rt, REG_T0);
+        int s = emit_use_reg(rs, REG_T8);
+        int d = emit_dst_reg(rt, REG_T8);
         EMIT_ADDIU(d, s, imm);
         emit_sync_reg(rt, d);
         break;
@@ -694,8 +694,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         }
         mark_vreg_var(rt);
-        int s = emit_use_reg(rs, REG_T0);
-        int d = emit_dst_reg(rt, REG_T0);
+        int s = emit_use_reg(rs, REG_T8);
+        int d = emit_dst_reg(rt, REG_T8);
         emit(MK_I(0x0A, s, d, imm));
         emit_sync_reg(rt, d);
         break;
@@ -708,8 +708,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         }
         mark_vreg_var(rt);
-        int s = emit_use_reg(rs, REG_T0);
-        int d = emit_dst_reg(rt, REG_T0);
+        int s = emit_use_reg(rs, REG_T8);
+        int d = emit_dst_reg(rt, REG_T8);
         emit(MK_I(0x0B, s, d, imm));
         emit_sync_reg(rt, d);
         break;
@@ -722,8 +722,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         }
         mark_vreg_var(rt);
-        int s = emit_use_reg(rs, REG_T0);
-        int d = emit_dst_reg(rt, REG_T0);
+        int s = emit_use_reg(rs, REG_T8);
+        int d = emit_dst_reg(rt, REG_T8);
         emit(MK_I(0x0C, s, d, uimm));
         emit_sync_reg(rt, d);
         break;
@@ -736,8 +736,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         }
         mark_vreg_var(rt);
-        int s = emit_use_reg(rs, REG_T0);
-        int d = emit_dst_reg(rt, REG_T0);
+        int s = emit_use_reg(rs, REG_T8);
+        int d = emit_dst_reg(rt, REG_T8);
         EMIT_ORI(d, s, uimm);
         emit_sync_reg(rt, d);
         break;
@@ -750,8 +750,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         }
         mark_vreg_var(rt);
-        int s = emit_use_reg(rs, REG_T0);
-        int d = emit_dst_reg(rt, REG_T0);
+        int s = emit_use_reg(rs, REG_T8);
+        int d = emit_dst_reg(rt, REG_T8);
         emit(MK_I(0x0E, s, d, uimm));
         emit_sync_reg(rt, d);
         break;
@@ -773,29 +773,29 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         else if (rs == 0x04)
         {
             /* MTC0 rt, rd */
-            emit_load_psx_reg(REG_T0, rt);
+            emit_load_psx_reg(REG_T8, rt);
             if (rd == PSX_COP0_SR)
             {
-                EMIT_MOVE(REG_A0, REG_T0);
+                EMIT_MOVE(REG_A0, REG_T8);
                 emit_call_c((uint32_t)debug_mtc0_sr);
             }
             else
             {
-                EMIT_SW(REG_T0, CPU_COP0(rd), REG_S0);
+                EMIT_SW(REG_T8, CPU_COP0(rd), REG_S0);
             }
         }
         else if (rs == 0x10 && func == 0x10)
         {
             /* RFE */
             reg_cache_invalidate();
-            EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
-            EMIT_MOVE(REG_T1, REG_T0);
-            emit(MK_R(0, 0, REG_T1, REG_T1, 2, 0x02));
-            emit(MK_I(0x0C, REG_T1, REG_T1, 0x0F));
-            emit(MK_R(0, 0, REG_T0, REG_T0, 4, 0x02));
-            emit(MK_R(0, 0, REG_T0, REG_T0, 4, 0x00));
-            EMIT_OR(REG_T0, REG_T0, REG_T1);
-            EMIT_SW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
+            EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
+            EMIT_MOVE(REG_T9, REG_T8);
+            emit(MK_R(0, 0, REG_T9, REG_T9, 2, 0x02));
+            emit(MK_I(0x0C, REG_T9, REG_T9, 0x0F));
+            emit(MK_R(0, 0, REG_T8, REG_T8, 4, 0x02));
+            emit(MK_R(0, 0, REG_T8, REG_T8, 4, 0x00));
+            EMIT_OR(REG_T8, REG_T8, REG_T9);
+            EMIT_SW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
         }
         break;
     }
@@ -807,11 +807,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 1);
         reg_cache_invalidate();
-        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T0, REG_T0, 29, 0x02));
-        emit(MK_I(0x0C, REG_T0, REG_T0, 1));
+        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T8, REG_T8, 29, 0x02));
+        emit(MK_I(0x0C, REG_T8, REG_T8, 1));
         uint32_t *skip_patch_1 = code_ptr;
-        emit(MK_I(0x05, REG_T0, REG_ZERO, 0));
+        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
         EMIT_NOP();
         emit_call_c((uint32_t)Helper_CU_Exception);
         *skip_patch_1 = (*skip_patch_1 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_patch_1 - 1) & 0xFFFF);
@@ -823,11 +823,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     {
         flush_dirty_consts(); /* Flush before COP-usable conditional */
         reg_cache_invalidate();
-        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T0, REG_T0, 30, 0x02));
-        emit(MK_I(0x0C, REG_T0, REG_T0, 1));
+        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T8, REG_T8, 30, 0x02));
+        emit(MK_I(0x0C, REG_T8, REG_T8, 1));
         uint32_t *skip_cu2 = code_ptr;
-        emit(MK_I(0x05, REG_T0, REG_ZERO, 0));
+        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 2);
@@ -1064,9 +1064,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 /* Unknown GTE op: fall back to generic dispatcher */
                 uint32_t phys = psx_pc & 0x1FFFFFFF;
                 reg_cache_invalidate();
-                emit_load_imm32(REG_T0, phys);
-                EMIT_ADDU(REG_T0, REG_T0, REG_S1);
-                EMIT_LW(REG_A0, 0, REG_T0);
+                emit_load_imm32(REG_T8, phys);
+                EMIT_ADDU(REG_T8, REG_T8, REG_S1);
+                EMIT_LW(REG_A0, 0, REG_T8);
             }
                 EMIT_MOVE(REG_A1, REG_S0);
                 emit_flush_partial_cycles();
@@ -1082,10 +1082,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     {
         flush_dirty_consts(); /* Flush before COP-usable conditional */
         reg_cache_invalidate();
-        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T0, REG_T0, 31, 0x02));
+        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T8, REG_T8, 31, 0x02));
         uint32_t *skip_cu3 = code_ptr;
-        emit(MK_I(0x05, REG_T0, REG_ZERO, 0));
+        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 3);
@@ -1156,11 +1156,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     {
         flush_dirty_consts(); /* Flush before COP-usable conditional */
         reg_cache_invalidate();
-        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T0, REG_T0, 28, 0x02));
-        emit(MK_I(0x0C, REG_T0, REG_T0, 1));
+        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T8, REG_T8, 28, 0x02));
+        emit(MK_I(0x0C, REG_T8, REG_T8, 1));
         uint32_t *skip_lwc0 = code_ptr;
-        emit(MK_I(0x05, REG_T0, REG_ZERO, 0));
+        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 0);
@@ -1174,11 +1174,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     {
         flush_dirty_consts(); /* Flush before COP-usable conditional */
         reg_cache_invalidate();
-        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T0, REG_T0, 30, 0x02));
-        emit(MK_I(0x0C, REG_T0, REG_T0, 1));
+        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T8, REG_T8, 30, 0x02));
+        emit(MK_I(0x0C, REG_T8, REG_T8, 1));
         uint32_t *skip_lwc2 = code_ptr;
-        emit(MK_I(0x05, REG_T0, REG_ZERO, 0));
+        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 2);
@@ -1204,10 +1204,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     {
         flush_dirty_consts(); /* Flush before COP-usable conditional */
         reg_cache_invalidate();
-        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T0, REG_T0, 31, 0x02));
+        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T8, REG_T8, 31, 0x02));
         uint32_t *skip_lwc3 = code_ptr;
-        emit(MK_I(0x05, REG_T0, REG_ZERO, 0));
+        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 3);
@@ -1221,11 +1221,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     {
         flush_dirty_consts(); /* Flush before COP-usable conditional */
         reg_cache_invalidate();
-        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T0, REG_T0, 28, 0x02));
-        emit(MK_I(0x0C, REG_T0, REG_T0, 1));
+        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T8, REG_T8, 28, 0x02));
+        emit(MK_I(0x0C, REG_T8, REG_T8, 1));
         uint32_t *skip_swc0 = code_ptr;
-        emit(MK_I(0x05, REG_T0, REG_ZERO, 0));
+        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 0);
@@ -1239,11 +1239,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     {
         flush_dirty_consts(); /* Flush before COP-usable conditional */
         reg_cache_invalidate();
-        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T0, REG_T0, 30, 0x02));
-        emit(MK_I(0x0C, REG_T0, REG_T0, 1));
+        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T8, REG_T8, 30, 0x02));
+        emit(MK_I(0x0C, REG_T8, REG_T8, 1));
         uint32_t *skip_swc2 = code_ptr;
-        emit(MK_I(0x05, REG_T0, REG_ZERO, 0));
+        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 2);
@@ -1257,8 +1257,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 
         /* Memory write via LUT fast path (data in V0 → T2, addr in T0) */
         EMIT_MOVE(REG_T2, REG_V0); /* T2 = GTE data */
-        emit_load_psx_reg(REG_T0, rs);
-        EMIT_ADDIU(REG_T0, REG_T0, imm); /* T0 = effective addr */
+        emit_load_psx_reg(REG_T8, rs);
+        EMIT_ADDIU(REG_T8, REG_T8, imm); /* T0 = effective addr */
 
         /* Cache Isolation check */
         EMIT_LW(REG_A0, CPU_COP0(12), REG_S0);
@@ -1269,22 +1269,22 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         EMIT_NOP();
 
         /* Alignment check */
-        emit(MK_I(0x0C, REG_T0, REG_T1, 3)); /* andi t1, t0, 3 */
+        emit(MK_I(0x0C, REG_T8, REG_T9, 3)); /* andi t1, t0, 3 */
         uint32_t *align_swc2 = code_ptr;
-        emit(MK_I(0x05, REG_T1, REG_ZERO, 0));          /* bne → slow */
-        emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24)); /* [delay] and t1, t0, s3 (phys) */
+        emit(MK_I(0x05, REG_T9, REG_ZERO, 0));          /* bne → slow */
+        emit(MK_R(0, REG_T8, REG_S3, REG_T9, 0, 0x24)); /* [delay] and t1, t0, s3 (phys) */
 
         /* Range check: always present — non-RAM goes to SP/slow path */
         uint32_t *range_swc2 = NULL;
         {
-            emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02)); /* srl  a0, t1, 21 */
+            emit(MK_R(0, 0, REG_T9, REG_A0, 21, 0x02)); /* srl  a0, t1, 21 */
             range_swc2 = code_ptr;
             emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne → slow */
         }
-        EMIT_ADDU(REG_T1, REG_T1, REG_S1); /* [delay/inline] host = base + phys */
+        EMIT_ADDU(REG_T9, REG_T9, REG_S1); /* [delay/inline] host = base + phys */
 
         /* Fast path: direct store */
-        EMIT_SW(REG_T2, 0, REG_T1);
+        EMIT_SW(REG_T2, 0, REG_T9);
 
         uint32_t *done_swc2 = code_ptr;
         emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done */
@@ -1299,18 +1299,18 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 *range_swc2 = (*range_swc2 & 0xFFFF0000) | ((uint32_t)s2 & 0xFFFF);
             }
             /* phys = vaddr & 0x1FFFFFFF (already in S3); check (phys - 0x1F800000) < 0x400 */
-            emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24)); /* and  t1, t0, s3     */
+            emit(MK_R(0, REG_T8, REG_S3, REG_T9, 0, 0x24)); /* and  t1, t0, s3     */
             emit(MK_I(0x0F, 0, REG_A0, 0xE080));            /* lui  a0, 0xE080     */
-            EMIT_ADDU(REG_T1, REG_T1, REG_A0);              /* t1 = phys-0x1F800000 */
-            emit(MK_I(0x0B, REG_T1, REG_T1, 0x400));        /* sltiu t1, 0x400     */
+            EMIT_ADDU(REG_T9, REG_T9, REG_A0);              /* t1 = phys-0x1F800000 */
+            emit(MK_I(0x0B, REG_T9, REG_T9, 0x400));        /* sltiu t1, 0x400     */
             sp_miss_swc2 = code_ptr;
-            emit(MK_I(0x04, REG_T1, REG_ZERO, 0)); /* beq  → @slow        */
+            emit(MK_I(0x04, REG_T9, REG_ZERO, 0)); /* beq  → @slow        */
             EMIT_NOP();
             /* Scratchpad fast path */
-            emit_load_imm32(REG_T1, (uint32_t)scratchpad_buf);
-            emit(MK_I(0x0C, REG_T0, REG_A0, 0x3FF)); /* andi a0, t0, 0x3FF  */
-            EMIT_ADDU(REG_T1, REG_T1, REG_A0);
-            EMIT_SW(REG_T2, 0, REG_T1);
+            emit_load_imm32(REG_T9, (uint32_t)scratchpad_buf);
+            emit(MK_I(0x0C, REG_T8, REG_A0, 0x3FF)); /* andi a0, t0, 0x3FF  */
+            EMIT_ADDU(REG_T9, REG_T9, REG_A0);
+            EMIT_SW(REG_T2, 0, REG_T9);
             sp_done_swc2 = code_ptr;
             emit(MK_I(0x04, REG_ZERO, REG_ZERO, 0)); /* b @done             */
             EMIT_NOP();
@@ -1328,7 +1328,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 *sp_miss_swc2 = (*sp_miss_swc2 & 0xFFFF0000) | ((uint32_t)s_sp & 0xFFFF);
             }
         }
-        EMIT_MOVE(REG_A0, REG_T0);
+        EMIT_MOVE(REG_A0, REG_T8);
         EMIT_MOVE(REG_A1, REG_T2);
         /* Flush partial cycle offset for accurate timer reads in WriteHardware */
         {
@@ -1336,8 +1336,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             uint16_t pbc_lo = pbc_addr & 0xFFFF;
             uint16_t pbc_hi = (pbc_addr + 0x8000) >> 16;
             EMIT_LUI(REG_AT, pbc_hi);
-            EMIT_ADDIU(REG_T1, REG_ZERO, (int16_t)emit_cycle_offset);
-            EMIT_SW(REG_T1, (int16_t)pbc_lo, REG_AT);
+            EMIT_ADDIU(REG_T9, REG_ZERO, (int16_t)emit_cycle_offset);
+            EMIT_SW(REG_T9, (int16_t)pbc_lo, REG_AT);
         }
         emit_call_c_lite((uint32_t)WriteWord);
 
@@ -1359,10 +1359,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     {
         flush_dirty_consts(); /* Flush before COP-usable conditional */
         reg_cache_invalidate();
-        EMIT_LW(REG_T0, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T0, REG_T0, 31, 0x02));
+        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
+        emit(MK_R(0, 0, REG_T8, REG_T8, 31, 0x02));
         uint32_t *skip_swc3 = code_ptr;
-        emit(MK_I(0x05, REG_T0, REG_ZERO, 0));
+        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 3);

@@ -59,8 +59,8 @@ static void emit_deferred_taken_all(void)
         /* Emit standard branch epilogue inline */
         flush_dirty_consts();
         emit(MK_I(0x09, REG_S2, REG_S2, (int16_t)(-(int)e->cycle_count)));
-        emit_load_imm32(REG_T0, e->target_pc);
-        EMIT_SW(REG_T0, CPU_PC, REG_S0);
+        emit_load_imm32(REG_T8, e->target_pc);
+        EMIT_SW(REG_T8, CPU_PC, REG_S0);
         emit(MK_I(0x07, REG_S2, REG_ZERO, 2)); /* BGTZ s2, +2 */
         EMIT_NOP();
         EMIT_J_ABS((uint32_t)abort_trampoline_addr);
@@ -608,8 +608,8 @@ void emit_branch_epilogue(uint32_t target_pc)
     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
 
     /* Update cpu.pc IMMEDIATELY, before any potential abort check */
-    emit_load_imm32(REG_T0, target_pc);
-    EMIT_SW(REG_T0, CPU_PC, REG_S0);
+    emit_load_imm32(REG_T8, target_pc);
+    EMIT_SW(REG_T8, CPU_PC, REG_S0);
 
     /* If remaining cycles <= 0, abort to C scheduler */
     emit(MK_I(0x07, REG_S2, REG_ZERO, 2)); /* BGTZ s2, +2 */
@@ -903,7 +903,8 @@ uint32_t *compile_block(uint32_t psx_pc)
             }
             else if (branch_type == 3)
             {
-                /* Register jump (JR/JALR): Inline hash dispatch. */
+                /* Register jump (JR/JALR): Inline hash dispatch.
+                 * T0 is required by jump_dispatch_trampoline (hash computation). */
                 flush_dirty_consts();
                 EMIT_LW(REG_T0, CPU_PC, REG_S0);
                 EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
@@ -949,8 +950,8 @@ uint32_t *compile_block(uint32_t psx_pc)
         {
             int rs = RS(opcode);
             int rd = (FUNC(opcode) == 0x09) ? RD(opcode) : 0;
-            emit_load_psx_reg(REG_T0, rs);
-            EMIT_SW(REG_T0, CPU_PC, REG_S0);
+            emit_load_psx_reg(REG_T8, rs);
+            EMIT_SW(REG_T8, CPU_PC, REG_S0);
             /* Save current_pc so AdEL exception can set EPC = JR/JALR instr */
             emit_imm_to_cpu_field(CPU_CURRENT_PC, cur_pc);
             if (FUNC(opcode) == 0x09 && rd != 0)
@@ -1036,11 +1037,11 @@ uint32_t *compile_block(uint32_t psx_pc)
             }
 
             /* --- Runtime conditional branch --- */
-            emit_load_psx_reg(REG_T0, rs);
+            emit_load_psx_reg(REG_T8, rs);
             if (op == 0x04 || op == 0x05)
             {
-                emit_load_psx_reg(REG_T1, rt);
-                emit(MK_R(0, REG_T0, REG_T1, REG_T2, 0, 0x26)); /* XOR t2, t0, t1 */
+                emit_load_psx_reg(REG_T9, rt);
+                emit(MK_R(0, REG_T8, REG_T9, REG_T2, 0, 0x26)); /* XOR t2, t0, t1 */
                 if (op == 0x04)
                 {
                     emit(MK_I(0x0B, REG_T2, REG_T2, 1)); /* SLTIU t2, t2, 1 */
@@ -1048,11 +1049,11 @@ uint32_t *compile_block(uint32_t psx_pc)
             }
             else if (op == 0x06)
             {
-                emit(MK_I(0x0A, REG_T0, REG_T2, 1)); /* SLTI t2, t0, 1 */
+                emit(MK_I(0x0A, REG_T8, REG_T2, 1)); /* SLTI t2, t0, 1 */
             }
             else if (op == 0x07)
             {
-                emit(MK_R(0, REG_ZERO, REG_T0, REG_T2, 0, 0x2A)); /* SLT t2, zero, t0 */
+                emit(MK_R(0, REG_ZERO, REG_T8, REG_T2, 0, 0x2A)); /* SLT t2, zero, t0 */
             }
             EMIT_SW(REG_T2, 72, REG_SP); /* save cond to stack across delay slot */
 
@@ -1117,7 +1118,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             }
 
             /* --- Runtime path --- */
-            emit_load_psx_reg(REG_T0, rs);
+            emit_load_psx_reg(REG_T8, rs);
 
             if (rt == 0x10 || rt == 0x11)
             {
@@ -1127,11 +1128,11 @@ uint32_t *compile_block(uint32_t psx_pc)
 
             if ((rt & 1) == 0)
             {
-                emit(MK_R(0, REG_T0, REG_ZERO, REG_T2, 0, 0x2A)); /* SLT t2, t0, zero */
+                emit(MK_R(0, REG_T8, REG_ZERO, REG_T2, 0, 0x2A)); /* SLT t2, t0, zero */
             }
             else
             {
-                emit(MK_R(0, REG_T0, REG_ZERO, REG_T2, 0, 0x2A));
+                emit(MK_R(0, REG_T8, REG_ZERO, REG_T2, 0, 0x2A));
                 emit(MK_I(0x0E, REG_T2, REG_T2, 1)); /* XORI t2, t2, 1 */
             }
             EMIT_SW(REG_T2, 72, REG_SP); /* save cond to stack across delay slot */

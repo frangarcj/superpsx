@@ -7,35 +7,41 @@
  */
 #include "dynarec.h"
 
-/* PSX register → native pinned register (0 = not pinned) */
+/* PSX register → native pinned register (0 = not pinned)
+ *
+ * Layout (Phase 1):
+ *   Motor JIT (global):          S0=cpu, S1=ram, S2=cycles, S3=mask
+ *   Callee-saved (survive C):    S4=$sp, S5=$ra, S6=$s0, S7=$s1, FP=$gp
+ *   Caller-saved (flush in tramp): T3=$v0, T4=$v1, T5=$a0, T6=$a1, T7=$a2
+ *   Scratch cache (JIT engine):  T8, T9  (+ AT helper)
+ *   Dynamic slots (Phase 2):     T0, T1, T2
+ *   C-reserved (no pins):        A0-A3, V0-V1
+ */
 const int psx_pinned_reg[32] = {
-    [2] = REG_S6,  /* PSX $v0 → native $s6 */
-    [3] = REG_V1,  /* PSX $v1 → native $v1 */
-    [4] = REG_T3,  /* PSX $a0 → native $t3 */
-    [5] = REG_T4,  /* PSX $a1 → native $t4 */
-    [6] = REG_T5,  /* PSX $a2 → native $t5 */
-    [7] = REG_T6,  /* PSX $a3 → native $t6 */
-    [8] = REG_T7,  /* PSX $t0 → native $t7 */
-    [9] = REG_T8,  /* PSX $t1 → native $t8 */
-    [10] = REG_T9, /* PSX $t2 → native $t9 */
-    [28] = REG_FP, /* PSX $gp → native $fp */
-    [29] = REG_S4, /* PSX $sp → native $s4 */
-    [30] = REG_S7, /* PSX $s8 → native $s7 */
-    [31] = REG_S5, /* PSX $ra → native $s5 */
+    [2]  = REG_T3,  /* PSX $v0 → native $t3 (caller-saved) */
+    [3]  = REG_T4,  /* PSX $v1 → native $t4 (caller-saved) */
+    [4]  = REG_T5,  /* PSX $a0 → native $t5 (caller-saved) */
+    [5]  = REG_T6,  /* PSX $a1 → native $t6 (caller-saved) */
+    [6]  = REG_T7,  /* PSX $a2 → native $t7 (caller-saved) */
+    [16] = REG_S6,  /* PSX $s0 → native $s6 (callee-saved) */
+    [17] = REG_S7,  /* PSX $s1 → native $s7 (callee-saved) */
+    [28] = REG_FP,  /* PSX $gp → native $fp (callee-saved) */
+    [29] = REG_S4,  /* PSX $sp → native $s4 (callee-saved) */
+    [31] = REG_S5,  /* PSX $ra → native $s5 (callee-saved) */
 };
 
 RegStatus vregs[32];
 uint32_t dirty_const_mask;
 
-/* Scratch register cache: tracks which PSX GPR value is in T0/T1.
+/* Scratch register cache: tracks which PSX GPR value is in T8/T9.
  * -1 means the register holds no cached PSX GPR value. */
-int t0_cached_psx_reg = -1;
-int t1_cached_psx_reg = -1;
+int t8_cached_psx_reg = -1;
+int t9_cached_psx_reg = -1;
 
 void reg_cache_invalidate(void)
 {
-    t0_cached_psx_reg = -1;
-    t1_cached_psx_reg = -1;
+    t8_cached_psx_reg = -1;
+    t9_cached_psx_reg = -1;
 }
 
 /* Load PSX register 'r' from cpu struct into hw reg 'hwreg' */
@@ -65,16 +71,16 @@ void emit_load_psx_reg(int hwreg, int r)
     else
     {
         /* Non-pinned, non-dirty-const: use scratch cache */
-        if (hwreg == REG_T0 && t0_cached_psx_reg == r) return;
-        if (hwreg == REG_T1 && t1_cached_psx_reg == r) return;
+        if (hwreg == REG_T8 && t8_cached_psx_reg == r) return;
+        if (hwreg == REG_T9 && t9_cached_psx_reg == r) return;
         EMIT_LW(hwreg, CPU_REG(r), REG_S0);
-        if (hwreg == REG_T0) t0_cached_psx_reg = r;
-        else if (hwreg == REG_T1) t1_cached_psx_reg = r;
+        if (hwreg == REG_T8) t8_cached_psx_reg = r;
+        else if (hwreg == REG_T9) t9_cached_psx_reg = r;
         return;
     }
     /* Non-cacheable paths (r=0, dirty const, pinned): invalidate scratch */
-    if (hwreg == REG_T0) t0_cached_psx_reg = -1;
-    else if (hwreg == REG_T1) t1_cached_psx_reg = -1;
+    if (hwreg == REG_T8) t8_cached_psx_reg = -1;
+    else if (hwreg == REG_T9) t9_cached_psx_reg = -1;
 }
 
 int emit_use_reg(int r, int scratch)
@@ -91,18 +97,18 @@ int emit_use_reg(int r, int scratch)
         vregs[r].is_dirty = 0;
         dirty_const_mask &= ~(1u << r);
         /* Const materialized into scratch: invalidate cached entry */
-        if (dst == REG_T0) t0_cached_psx_reg = -1;
-        else if (dst == REG_T1) t1_cached_psx_reg = -1;
+        if (dst == REG_T8) t8_cached_psx_reg = -1;
+        else if (dst == REG_T9) t9_cached_psx_reg = -1;
         return dst;
     }
     if (psx_pinned_reg[r])
         return psx_pinned_reg[r];
     /* Non-pinned: check scratch register cache */
-    if (scratch == REG_T0 && t0_cached_psx_reg == r) return REG_T0;
-    if (scratch == REG_T1 && t1_cached_psx_reg == r) return REG_T1;
+    if (scratch == REG_T8 && t8_cached_psx_reg == r) return REG_T8;
+    if (scratch == REG_T9 && t9_cached_psx_reg == r) return REG_T9;
     EMIT_LW(scratch, CPU_REG(r), REG_S0);
-    if (scratch == REG_T0) t0_cached_psx_reg = r;
-    else if (scratch == REG_T1) t1_cached_psx_reg = r;
+    if (scratch == REG_T8) t8_cached_psx_reg = r;
+    else if (scratch == REG_T9) t9_cached_psx_reg = r;
     return scratch;
 }
 
@@ -126,12 +132,12 @@ void emit_store_psx_reg(int r, int hwreg)
     }
     EMIT_SW(hwreg, CPU_REG(r), REG_S0);
     /* Update cache: hwreg now holds cpu.regs[r] */
-    if (hwreg == REG_T0) {
-        t0_cached_psx_reg = r;
-        if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1;
-    } else if (hwreg == REG_T1) {
-        t1_cached_psx_reg = r;
-        if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1;
+    if (hwreg == REG_T8) {
+        t8_cached_psx_reg = r;
+        if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
+    } else if (hwreg == REG_T9) {
+        t9_cached_psx_reg = r;
+        if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
     }
 }
 
@@ -141,12 +147,12 @@ void emit_sync_reg(int r, int host_reg)
         return;
     EMIT_SW(host_reg, CPU_REG(r), REG_S0);
     /* Update cache: host_reg now holds cpu.regs[r] */
-    if (host_reg == REG_T0) {
-        t0_cached_psx_reg = r;
-        if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1;
-    } else if (host_reg == REG_T1) {
-        t1_cached_psx_reg = r;
-        if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1;
+    if (host_reg == REG_T8) {
+        t8_cached_psx_reg = r;
+        if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
+    } else if (host_reg == REG_T9) {
+        t9_cached_psx_reg = r;
+        if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
     }
 }
 
@@ -176,8 +182,8 @@ void flush_dirty_consts(void)
                 emit_load_imm32(REG_AT, vregs[r].value);
                 EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
                 /* cpu.regs[r] changed; invalidate stale cache entry */
-                if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1;
-                if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1;
+                if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
+                if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
             }
             vregs[r].is_dirty = 0;
         }
@@ -189,18 +195,17 @@ void flush_dirty_consts(void)
  * This ensures cpu.regs[] is consistent for C code and exception handlers. */
 void emit_flush_pinned(void)
 {
-    EMIT_SW(REG_S6, CPU_REG(2), REG_S0);  /* PSX $v0 */
-    EMIT_SW(REG_V1, CPU_REG(3), REG_S0);  /* PSX $v1 */
-    EMIT_SW(REG_T3, CPU_REG(4), REG_S0);  /* PSX $a0 */
-    EMIT_SW(REG_T4, CPU_REG(5), REG_S0);  /* PSX $a1 */
-    EMIT_SW(REG_T5, CPU_REG(6), REG_S0);  /* PSX $a2 */
-    EMIT_SW(REG_T6, CPU_REG(7), REG_S0);  /* PSX $a3 */
-    EMIT_SW(REG_T7, CPU_REG(8), REG_S0);  /* PSX $t0 */
-    EMIT_SW(REG_T8, CPU_REG(9), REG_S0);  /* PSX $t1 */
-    EMIT_SW(REG_T9, CPU_REG(10), REG_S0); /* PSX $t2 */
-    EMIT_SW(REG_FP, CPU_REG(28), REG_S0);  /* PSX $gp */
+    /* Caller-saved pins (T3-T7) */
+    EMIT_SW(REG_T3, CPU_REG(2),  REG_S0); /* PSX $v0 */
+    EMIT_SW(REG_T4, CPU_REG(3),  REG_S0); /* PSX $v1 */
+    EMIT_SW(REG_T5, CPU_REG(4),  REG_S0); /* PSX $a0 */
+    EMIT_SW(REG_T6, CPU_REG(5),  REG_S0); /* PSX $a1 */
+    EMIT_SW(REG_T7, CPU_REG(6),  REG_S0); /* PSX $a2 */
+    /* Callee-saved pins (S4-S7, FP) */
+    EMIT_SW(REG_S6, CPU_REG(16), REG_S0); /* PSX $s0 */
+    EMIT_SW(REG_S7, CPU_REG(17), REG_S0); /* PSX $s1 */
+    EMIT_SW(REG_FP, CPU_REG(28), REG_S0); /* PSX $gp */
     EMIT_SW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
-    EMIT_SW(REG_S7, CPU_REG(30), REG_S0); /* PSX $s8 */
     EMIT_SW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
 }
 
@@ -208,18 +213,17 @@ void emit_flush_pinned(void)
  * C functions may have modified cpu.regs[] directly. */
 void emit_reload_pinned(void)
 {
-    EMIT_LW(REG_S6, CPU_REG(2), REG_S0);  /* PSX $v0 */
-    EMIT_LW(REG_V1, CPU_REG(3), REG_S0);  /* PSX $v1 */
-    EMIT_LW(REG_T3, CPU_REG(4), REG_S0);  /* PSX $a0 */
-    EMIT_LW(REG_T4, CPU_REG(5), REG_S0);  /* PSX $a1 */
-    EMIT_LW(REG_T5, CPU_REG(6), REG_S0);  /* PSX $a2 */
-    EMIT_LW(REG_T6, CPU_REG(7), REG_S0);  /* PSX $a3 */
-    EMIT_LW(REG_T7, CPU_REG(8), REG_S0);  /* PSX $t0 */
-    EMIT_LW(REG_T8, CPU_REG(9), REG_S0);  /* PSX $t1 */
-    EMIT_LW(REG_T9, CPU_REG(10), REG_S0); /* PSX $t2 */
-    EMIT_LW(REG_FP, CPU_REG(28), REG_S0);  /* PSX $gp */
+    /* Caller-saved pins (T3-T7) */
+    EMIT_LW(REG_T3, CPU_REG(2),  REG_S0); /* PSX $v0 */
+    EMIT_LW(REG_T4, CPU_REG(3),  REG_S0); /* PSX $v1 */
+    EMIT_LW(REG_T5, CPU_REG(4),  REG_S0); /* PSX $a0 */
+    EMIT_LW(REG_T6, CPU_REG(5),  REG_S0); /* PSX $a1 */
+    EMIT_LW(REG_T7, CPU_REG(6),  REG_S0); /* PSX $a2 */
+    /* Callee-saved pins (S4-S7, FP) */
+    EMIT_LW(REG_S6, CPU_REG(16), REG_S0); /* PSX $s0 */
+    EMIT_LW(REG_S7, CPU_REG(17), REG_S0); /* PSX $s1 */
+    EMIT_LW(REG_FP, CPU_REG(28), REG_S0); /* PSX $gp */
     EMIT_LW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
-    EMIT_LW(REG_S7, CPU_REG(30), REG_S0); /* PSX $s8 */
     EMIT_LW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
 }
 
@@ -229,18 +233,17 @@ void emit_reload_pinned(void)
  * pinned_written_mask to skip flushing regs that were never written. */
 void emit_flush_pinned_selective(uint32_t mask)
 {
-    if (mask & (1u << 2))  EMIT_SW(REG_S6, CPU_REG(2), REG_S0);  /* PSX $v0 */
-    if (mask & (1u << 3))  EMIT_SW(REG_V1, CPU_REG(3), REG_S0);  /* PSX $v1 */
-    if (mask & (1u << 4))  EMIT_SW(REG_T3, CPU_REG(4), REG_S0);  /* PSX $a0 */
-    if (mask & (1u << 5))  EMIT_SW(REG_T4, CPU_REG(5), REG_S0);  /* PSX $a1 */
-    if (mask & (1u << 6))  EMIT_SW(REG_T5, CPU_REG(6), REG_S0);  /* PSX $a2 */
-    if (mask & (1u << 7))  EMIT_SW(REG_T6, CPU_REG(7), REG_S0);  /* PSX $a3 */
-    if (mask & (1u << 8))  EMIT_SW(REG_T7, CPU_REG(8), REG_S0);  /* PSX $t0 */
-    if (mask & (1u << 9))  EMIT_SW(REG_T8, CPU_REG(9), REG_S0);  /* PSX $t1 */
-    if (mask & (1u << 10)) EMIT_SW(REG_T9, CPU_REG(10), REG_S0); /* PSX $t2 */
+    /* Caller-saved */
+    if (mask & (1u <<  2)) EMIT_SW(REG_T3, CPU_REG(2),  REG_S0); /* PSX $v0 */
+    if (mask & (1u <<  3)) EMIT_SW(REG_T4, CPU_REG(3),  REG_S0); /* PSX $v1 */
+    if (mask & (1u <<  4)) EMIT_SW(REG_T5, CPU_REG(4),  REG_S0); /* PSX $a0 */
+    if (mask & (1u <<  5)) EMIT_SW(REG_T6, CPU_REG(5),  REG_S0); /* PSX $a1 */
+    if (mask & (1u <<  6)) EMIT_SW(REG_T7, CPU_REG(6),  REG_S0); /* PSX $a2 */
+    /* Callee-saved */
+    if (mask & (1u << 16)) EMIT_SW(REG_S6, CPU_REG(16), REG_S0); /* PSX $s0 */
+    if (mask & (1u << 17)) EMIT_SW(REG_S7, CPU_REG(17), REG_S0); /* PSX $s1 */
     if (mask & (1u << 28)) EMIT_SW(REG_FP, CPU_REG(28), REG_S0); /* PSX $gp */
     if (mask & (1u << 29)) EMIT_SW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
-    if (mask & (1u << 30)) EMIT_SW(REG_S7, CPU_REG(30), REG_S0); /* PSX $s8 */
     if (mask & (1u << 31)) EMIT_SW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
 }
 
@@ -267,9 +270,8 @@ void emit_call_c_lite(uint32_t func_addr)
     /* Materialize any lazy constants before the C call */
     flush_dirty_consts();
     /* Lightweight trampoline for C helpers that do NOT read/write cpu.regs[].
-     * Only flushes/reloads caller-saved pinned regs (V1, T3-T9), saving 8
-     * instructions vs the full trampoline.  Safe for memory R/W, LWL/LWR,
-     * SWL/SWR helpers. */
+     * Only flushes/reloads caller-saved pinned regs (T3-T7 = 5 regs), skipping
+     * callee-saved pins (S4/S5/S6/S7/FP) which C ABI preserves. */
     EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
     emit_load_imm32(REG_T0, func_addr);
     EMIT_JAL_ABS((uint32_t)call_c_trampoline_lite_addr);
@@ -360,7 +362,7 @@ void mark_vreg_var(int r)
      * we must materialize it NOW before losing the value.  This
      * covers rd==rs overlaps like ADDU $t0, $t0, $t1 where the
      * destination is marked var before the source is read.
-     * Uses REG_AT as scratch to avoid clobbering REG_T0. */
+     * Uses REG_AT as scratch to avoid clobbering REG_T8. */
     if (vregs[r].is_const && vregs[r].is_dirty)
     {
         if (psx_pinned_reg[r])
@@ -370,8 +372,8 @@ void mark_vreg_var(int r)
             emit_load_imm32(REG_AT, vregs[r].value);
             EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
             /* cpu.regs[r] changed; invalidate stale cache entry */
-            if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1;
-            if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1;
+            if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
+            if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
         }
     }
     vregs[r].is_const = 0;
@@ -403,9 +405,9 @@ void reset_vregs(void)
 }
 
 /* ---- Compile-loop helpers ----
- * These helpers use AT (or direct pinned regs) instead of T0/T1 for
- * non-GPR temporaries.  This keeps T0/T1 free for the scratch register
- * cache (Phase 2), and also saves 1 instruction when the destination
+ * These helpers use AT (or direct pinned regs) instead of T8/T9 for
+ * non-GPR temporaries.  This keeps T8/T9 free for the scratch register
+ * cache, and also saves 1 instruction when the destination
  * PSX register is pinned (direct load instead of load+move). */
 
 /* Copy a CPU struct field (HI, LO, COP0, load_delay_val, etc.) into a
@@ -423,8 +425,8 @@ void emit_cpu_field_to_psx_reg(int field_offset, int r)
         EMIT_LW(REG_AT, field_offset, REG_S0);
         EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
         /* cpu.regs[r] changed via AT; invalidate stale scratch entries */
-        if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1;
-        if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1;
+        if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
+        if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
     }
 }
 
@@ -441,8 +443,8 @@ void emit_materialize_psx_imm(int r, uint32_t value)
         emit_load_imm32(REG_AT, value);
         EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
         /* cpu.regs[r] changed via AT; invalidate stale scratch entries */
-        if (t0_cached_psx_reg == r) t0_cached_psx_reg = -1;
-        if (t1_cached_psx_reg == r) t1_cached_psx_reg = -1;
+        if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
+        if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
     }
 }
 

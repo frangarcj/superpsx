@@ -94,8 +94,8 @@ typedef int32_t (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios, int3
 #define REG_S3 19 /* Pinned: physical address mask 0x1FFFFFFF */
 #define REG_S4 20 /* Pinned: PSX $sp (29) */
 #define REG_S5 21 /* Pinned: PSX $ra (31) */
-#define REG_S6 22 /* Pinned: PSX $v0 (2)  */
-#define REG_S7 23 /* Pinned: PSX $s8 (30) */
+#define REG_S6 22 /* Pinned: PSX $s0 (16) */
+#define REG_S7 23 /* Pinned: PSX $s1 (17) */
 #define REG_T0 8
 #define REG_T1 9
 #define REG_T2 10
@@ -117,7 +117,7 @@ typedef int32_t (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios, int3
 #define REG_SP 29
 #define REG_ZERO 0
 
-#define DYNAREC_PROLOGUE_WORDS 29
+#define DYNAREC_PROLOGUE_WORDS 26
 
 /* ================================================================
  *  MIPS instruction builders
@@ -364,12 +364,12 @@ uint32_t get_vreg_const(int r);
 void reset_vregs(void);
 void flush_dirty_consts(void);
 
-/* Scratch register cache: tracks which PSX GPR is in T0/T1 */
-extern int t0_cached_psx_reg;
-extern int t1_cached_psx_reg;
+/* Scratch register cache: tracks which PSX GPR is in T8/T9 */
+extern int t8_cached_psx_reg;
+extern int t9_cached_psx_reg;
 void reg_cache_invalidate(void);
 
-/* Compile-loop helpers: use AT instead of T0/T1 for non-GPR temporaries */
+/* Compile-loop helpers: use AT instead of T8/T9 for non-GPR temporaries */
 void emit_cpu_field_to_psx_reg(int field_offset, int r);
 void emit_materialize_psx_imm(int r, uint32_t value);
 void emit_imm_to_cpu_field(int field_offset, uint32_t value);

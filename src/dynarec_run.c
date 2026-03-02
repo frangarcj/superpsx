@@ -222,19 +222,18 @@ void Init_Dynarec(void)
     {
         uint32_t *p = &code_buffer[2];
         *p++ = MK_R(0, REG_S2, 0, REG_V0, 0, 0x25); /* or v0, s2, zero */
-        *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(2));
-        *p++ = MK_I(0x2B, REG_S0, REG_V1, CPU_REG(3));
-        *p++ = MK_I(0x2B, REG_S0, REG_T3, CPU_REG(4));
-        *p++ = MK_I(0x2B, REG_S0, REG_T4, CPU_REG(5));
-        *p++ = MK_I(0x2B, REG_S0, REG_T5, CPU_REG(6));
-        *p++ = MK_I(0x2B, REG_S0, REG_T6, CPU_REG(7));
-        *p++ = MK_I(0x2B, REG_S0, REG_T7, CPU_REG(8));
-        *p++ = MK_I(0x2B, REG_S0, REG_T8, CPU_REG(9));
-        *p++ = MK_I(0x2B, REG_S0, REG_T9, CPU_REG(10));
-        *p++ = MK_I(0x2B, REG_S0, REG_FP, CPU_REG(28));
-        *p++ = MK_I(0x2B, REG_S0, REG_S4, CPU_REG(29));
-        *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(30));
-        *p++ = MK_I(0x2B, REG_S0, REG_S5, CPU_REG(31));
+        /* Flush 10 pinned PSX regs to cpu struct */
+        *p++ = MK_I(0x2B, REG_S0, REG_T3, CPU_REG(2));   /* PSX $v0 */
+        *p++ = MK_I(0x2B, REG_S0, REG_T4, CPU_REG(3));   /* PSX $v1 */
+        *p++ = MK_I(0x2B, REG_S0, REG_T5, CPU_REG(4));   /* PSX $a0 */
+        *p++ = MK_I(0x2B, REG_S0, REG_T6, CPU_REG(5));   /* PSX $a1 */
+        *p++ = MK_I(0x2B, REG_S0, REG_T7, CPU_REG(6));   /* PSX $a2 */
+        *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(16));  /* PSX $s0 */
+        *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(17));  /* PSX $s1 */
+        *p++ = MK_I(0x2B, REG_S0, REG_FP, CPU_REG(28));  /* PSX $gp */
+        *p++ = MK_I(0x2B, REG_S0, REG_S4, CPU_REG(29));  /* PSX $sp */
+        *p++ = MK_I(0x2B, REG_S0, REG_S5, CPU_REG(31));  /* PSX $ra */
+        /* Restore EE callee-saved registers */
         *p++ = MK_I(0x23, REG_SP, REG_FP, 68);
         *p++ = MK_I(0x23, REG_SP, REG_S7, 60);
         *p++ = MK_I(0x23, REG_SP, REG_S6, 56);
@@ -254,20 +253,17 @@ void Init_Dynarec(void)
     call_c_trampoline_addr = &code_buffer[32];
     {
         uint32_t *p = call_c_trampoline_addr;
-        /* Flush ALL 13 pinned regs to cpu struct (exception safety) */
-        *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(2));
-        *p++ = MK_I(0x2B, REG_S0, REG_V1, CPU_REG(3));
-        *p++ = MK_I(0x2B, REG_S0, REG_T3, CPU_REG(4));
-        *p++ = MK_I(0x2B, REG_S0, REG_T4, CPU_REG(5));
-        *p++ = MK_I(0x2B, REG_S0, REG_T5, CPU_REG(6));
-        *p++ = MK_I(0x2B, REG_S0, REG_T6, CPU_REG(7));
-        *p++ = MK_I(0x2B, REG_S0, REG_T7, CPU_REG(8));
-        *p++ = MK_I(0x2B, REG_S0, REG_T8, CPU_REG(9));
-        *p++ = MK_I(0x2B, REG_S0, REG_T9, CPU_REG(10));
-        *p++ = MK_I(0x2B, REG_S0, REG_FP, CPU_REG(28));
-        *p++ = MK_I(0x2B, REG_S0, REG_S4, CPU_REG(29));
-        *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(30));
-        *p++ = MK_I(0x2B, REG_S0, REG_S5, CPU_REG(31));
+        /* Flush ALL 10 pinned regs to cpu struct (exception safety) */
+        *p++ = MK_I(0x2B, REG_S0, REG_T3, CPU_REG(2));   /* PSX $v0 */
+        *p++ = MK_I(0x2B, REG_S0, REG_T4, CPU_REG(3));   /* PSX $v1 */
+        *p++ = MK_I(0x2B, REG_S0, REG_T5, CPU_REG(4));   /* PSX $a0 */
+        *p++ = MK_I(0x2B, REG_S0, REG_T6, CPU_REG(5));   /* PSX $a1 */
+        *p++ = MK_I(0x2B, REG_S0, REG_T7, CPU_REG(6));   /* PSX $a2 */
+        *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(16));  /* PSX $s0 */
+        *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(17));  /* PSX $s1 */
+        *p++ = MK_I(0x2B, REG_S0, REG_FP, CPU_REG(28));  /* PSX $gp */
+        *p++ = MK_I(0x2B, REG_S0, REG_S4, CPU_REG(29));  /* PSX $sp */
+        *p++ = MK_I(0x2B, REG_S0, REG_S5, CPU_REG(31));  /* PSX $ra */
         /* Call target function */
         *p++ = MK_I(0x09, REG_SP, REG_SP, (uint32_t)(int32_t)-32);
         *p++ = MK_I(0x2B, REG_SP, REG_RA, 28);
@@ -275,21 +271,18 @@ void Init_Dynarec(void)
         *p++ = 0;
         *p++ = MK_I(0x23, REG_SP, REG_RA, 28);
         *p++ = MK_I(0x09, REG_SP, REG_SP, 32);
-        /* Reload ALL 13 pinned regs: C helpers may write to cpu.regs[]
+        /* Reload ALL 10 pinned regs: C helpers may write to cpu.regs[]
          * for any register (e.g., Helper_ADD writes to cpu.regs[rd]). */
-        *p++ = MK_I(0x23, REG_S0, REG_S6, CPU_REG(2));
-        *p++ = MK_I(0x23, REG_S0, REG_V1, CPU_REG(3));
-        *p++ = MK_I(0x23, REG_S0, REG_T3, CPU_REG(4));
-        *p++ = MK_I(0x23, REG_S0, REG_T4, CPU_REG(5));
-        *p++ = MK_I(0x23, REG_S0, REG_T5, CPU_REG(6));
-        *p++ = MK_I(0x23, REG_S0, REG_T6, CPU_REG(7));
-        *p++ = MK_I(0x23, REG_S0, REG_T7, CPU_REG(8));
-        *p++ = MK_I(0x23, REG_S0, REG_T8, CPU_REG(9));
-        *p++ = MK_I(0x23, REG_S0, REG_T9, CPU_REG(10));
-        *p++ = MK_I(0x23, REG_S0, REG_FP, CPU_REG(28));
-        *p++ = MK_I(0x23, REG_S0, REG_S4, CPU_REG(29));
-        *p++ = MK_I(0x23, REG_S0, REG_S7, CPU_REG(30));
-        *p++ = MK_I(0x23, REG_S0, REG_S5, CPU_REG(31));
+        *p++ = MK_I(0x23, REG_S0, REG_T3, CPU_REG(2));   /* PSX $v0 */
+        *p++ = MK_I(0x23, REG_S0, REG_T4, CPU_REG(3));   /* PSX $v1 */
+        *p++ = MK_I(0x23, REG_S0, REG_T5, CPU_REG(4));   /* PSX $a0 */
+        *p++ = MK_I(0x23, REG_S0, REG_T6, CPU_REG(5));   /* PSX $a1 */
+        *p++ = MK_I(0x23, REG_S0, REG_T7, CPU_REG(6));   /* PSX $a2 */
+        *p++ = MK_I(0x23, REG_S0, REG_S6, CPU_REG(16));  /* PSX $s0 */
+        *p++ = MK_I(0x23, REG_S0, REG_S7, CPU_REG(17));  /* PSX $s1 */
+        *p++ = MK_I(0x23, REG_S0, REG_FP, CPU_REG(28));  /* PSX $gp */
+        *p++ = MK_I(0x23, REG_S0, REG_S4, CPU_REG(29));  /* PSX $sp */
+        *p++ = MK_I(0x23, REG_S0, REG_S5, CPU_REG(31));  /* PSX $ra */
         *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08);
         *p++ = 0;
     }
@@ -297,21 +290,18 @@ void Init_Dynarec(void)
     /* ---- Lightweight C-call trampoline at code_buffer[68] ----
      * For C helpers that do NOT read/write cpu.regs[] (memory R/W,
      * LWL/LWR, SWL/SWR).  Only saves/restores the caller-saved
-     * pinned registers (V1, T3-T9 = 8 regs), skipping the 5
+     * pinned registers (T3-T7 = 5 regs), skipping the 5
      * callee-saved S-regs (S4, S5, S6, S7, FP) which the C ABI
-     * preserves automatically.  Saves 10 instructions per call. */
+     * preserves automatically.  Saves 16 instructions per call. */
     call_c_trampoline_lite_addr = &code_buffer[68];
     {
         uint32_t *p = call_c_trampoline_lite_addr;
         /* Flush only caller-saved pinned regs to cpu struct */
-        *p++ = MK_I(0x2B, REG_S0, REG_V1, CPU_REG(3));
-        *p++ = MK_I(0x2B, REG_S0, REG_T3, CPU_REG(4));
-        *p++ = MK_I(0x2B, REG_S0, REG_T4, CPU_REG(5));
-        *p++ = MK_I(0x2B, REG_S0, REG_T5, CPU_REG(6));
-        *p++ = MK_I(0x2B, REG_S0, REG_T6, CPU_REG(7));
-        *p++ = MK_I(0x2B, REG_S0, REG_T7, CPU_REG(8));
-        *p++ = MK_I(0x2B, REG_S0, REG_T8, CPU_REG(9));
-        *p++ = MK_I(0x2B, REG_S0, REG_T9, CPU_REG(10));
+        *p++ = MK_I(0x2B, REG_S0, REG_T3, CPU_REG(2));   /* PSX $v0 */
+        *p++ = MK_I(0x2B, REG_S0, REG_T4, CPU_REG(3));   /* PSX $v1 */
+        *p++ = MK_I(0x2B, REG_S0, REG_T5, CPU_REG(4));   /* PSX $a0 */
+        *p++ = MK_I(0x2B, REG_S0, REG_T6, CPU_REG(5));   /* PSX $a1 */
+        *p++ = MK_I(0x2B, REG_S0, REG_T7, CPU_REG(6));   /* PSX $a2 */
         /* Call target function */
         *p++ = MK_I(0x09, REG_SP, REG_SP, (uint32_t)(int32_t)-32);
         *p++ = MK_I(0x2B, REG_SP, REG_RA, 28);
@@ -320,14 +310,11 @@ void Init_Dynarec(void)
         *p++ = MK_I(0x23, REG_SP, REG_RA, 28);
         *p++ = MK_I(0x09, REG_SP, REG_SP, 32);
         /* Reload caller-saved pinned regs */
-        *p++ = MK_I(0x23, REG_S0, REG_V1, CPU_REG(3));
-        *p++ = MK_I(0x23, REG_S0, REG_T3, CPU_REG(4));
-        *p++ = MK_I(0x23, REG_S0, REG_T4, CPU_REG(5));
-        *p++ = MK_I(0x23, REG_S0, REG_T5, CPU_REG(6));
-        *p++ = MK_I(0x23, REG_S0, REG_T6, CPU_REG(7));
-        *p++ = MK_I(0x23, REG_S0, REG_T7, CPU_REG(8));
-        *p++ = MK_I(0x23, REG_S0, REG_T8, CPU_REG(9));
-        *p++ = MK_I(0x23, REG_S0, REG_T9, CPU_REG(10));
+        *p++ = MK_I(0x23, REG_S0, REG_T3, CPU_REG(2));   /* PSX $v0 */
+        *p++ = MK_I(0x23, REG_S0, REG_T4, CPU_REG(3));   /* PSX $v1 */
+        *p++ = MK_I(0x23, REG_S0, REG_T5, CPU_REG(4));   /* PSX $a0 */
+        *p++ = MK_I(0x23, REG_S0, REG_T6, CPU_REG(5));   /* PSX $a1 */
+        *p++ = MK_I(0x23, REG_S0, REG_T7, CPU_REG(6));   /* PSX $a2 */
         *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08);
         *p++ = 0;
     }
