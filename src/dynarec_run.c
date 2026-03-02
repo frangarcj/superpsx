@@ -128,6 +128,7 @@ static int binary_loaded = 0;
 static uint32_t run_iterations = 0;
 static uint32_t idle_skip_pc = 0;
 static uint32_t idle_skip_count = 0;
+static uint32_t poll_detect_pc = 0;
 
 #ifdef ENABLE_VRAM_DUMP
 static uint32_t next_vram_dump = 1000000;
@@ -724,6 +725,21 @@ static inline int run_jit_chain(uint64_t deadline)
 {
     uint32_t pc = cpu.pc;
 
+    /* Dynamic polling skip: if this PC was seen as a self-loop last time,
+     * skip immediately instead of executing another polling iteration. */
+    if (__builtin_expect(pc == poll_detect_pc, 0))
+    {
+        poll_detect_pc = 0;
+        if (deadline > global_cycles) {
+#ifdef ENABLE_SUBSYSTEM_PROFILER
+            hotspot_idle_skips++;
+            hotspot_idle_cycles_skipped += (deadline - global_cycles);
+#endif
+            global_cycles = deadline;
+        }
+        return RUN_RES_BREAK;
+    }
+
     /* Address Error on misaligned PC (AdEL — instruction fetch from bad addr).
      * cpu.current_pc holds the JR/JALR source instruction address. */
     if (__builtin_expect(pc & 3, 0))
@@ -861,6 +877,15 @@ static inline int run_jit_chain(uint64_t deadline)
     {
         idle_skip_count = 0;
     }
+
+    /* Dynamic polling detection: if a chain exits to the same PC
+     * it entered (cpu.pc == entry_pc), the block self-looped via DBL
+     * until cycles exhausted.  Mark it so the NEXT entry to this PC
+     * skips immediately (handled at top of run_jit_chain). */
+    if (__builtin_expect(cpu.pc == pc, 0))
+        poll_detect_pc = pc;
+    else
+        poll_detect_pc = 0;
 
     return RUN_RES_NORMAL;
 }
