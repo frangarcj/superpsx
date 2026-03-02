@@ -552,9 +552,11 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3  (phys) */
     }
 
-    /* Range check: always present — non-RAM (phys >= 2MB) goes to cold path
-     * via C helpers.  RAM hits TLB fast path (S1 = 0x20000000). */
+    /* Range check: non-RAM (phys >= 2MB) goes to cold path via C helpers.
+     * Skip when base register is $sp — the PSX stack pointer always
+     * resides in main RAM, so the range check is redundant (saves 2 insns). */
     uint32_t *range_branch = NULL;
+    if (rs_psx != 29) /* $sp always in RAM — skip range check */
     {
         emit(MK_R(0, 0, REG_T1, REG_T2, 21, 0x02));  /* srl  t2, t1, 21      */
         range_branch = code_ptr;
@@ -833,8 +835,11 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         emit(MK_R(0, REG_T0, REG_S3, REG_T1, 0, 0x24));    /* and  t1, t0, s3  (phys) */
     }
 
-    /* Range check: always present — non-RAM goes to cold path (WriteWord). */
+    /* Range check: non-RAM goes to cold path (WriteWord).
+     * Skip when base register is $sp — the PSX stack pointer always
+     * resides in main RAM, so the range check is redundant (saves 2 insns). */
     uint32_t *range_branch = NULL;
+    if (rs_psx != 29) /* $sp always in RAM — skip range check */
     {
         emit(MK_R(0, 0, REG_T1, REG_A0, 21, 0x02)); /* srl  a0, t1, 21      */
         range_branch = code_ptr;
