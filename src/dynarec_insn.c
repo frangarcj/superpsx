@@ -326,7 +326,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             reg_cache_invalidate();
             break;
         }
-        case 0x20: /* ADD — with overflow exception detection */
+        case 0x20: /* ADD — inline overflow detection */
         {
             if (is_vreg_const(rs) && is_vreg_const(rt))
             {
@@ -336,10 +336,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 {
                     /* Overflow at compile time — unconditional exception */
                     emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
-                    emit_load_imm32(REG_A1, a);
-                    emit_load_imm32(REG_A2, b);
-                    emit_load_imm32(REG_A3, rd);
-                    emit_call_c((uint32_t)Helper_ADD_JIT);
+                    emit_call_c((uint32_t)Helper_Overflow_Exception);
                     emit_abort_check(emit_cycle_offset);
                     break;
                 }
@@ -347,12 +344,65 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
-            emit_load_psx_reg(REG_A1, rs);
-            emit_load_psx_reg(REG_A2, rt);
-            emit_load_imm32(REG_A3, rd);
-            emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
-            emit_call_c((uint32_t)Helper_ADD_JIT);
-            emit_abort_check(emit_cycle_offset);
+            int s1 = emit_use_reg(rs, REG_T0);
+            int s2 = emit_use_reg(rt, REG_T1);
+
+            /* Flush current rd pinned value to cpu.regs[] so the cold path
+             * (overflow) can restore it.  Pinned regs may be stale in memory
+             * if a prior instruction wrote only to the EE register. */
+            if (rd != 0 && psx_pinned_reg[rd])
+                EMIT_SW(psx_pinned_reg[rd], CPU_REG(rd), REG_S0);
+
+            /* Pre-compute rs^rt; save rs via stack to avoid T2 conflict
+             * when rd=0 (emit_dst_reg returns REG_T2 as junk dest). */
+            emit(MK_R(0, s1, s2, REG_AT, 0, 0x26));           /* XOR  AT, s1, s2  (rs^rt) */
+            EMIT_SW(s1, 76, REG_SP);                           /* save rs to stack */
+
+            int d = emit_dst_reg(rd, REG_T0);
+            EMIT_ADDU(d, s1, s2);                              /* d = rs + rt */
+
+            /* Overflow: ~(rs^rt) & (result^rs), bit31=1 => overflow.
+             * Load saved rs into T2 (or T0 when d=T2 to avoid self-XOR).
+             * LW scheduled before NOR to hide load-use delay on R5900. */
+            int sr = (d == REG_T2) ? REG_T0 : REG_T2;
+            EMIT_LW(sr, 76, REG_SP);                           /* sr = saved rs */
+            emit(MK_R(0, REG_AT, REG_ZERO, REG_AT, 0, 0x27)); /* NOR  AT, AT, $0 */
+            emit(MK_R(0, d, sr, sr, 0, 0x26));                 /* XOR  sr, d, sr  (result^rs) */
+            emit(MK_R(0, REG_AT, sr, REG_AT, 0, 0x24));        /* AND  AT, AT, sr */
+
+            /* BGEZ AT, @no_overflow — placeholder, patched after cold path */
+            uint32_t *bgez_patch = code_ptr;
+            emit(0);
+            EMIT_NOP();
+
+            /* ---- Cold path: overflow exception (rarely taken) ---- */
+            {
+                /* Restore rd from cpu.regs[] (flushed above before ADDU). */
+                if (rd != 0 && psx_pinned_reg[rd])
+                    EMIT_LW(psx_pinned_reg[rd], CPU_REG(rd), REG_S0);
+
+                RegStatus saved_vregs[32];
+                uint32_t saved_dirty = dirty_const_mask;
+                int saved_t0 = t0_cached_psx_reg, saved_t1 = t1_cached_psx_reg;
+                memcpy(saved_vregs, vregs, sizeof(vregs));
+
+                emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
+                emit_call_c((uint32_t)Helper_Overflow_Exception);
+                emit_abort_check(emit_cycle_offset);
+
+                memcpy(vregs, saved_vregs, sizeof(vregs));
+                dirty_const_mask = saved_dirty;
+                t0_cached_psx_reg = saved_t0;
+                t1_cached_psx_reg = saved_t1;
+            }
+
+            /* Patch BGEZ: skip from patch_loc+1 to current code_ptr */
+            *bgez_patch = MK_I(1, REG_AT, 1, (int16_t)(code_ptr - bgez_patch - 1));
+
+            /* @no_overflow: invalidate scratch cache (XOR/NOR clobbered them) */
+            t0_cached_psx_reg = -1;
+            t1_cached_psx_reg = -1;
+            emit_sync_reg(rd, d);
             break;
         }
         case 0x21: /* ADDU */
@@ -370,7 +420,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_sync_reg(rd, d);
             break;
         }
-        case 0x22: /* SUB — with overflow exception detection */
+        case 0x22: /* SUB — inline overflow detection */
         {
             if (is_vreg_const(rs) && is_vreg_const(rt))
             {
@@ -378,12 +428,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 uint32_t res = a - b;
                 if (((a ^ b) & 0x80000000) && ((res ^ a) & 0x80000000))
                 {
-                    /* Overflow at compile time — unconditional exception */
                     emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
-                    emit_load_psx_reg(REG_A1, rs);
-                    emit_load_psx_reg(REG_A2, rt);
-                    emit_load_imm32(REG_A3, rd);
-                    emit_call_c((uint32_t)Helper_SUB_JIT);
+                    emit_call_c((uint32_t)Helper_Overflow_Exception);
                     emit_abort_check(emit_cycle_offset);
                     break;
                 }
@@ -391,12 +437,55 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
-            emit_load_psx_reg(REG_A1, rs);
-            emit_load_psx_reg(REG_A2, rt);
-            emit_load_imm32(REG_A3, rd);
-            emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
-            emit_call_c((uint32_t)Helper_SUB_JIT);
-            emit_abort_check(emit_cycle_offset);
+            int s1 = emit_use_reg(rs, REG_T0);
+            int s2 = emit_use_reg(rt, REG_T1);
+
+            /* Flush pinned rd so cold path can restore from cpu.regs[] */
+            if (rd != 0 && psx_pinned_reg[rd])
+                EMIT_SW(psx_pinned_reg[rd], CPU_REG(rd), REG_S0);
+
+            /* Pre-compute rs^rt; save rs via stack */
+            emit(MK_R(0, s1, s2, REG_AT, 0, 0x26));           /* XOR  AT, s1, s2 */
+            EMIT_SW(s1, 76, REG_SP);                           /* save rs to stack */
+
+            int d = emit_dst_reg(rd, REG_T0);
+            emit(MK_R(0, s1, s2, d, 0, 0x23));                /* SUBU d, s1, s2 */
+
+            /* Overflow: (rs^rt) & (result^rs), bit31=1 => overflow */
+            int sr = (d == REG_T2) ? REG_T0 : REG_T2;
+            EMIT_LW(sr, 76, REG_SP);                           /* sr = saved rs */
+            EMIT_NOP();                                        /* load delay */
+            emit(MK_R(0, d, sr, sr, 0, 0x26));                 /* XOR  sr, d, sr */
+            emit(MK_R(0, REG_AT, sr, REG_AT, 0, 0x24));        /* AND  AT, AT, sr */
+
+            uint32_t *bgez_patch = code_ptr;
+            emit(0);
+            EMIT_NOP();
+
+            {
+                if (rd != 0 && psx_pinned_reg[rd])
+                    EMIT_LW(psx_pinned_reg[rd], CPU_REG(rd), REG_S0);
+
+                RegStatus saved_vregs[32];
+                uint32_t saved_dirty = dirty_const_mask;
+                int saved_t0 = t0_cached_psx_reg, saved_t1 = t1_cached_psx_reg;
+                memcpy(saved_vregs, vregs, sizeof(vregs));
+
+                emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
+                emit_call_c((uint32_t)Helper_Overflow_Exception);
+                emit_abort_check(emit_cycle_offset);
+
+                memcpy(vregs, saved_vregs, sizeof(vregs));
+                dirty_const_mask = saved_dirty;
+                t0_cached_psx_reg = saved_t0;
+                t1_cached_psx_reg = saved_t1;
+            }
+
+            *bgez_patch = MK_I(1, REG_AT, 1, (int16_t)(code_ptr - bgez_patch - 1));
+
+            t0_cached_psx_reg = -1;
+            t1_cached_psx_reg = -1;
+            emit_sync_reg(rd, d);
             break;
         }
         case 0x23: /* SUBU */
@@ -512,7 +601,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         break;
 
     /* I-type ALU */
-    case 0x08: /* ADDI — with overflow exception detection */
+    case 0x08: /* ADDI — inline overflow detection */
     {
         if (is_vreg_const(rs))
         {
@@ -521,12 +610,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             uint32_t res = a + b;
             if (!((a ^ b) & 0x80000000) && ((res ^ a) & 0x80000000))
             {
-                /* Overflow at compile time */
                 emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
-                emit_load_psx_reg(REG_A1, rs);
-                emit_load_imm32(REG_A2, b);
-                emit_load_imm32(REG_A3, rt);
-                emit_call_c((uint32_t)Helper_ADDI_JIT);
+                emit_call_c((uint32_t)Helper_Overflow_Exception);
                 emit_abort_check(emit_cycle_offset);
                 break;
             }
@@ -534,12 +619,57 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         }
         mark_vreg_var(rt);
-        emit_load_psx_reg(REG_A1, rs);
-        emit_load_imm32(REG_A2, (uint32_t)imm);
-        emit_load_imm32(REG_A3, rt);
-        emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
-        emit_call_c((uint32_t)Helper_ADDI_JIT);
-        emit_abort_check(emit_cycle_offset);
+        int s1 = emit_use_reg(rs, REG_T0);
+
+        /* Flush pinned rt so cold path can restore from cpu.regs[] */
+        if (rt != 0 && psx_pinned_reg[rt])
+            EMIT_SW(psx_pinned_reg[rt], CPU_REG(rt), REG_S0);
+
+        /* Load sign-extended immediate into T1 for overflow check */
+        emit_load_imm32(REG_T1, (uint32_t)imm);
+
+        /* Pre-compute rs^imm; save rs via stack */
+        emit(MK_R(0, s1, REG_T1, REG_AT, 0, 0x26));       /* XOR  AT, s1, T1 */
+        EMIT_SW(s1, 76, REG_SP);                           /* save rs to stack */
+
+        int d = emit_dst_reg(rt, REG_T0);
+        EMIT_ADDU(d, s1, REG_T1);                          /* d = rs + imm */
+
+        /* Overflow: ~(rs^imm) & (result^rs), bit31=1 => overflow */
+        int sr = (d == REG_T2) ? REG_T0 : REG_T2;
+        EMIT_LW(sr, 76, REG_SP);                           /* sr = saved rs */
+        emit(MK_R(0, REG_AT, REG_ZERO, REG_AT, 0, 0x27)); /* NOR  AT, AT, $0 */
+        emit(MK_R(0, d, sr, sr, 0, 0x26));                 /* XOR  sr, d, sr */
+        emit(MK_R(0, REG_AT, sr, REG_AT, 0, 0x24));        /* AND  AT, AT, sr */
+
+        uint32_t *bgez_patch = code_ptr;
+        emit(0);
+        EMIT_NOP();
+
+        {
+            if (rt != 0 && psx_pinned_reg[rt])
+                EMIT_LW(psx_pinned_reg[rt], CPU_REG(rt), REG_S0);
+
+            RegStatus saved_vregs[32];
+            uint32_t saved_dirty = dirty_const_mask;
+            int saved_t0 = t0_cached_psx_reg, saved_t1 = t1_cached_psx_reg;
+            memcpy(saved_vregs, vregs, sizeof(vregs));
+
+            emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
+            emit_call_c((uint32_t)Helper_Overflow_Exception);
+            emit_abort_check(emit_cycle_offset);
+
+            memcpy(vregs, saved_vregs, sizeof(vregs));
+            dirty_const_mask = saved_dirty;
+            t0_cached_psx_reg = saved_t0;
+            t1_cached_psx_reg = saved_t1;
+        }
+
+        *bgez_patch = MK_I(1, REG_AT, 1, (int16_t)(code_ptr - bgez_patch - 1));
+
+        t0_cached_psx_reg = -1;
+        t1_cached_psx_reg = -1;
+        emit_sync_reg(rt, d);
         break;
     }
     case 0x09: /* ADDIU */
