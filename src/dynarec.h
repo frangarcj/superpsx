@@ -28,6 +28,8 @@
 
 #define PATCH_SITE_MAX 8192
 
+#define SCAN_MAX_INSNS 64 /* Max instructions analyzed per block scan */
+
 /* ================================================================
  *  Shared types
  * ================================================================ */
@@ -56,6 +58,16 @@ typedef struct
     uint16_t is_const; /* 1 if this register holds a constant value we know */
     uint16_t is_dirty; /* 1 if the value is newer than what's in cpu.regs[] (unused for now) */
 } RegStatus;
+
+/* Block scan result — filled by block_scan() pass 1, consumed by emit pass 2.
+ * Enables multi-pass compilation: dirty bitmask, SMRV, future regalloc. */
+typedef struct {
+    uint64_t dce_dead_mask;       /* bit i=1 → instruction[i] is dead (backward liveness) */
+    uint32_t pinned_written_mask; /* bit r=1 → pinned PSX reg r is written in this block */
+    uint32_t regs_written_mask;   /* bit r=1 → PSX reg r is written (any) */
+    uint32_t regs_read_mask;      /* bit r=1 → PSX reg r is read */
+    int insn_count;               /* Number of PSX instructions in block (incl. delay slot) */
+} BlockScanResult;
 
 typedef int32_t (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios, int32_t cycles_left);
 
@@ -249,6 +261,7 @@ extern uint32_t blocks_compiled;
 extern uint32_t total_instructions;
 extern uint32_t block_cycle_count;
 extern uint32_t emit_cycle_offset;
+extern uint32_t block_pinned_dirty_mask; /* Pinned regs written in current block */
 extern uint32_t emit_current_psx_pc;
 extern int dynarec_load_defer;
 extern int dynarec_lwx_pending;
@@ -336,6 +349,7 @@ int emit_use_reg(int r, int scratch);
 int emit_dst_reg(int r, int scratch);
 void emit_sync_reg(int r, int host_reg);
 void emit_flush_pinned(void);
+void emit_flush_pinned_selective(uint32_t mask);
 void emit_reload_pinned(void);
 void emit_call_c(uint32_t func_addr);
 void emit_call_c_lite(uint32_t func_addr);
@@ -430,6 +444,7 @@ extern int tlb_bp_map_count;
 /* ================================================================
  *  Function prototypes — dynarec_compile.c
  * ================================================================ */
+void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out);
 void emit_block_prologue(void);
 void emit_block_epilogue(void);
 void emit_branch_epilogue(uint32_t target_pc);

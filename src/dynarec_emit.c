@@ -223,6 +223,27 @@ void emit_reload_pinned(void)
     EMIT_LW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
 }
 
+/* Selectively flush only pinned PSX regs in the given mask.
+ * mask bit r = 1 means PSX reg r (which is pinned) should be flushed.
+ * Bits for non-pinned regs are ignored.  Used with block_scan()'s
+ * pinned_written_mask to skip flushing regs that were never written. */
+void emit_flush_pinned_selective(uint32_t mask)
+{
+    if (mask & (1u << 2))  EMIT_SW(REG_S6, CPU_REG(2), REG_S0);  /* PSX $v0 */
+    if (mask & (1u << 3))  EMIT_SW(REG_V1, CPU_REG(3), REG_S0);  /* PSX $v1 */
+    if (mask & (1u << 4))  EMIT_SW(REG_T3, CPU_REG(4), REG_S0);  /* PSX $a0 */
+    if (mask & (1u << 5))  EMIT_SW(REG_T4, CPU_REG(5), REG_S0);  /* PSX $a1 */
+    if (mask & (1u << 6))  EMIT_SW(REG_T5, CPU_REG(6), REG_S0);  /* PSX $a2 */
+    if (mask & (1u << 7))  EMIT_SW(REG_T6, CPU_REG(7), REG_S0);  /* PSX $a3 */
+    if (mask & (1u << 8))  EMIT_SW(REG_T7, CPU_REG(8), REG_S0);  /* PSX $t0 */
+    if (mask & (1u << 9))  EMIT_SW(REG_T8, CPU_REG(9), REG_S0);  /* PSX $t1 */
+    if (mask & (1u << 10)) EMIT_SW(REG_T9, CPU_REG(10), REG_S0); /* PSX $t2 */
+    if (mask & (1u << 28)) EMIT_SW(REG_FP, CPU_REG(28), REG_S0); /* PSX $gp */
+    if (mask & (1u << 29)) EMIT_SW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
+    if (mask & (1u << 30)) EMIT_SW(REG_S7, CPU_REG(30), REG_S0); /* PSX $s8 */
+    if (mask & (1u << 31)) EMIT_SW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
+}
+
 /* Emit a JAL to a C helper function with pinned register sync.
  * Flushes pinned regs to cpu struct before call (for exception safety),
  * and reloads them after return (C code may have modified cpu.regs[]). */

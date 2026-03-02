@@ -14,6 +14,7 @@ uint32_t total_instructions = 0;
 uint32_t block_cycle_count = 0;
 uint32_t emit_cycle_offset = 0;
 uint32_t emit_current_psx_pc = 0;
+uint32_t block_pinned_dirty_mask = 0;
 int dynarec_load_defer = 0;
 int dynarec_lwx_pending = 0;
 
@@ -259,9 +260,6 @@ int instruction_writes_gpr(uint32_t opcode, int reg)
 /* ================================================================
  *  Dead Code Elimination (DCE) — backward liveness analysis
  * ================================================================ */
-#define DCE_MAX_SCAN 64
-
-static uint64_t dce_dead_mask; /* bit i = 1 → instruction i is dead */
 
 /* Get the destination GPR of an instruction (0 if none or writes $zero) */
 static int dce_dest_gpr(uint32_t opcode)
@@ -371,14 +369,78 @@ static int dce_is_pure(uint32_t opcode)
     return 0;
 }
 
-/* Pre-scan a block and build the DCE dead-write bitmask.
- * Called once before the main compile loop. */
-static void dce_prescan(const uint32_t *code, int max_insns)
+/* Returns bitmask of GPRs that 'opcode' may write.
+ * More comprehensive than dce_dest_gpr — includes loads, MFC0/MFC2, etc.
+ * Used for tracking which pinned regs need flush at block exit. */
+static uint32_t scan_write_mask(uint32_t opcode)
+{
+    int op = OP(opcode);
+
+    if (op == 0x00) { /* SPECIAL */
+        int func = FUNC(opcode);
+        if (func >= 0x18 && func <= 0x1B) return 0; /* MULT/DIV: HI/LO only */
+        if (func == 0x08) return 0;                  /* JR */
+        if (func == 0x11 || func == 0x13) return 0;  /* MTHI/MTLO */
+        if (func == 0x0C || func == 0x0D) return 0;  /* SYSCALL/BREAK */
+        int rd = RD(opcode);
+        return rd ? (1u << rd) : 0;
+    }
+    if (op == 0x02) return 0;             /* J: no GPR write */
+    if (op == 0x03) return (1u << 31);    /* JAL: writes $ra */
+    if (op == 0x01) {                     /* REGIMM */
+        int rt = RT(opcode);
+        if (rt == 0x10 || rt == 0x11) return (1u << 31); /* BLTZAL/BGEZAL → $ra */
+        return 0;
+    }
+    if (op >= 0x04 && op <= 0x07) return 0; /* Branches: no GPR write */
+    /* I-type ALU: write rt */
+    if (op >= 0x08 && op <= 0x0F) {
+        int rt = RT(opcode);
+        return rt ? (1u << rt) : 0;
+    }
+    /* Loads: write rt */
+    if (op >= 0x20 && op <= 0x26) {
+        int rt = RT(opcode);
+        return rt ? (1u << rt) : 0;
+    }
+    /* Stores: no GPR write */
+    if (op >= 0x28 && op <= 0x2E) return 0;
+    /* COP0: MFC0 writes rt */
+    if (op == 0x10) {
+        if (RS(opcode) == 0x00) {
+            int rt = RT(opcode);
+            return rt ? (1u << rt) : 0;
+        }
+        return 0;
+    }
+    /* COP2: MFC2/CFC2 write rt */
+    if (op == 0x12) {
+        if (!(opcode & 0x02000000)) {
+            int rs = RS(opcode);
+            if (rs == 0x00 || rs == 0x02) {
+                int rt = RT(opcode);
+                return rt ? (1u << rt) : 0;
+            }
+        }
+        return 0;
+    }
+    /* LWC2/SWC2: no GPR write */
+    return 0;
+}
+
+/* ================================================================
+ *  Block Scan — Pass 1 of the 2-pass compilation pipeline.
+ *
+ *  Performs: block boundary detection, backward liveness (DCE),
+ *  and register usage analysis (read/write/pinned-dirty masks).
+ *  Results are consumed by the emit pass (pass 2) in compile_block().
+ * ================================================================ */
+void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
 {
     /* Phase 1: find block boundary (branch + delay slot or SYSCALL/BREAK) */
     int count = 0;
     int in_ds = 0;
-    for (int i = 0; i < max_insns && i < DCE_MAX_SCAN; i++)
+    for (int i = 0; i < max_insns && i < SCAN_MAX_INSNS; i++)
     {
         count = i + 1;
         if (in_ds) break;
@@ -391,9 +453,26 @@ static void dce_prescan(const uint32_t *code, int max_insns)
         else if (op == 0 && (func == 0x0C || func == 0x0D))
             break;
     }
+    out->insn_count = count;
 
-    /* Phase 2: backward liveness analysis */
-    dce_dead_mask = 0;
+    /* Phase 2: forward pass — compute reg read/write masks */
+    uint32_t written = 0, read = 0;
+    for (int i = 0; i < count; i++)
+    {
+        written |= scan_write_mask(code[i]);
+        read |= dce_read_mask(code[i]);
+    }
+    out->regs_written_mask = written;
+    out->regs_read_mask = read;
+
+    /* Compute pinned_written_mask: which pinned regs are written */
+    uint32_t pinned_set = 0;
+    for (int r = 0; r < 32; r++)
+        if (psx_pinned_reg[r]) pinned_set |= (1u << r);
+    out->pinned_written_mask = written & pinned_set;
+
+    /* Phase 3: backward liveness analysis (DCE) */
+    out->dce_dead_mask = 0;
     uint32_t live = 0xFFFFFFFFu; /* conservative: all regs live at block exit */
     for (int i = count - 1; i >= 0; i--)
     {
@@ -403,7 +482,7 @@ static void dce_prescan(const uint32_t *code, int max_insns)
         /* If dest is not live AND instruction is pure → dead */
         if (dest != 0 && !(live & (1u << dest)) && dce_is_pure(insn))
         {
-            dce_dead_mask |= (1ULL << i);
+            out->dce_dead_mask |= (1ULL << i);
             /* Don't update liveness for dead instructions */
         }
         else
@@ -552,7 +631,9 @@ uint32_t *compile_block(uint32_t psx_pc)
 
     reset_vregs();
     cold_slow_reset();
-    dce_prescan(psx_code, DCE_MAX_SCAN);
+    BlockScanResult scan;
+    block_scan(psx_code, SCAN_MAX_INSNS, &scan);
+    block_pinned_dirty_mask = scan.pinned_written_mask;
     emit_block_prologue();
 
     /* Inject BIOS HLE hooks natively so that DBL jumps do not bypass them.
@@ -677,7 +758,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                 dynarec_lwx_pending = 1;
             {
                 int dce_idx = (int)((cur_pc - psx_pc) >> 2);
-                if (dce_idx < DCE_MAX_SCAN && (dce_dead_mask >> dce_idx) & 1)
+                if (dce_idx < SCAN_MAX_INSNS && (scan.dce_dead_mask >> dce_idx) & 1)
                 {
                     /* Dead instruction — clear vreg tracking without emitting flush code */
                     int dce_d = dce_dest_gpr(opcode);
@@ -1044,7 +1125,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                 dynarec_lwx_pending = 1;
             {
                 int dce_idx = (int)((cur_pc - psx_pc) >> 2);
-                if (dce_idx < DCE_MAX_SCAN && (dce_dead_mask >> dce_idx) & 1)
+                if (dce_idx < SCAN_MAX_INSNS && (scan.dce_dead_mask >> dce_idx) & 1)
                 {
                     /* Dead instruction — clear vreg tracking without emitting flush code */
                     int dce_d = dce_dest_gpr(opcode);
