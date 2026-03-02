@@ -326,19 +326,33 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             reg_cache_invalidate();
             break;
         }
-        case 0x20: /* ADD — treat as ADDU (overflow exceptions extremely rare in PSX games) */
+        case 0x20: /* ADD — with overflow exception detection */
         {
             if (is_vreg_const(rs) && is_vreg_const(rt))
             {
-                mark_vreg_const_lazy(rd, get_vreg_const(rs) + get_vreg_const(rt));
+                uint32_t a = get_vreg_const(rs), b = get_vreg_const(rt);
+                uint32_t res = a + b;
+                if (!((a ^ b) & 0x80000000) && ((res ^ a) & 0x80000000))
+                {
+                    /* Overflow at compile time — unconditional exception */
+                    emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
+                    emit_load_imm32(REG_A1, a);
+                    emit_load_imm32(REG_A2, b);
+                    emit_load_imm32(REG_A3, rd);
+                    emit_call_c((uint32_t)Helper_ADD_JIT);
+                    emit_abort_check(emit_cycle_offset);
+                    break;
+                }
+                mark_vreg_const_lazy(rd, res);
                 break;
             }
             mark_vreg_var(rd);
-            int s1 = emit_use_reg(rs, REG_T0);
-            int s2 = emit_use_reg(rt, REG_T1);
-            int d = emit_dst_reg(rd, REG_T0);
-            EMIT_ADDU(d, s1, s2);
-            emit_sync_reg(rd, d);
+            emit_load_psx_reg(REG_A1, rs);
+            emit_load_psx_reg(REG_A2, rt);
+            emit_load_imm32(REG_A3, rd);
+            emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
+            emit_call_c((uint32_t)Helper_ADD_JIT);
+            emit_abort_check(emit_cycle_offset);
             break;
         }
         case 0x21: /* ADDU */
@@ -356,19 +370,33 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_sync_reg(rd, d);
             break;
         }
-        case 0x22: /* SUB — treat as SUBU (overflow exceptions extremely rare in PSX games) */
+        case 0x22: /* SUB — with overflow exception detection */
         {
             if (is_vreg_const(rs) && is_vreg_const(rt))
             {
-                mark_vreg_const_lazy(rd, get_vreg_const(rs) - get_vreg_const(rt));
+                uint32_t a = get_vreg_const(rs), b = get_vreg_const(rt);
+                uint32_t res = a - b;
+                if (((a ^ b) & 0x80000000) && ((res ^ a) & 0x80000000))
+                {
+                    /* Overflow at compile time — unconditional exception */
+                    emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
+                    emit_load_psx_reg(REG_A1, rs);
+                    emit_load_psx_reg(REG_A2, rt);
+                    emit_load_imm32(REG_A3, rd);
+                    emit_call_c((uint32_t)Helper_SUB_JIT);
+                    emit_abort_check(emit_cycle_offset);
+                    break;
+                }
+                mark_vreg_const_lazy(rd, res);
                 break;
             }
             mark_vreg_var(rd);
-            int s1 = emit_use_reg(rs, REG_T0);
-            int s2 = emit_use_reg(rt, REG_T1);
-            int d = emit_dst_reg(rd, REG_T0);
-            emit(MK_R(0, s1, s2, d, 0, 0x23)); /* subu */
-            emit_sync_reg(rd, d);
+            emit_load_psx_reg(REG_A1, rs);
+            emit_load_psx_reg(REG_A2, rt);
+            emit_load_imm32(REG_A3, rd);
+            emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
+            emit_call_c((uint32_t)Helper_SUB_JIT);
+            emit_abort_check(emit_cycle_offset);
             break;
         }
         case 0x23: /* SUBU */
@@ -484,18 +512,34 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         break;
 
     /* I-type ALU */
-    case 0x08: /* ADDI — treat as ADDIU (overflow exceptions extremely rare in PSX games) */
+    case 0x08: /* ADDI — with overflow exception detection */
     {
         if (is_vreg_const(rs))
         {
-            mark_vreg_const_lazy(rt, get_vreg_const(rs) + imm);
+            uint32_t a = get_vreg_const(rs);
+            uint32_t b = (uint32_t)imm; /* sign-extended immediate */
+            uint32_t res = a + b;
+            if (!((a ^ b) & 0x80000000) && ((res ^ a) & 0x80000000))
+            {
+                /* Overflow at compile time */
+                emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
+                emit_load_psx_reg(REG_A1, rs);
+                emit_load_imm32(REG_A2, b);
+                emit_load_imm32(REG_A3, rt);
+                emit_call_c((uint32_t)Helper_ADDI_JIT);
+                emit_abort_check(emit_cycle_offset);
+                break;
+            }
+            mark_vreg_const_lazy(rt, res);
             break;
         }
         mark_vreg_var(rt);
-        int s = emit_use_reg(rs, REG_T0);
-        int d = emit_dst_reg(rt, REG_T0);
-        EMIT_ADDIU(d, s, imm);
-        emit_sync_reg(rt, d);
+        emit_load_psx_reg(REG_A1, rs);
+        emit_load_imm32(REG_A2, (uint32_t)imm);
+        emit_load_imm32(REG_A3, rt);
+        emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
+        emit_call_c((uint32_t)Helper_ADDI_JIT);
+        emit_abort_check(emit_cycle_offset);
         break;
     }
     case 0x09: /* ADDIU */

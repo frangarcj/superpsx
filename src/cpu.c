@@ -172,6 +172,52 @@ void Helper_ADDI(uint32_t rs_val, uint32_t imm_sext, uint32_t rt, uint32_t pc)
         cpu.regs[rt] = result;
 }
 
+/* ---- JIT-callable overflow helpers ----
+ * Called via emit_call_c trampoline which passes A0 = cpu ptr (ignored).
+ * Real args: A1 = rs_val, A2 = rt_val, A3 = rd index.
+ * PC read from cpu.current_pc (set by JIT before call). */
+void Helper_ADD_JIT(void *unused, uint32_t rs_val, uint32_t rt_val, uint32_t rd)
+{
+    (void)unused;
+    uint32_t result = rs_val + rt_val;
+    if (!((rs_val ^ rt_val) & 0x80000000) && ((result ^ rs_val) & 0x80000000))
+    {
+        cpu.pc = cpu.current_pc;
+        PSX_Exception(0x0C);
+        return;
+    }
+    if (rd != 0)
+        cpu.regs[rd] = result;
+}
+
+void Helper_SUB_JIT(void *unused, uint32_t rs_val, uint32_t rt_val, uint32_t rd)
+{
+    (void)unused;
+    uint32_t result = rs_val - rt_val;
+    if (((rs_val ^ rt_val) & 0x80000000) && ((result ^ rs_val) & 0x80000000))
+    {
+        cpu.pc = cpu.current_pc;
+        PSX_Exception(0x0C);
+        return;
+    }
+    if (rd != 0)
+        cpu.regs[rd] = result;
+}
+
+void Helper_ADDI_JIT(void *unused, uint32_t rs_val, uint32_t imm_sext, uint32_t rt)
+{
+    (void)unused;
+    uint32_t result = rs_val + imm_sext;
+    if (!((rs_val ^ imm_sext) & 0x80000000) && ((result ^ rs_val) & 0x80000000))
+    {
+        cpu.pc = cpu.current_pc;
+        PSX_Exception(0x0C);
+        return;
+    }
+    if (rt != 0)
+        cpu.regs[rt] = result;
+}
+
 /* ---- PSX Syscall Handler ---- */
 /*
  * PSX BIOS syscalls use register $t1 ($9) or function number
