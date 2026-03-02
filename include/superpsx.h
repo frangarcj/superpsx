@@ -164,6 +164,9 @@ void Helper_CU_Exception(uint32_t pc, uint32_t cop_num);
 void Helper_ADD(uint32_t rs_val, uint32_t rt_val, uint32_t rd, uint32_t pc);
 void Helper_SUB(uint32_t rs_val, uint32_t rt_val, uint32_t rd, uint32_t pc);
 void Helper_ADDI(uint32_t rs_val, uint32_t imm_sext, uint32_t rt, uint32_t pc);
+void Helper_ADD_JIT(void *unused, uint32_t rs_val, uint32_t rt_val, uint32_t rd);
+void Helper_SUB_JIT(void *unused, uint32_t rs_val, uint32_t rt_val, uint32_t rd);
+void Helper_ADDI_JIT(void *unused, uint32_t rs_val, uint32_t imm_sext, uint32_t rt);
 
 /*=== Exception support for dynarec ===*/
 extern jmp_buf psx_block_jmp;
