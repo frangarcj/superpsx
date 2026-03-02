@@ -466,6 +466,79 @@ static inline void update_dynarec_stats(BlockEntry *be, uint32_t cycles_taken)
 #endif
 }
 
+/* ---- JIT chain hotspot tracker ----
+ * Direct-mapped hash table: records entry PC + total cycles per
+ * run_jit_chain call.  Dumped every profiler report interval. */
+#ifdef ENABLE_SUBSYSTEM_PROFILER
+#define HOTSPOT_SIZE 1024
+#define HOTSPOT_MASK (HOTSPOT_SIZE - 1)
+static struct {
+    uint32_t pc;
+    uint64_t total_cycles;
+    uint32_t count;
+} hotspot_table[HOTSPOT_SIZE];
+
+static uint32_t hotspot_idle_skips = 0;
+static uint64_t hotspot_idle_cycles_skipped = 0;
+
+static inline void hotspot_record(uint32_t pc, uint32_t cycles)
+{
+    int idx = ((pc >> 2) ^ (pc >> 14)) & HOTSPOT_MASK;
+    if (hotspot_table[idx].pc == pc || hotspot_table[idx].count == 0) {
+        hotspot_table[idx].pc = pc;
+        hotspot_table[idx].total_cycles += cycles;
+        hotspot_table[idx].count++;
+    }
+    /* On collision, silently drop — acceptable for diagnostic use */
+}
+
+void jit_hotspot_dump_and_reset(FILE *out)
+{
+    /* Sort by total_cycles (simple selection of top 15) */
+    int top_idx[15];
+    uint64_t top_cycles[15];
+    int i, j;
+    for (i = 0; i < 15; i++) { top_idx[i] = -1; top_cycles[i] = 0; }
+
+    for (i = 0; i < HOTSPOT_SIZE; i++) {
+        if (hotspot_table[i].count == 0) continue;
+        for (j = 0; j < 15; j++) {
+            if (hotspot_table[i].total_cycles > top_cycles[j]) {
+                /* Shift down */
+                for (int k = 14; k > j; k--) {
+                    top_idx[k] = top_idx[k-1];
+                    top_cycles[k] = top_cycles[k-1];
+                }
+                top_idx[j] = i;
+                top_cycles[j] = hotspot_table[i].total_cycles;
+                break;
+            }
+        }
+    }
+
+    fprintf(out, "\nJIT Chain Hotspots (entry PC → total cycles, count):\n");
+    fprintf(out, "  Idle skips: %u  (cycles skipped: %llu)\n",
+            (unsigned)hotspot_idle_skips,
+            (unsigned long long)hotspot_idle_cycles_skipped);
+    for (i = 0; i < 15 && top_idx[i] >= 0; i++) {
+        int idx = top_idx[i];
+        fprintf(out, "  %2d. PC=%08X  cycles=%10llu  count=%6u  avg=%u\n",
+                i + 1,
+                (unsigned)hotspot_table[idx].pc,
+                (unsigned long long)hotspot_table[idx].total_cycles,
+                (unsigned)hotspot_table[idx].count,
+                hotspot_table[idx].count ? (unsigned)(hotspot_table[idx].total_cycles / hotspot_table[idx].count) : 0);
+    }
+
+    memset(hotspot_table, 0, sizeof(hotspot_table));
+    hotspot_idle_skips = 0;
+    hotspot_idle_cycles_skipped = 0;
+}
+#else
+static inline void hotspot_record(uint32_t pc, uint32_t cycles) { (void)pc; (void)cycles; }
+void jit_hotspot_dump_and_reset(FILE *out) { (void)out; }
+#endif
+
 static inline void check_stuck_detection(uint32_t pc)
 {
 #ifdef ENABLE_STUCK_DETECTION
@@ -755,6 +828,8 @@ static inline int run_jit_chain(uint64_t deadline)
     global_cycles += cycles_taken;
     partial_block_cycles = 0; /* Reset mid-block cycle offset */
 
+    hotspot_record(pc, cycles_taken);
+
     if (be)
         update_dynarec_stats(be, cycles_taken);
     run_iterations++;
@@ -772,8 +847,13 @@ static inline int run_jit_chain(uint64_t deadline)
         uint32_t threshold = (be->is_idle == 1) ? 1 : 2;
         if (++idle_skip_count >= threshold)
         {
-            if (deadline > global_cycles)
+            if (deadline > global_cycles) {
+#ifdef ENABLE_SUBSYSTEM_PROFILER
+                hotspot_idle_skips++;
+                hotspot_idle_cycles_skipped += (deadline - global_cycles);
+#endif
                 global_cycles = deadline;
+            }
             return RUN_RES_BREAK;
         }
     }
