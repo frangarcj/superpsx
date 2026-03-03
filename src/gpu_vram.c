@@ -231,27 +231,7 @@ void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uin
     vram_gen_counter++;
     Tex_Cache_DirtyRegion(x, y, w, h);
 
-    // 1. Update shadow VRAM (optional, but good for CLUT textures since they might be used immediately)
-    if (psx_vram_shadow)
-    {
-        int px = x, py = y;
-        for (uint32_t i = 0; i < word_count; i++)
-        {
-            uint32_t data = data_ptr[i];
-
-            /* Pixel 0 */
-            if (px < 1024 && py < 512)
-                psx_vram_shadow[py * 1024 + px] = data & 0xFFFF;
-            if (++px >= x + w) { px = x; py++; }
-
-            /* Pixel 1 */
-            if (px < 1024 && py < 512)
-                psx_vram_shadow[py * 1024 + px] = data >> 16;
-            if (++px >= x + w) { px = x; py++; }
-        }
-    }
-
-    // 2. Upload to GS via GIF IMAGE transfer
+    // Single-pass: shadow VRAM update + STP fixup + GIF IMAGE pack
     Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
     Push_GIF_Data(GS_SET_BITBLTBUF(0,0,0, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF);
     Push_GIF_Data(GS_SET_TRXPOS(0,0,x,y,0), GS_REG_TRXPOS);
@@ -261,6 +241,7 @@ void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uin
     buf_image_ptr = 0;
     uint32_t pend[4];
     int pc = 0;
+    int px = x, py = y;
 
     for (uint32_t i = 0; i < word_count; i++)
     {
@@ -268,7 +249,19 @@ void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uin
         uint16_t p0 = word & 0xFFFF;
         uint16_t p1 = word >> 16;
 
-        /* Branchless STP: bit 15 = opaque for non-zero pixels */
+        /* Shadow VRAM: raw values (no STP fixup) */
+        if (psx_vram_shadow)
+        {
+            if (px < 1024 && py < 512)
+                psx_vram_shadow[py * 1024 + px] = p0;
+            if (++px >= x + w) { px = x; py++; }
+
+            if (px < 1024 && py < 512)
+                psx_vram_shadow[py * 1024 + px] = p1;
+            if (++px >= x + w) { px = x; py++; }
+        }
+
+        /* Branchless STP fixup for GIF upload */
         p0 |= (-(p0 != 0)) & 0x8000;
         p1 |= (-(p1 != 0)) & 0x8000;
 
