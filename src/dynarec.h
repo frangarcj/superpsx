@@ -269,6 +269,10 @@ extern int dynarec_load_defer;
 extern int dynarec_lwx_pending;
 extern RegStatus vregs[32];
 extern uint32_t dirty_const_mask;  /* Bitmask of dirty const vregs */
+extern uint32_t smrv_known_ram;   /* SMRV: bit r=1 → PSX reg r is known RAM address */
+static inline int smrv_is_known_ram(int r) { return (smrv_known_ram >> r) & 1; }
+static inline void smrv_set_ram(int r) { if (r) smrv_known_ram |= (1u << r); }
+static inline void smrv_clear(int r)   { smrv_known_ram &= ~(1u << r); }
 
 /* ================================================================
  *  Shared state — stats / perf

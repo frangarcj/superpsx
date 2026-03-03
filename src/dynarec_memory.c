@@ -564,10 +564,10 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     }
 
     /* Range check: non-RAM (phys >= 2MB) goes to cold path via C helpers.
-     * Skip when base register is $sp — the PSX stack pointer always
-     * resides in main RAM, so the range check is redundant (saves 2 insns). */
+     * Skip when SMRV proves the base register points to RAM (saves 2 insns).
+     * $sp (reg 29) is always marked; LUI/ADDIU-derived bases also qualify. */
     uint32_t *range_branch = NULL;
-    if (rs_psx != 29) /* $sp always in RAM — skip range check */
+    if (!smrv_is_known_ram(rs_psx))
     {
         emit(MK_R(0, 0, REG_T9, REG_AT, 21, 0x02));  /* srl  at, t9, 21      */
         range_branch = code_ptr;
@@ -848,10 +848,10 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     }
 
     /* Range check: non-RAM goes to cold path (WriteWord).
-     * Skip when base register is $sp — the PSX stack pointer always
-     * resides in main RAM, so the range check is redundant (saves 2 insns). */
+     * Skip when SMRV proves the base register points to RAM (saves 2 insns).
+     * $sp (reg 29) is always marked; LUI/ADDIU-derived bases also qualify. */
     uint32_t *range_branch = NULL;
-    if (rs_psx != 29) /* $sp always in RAM — skip range check */
+    if (!smrv_is_known_ram(rs_psx))
     {
         emit(MK_R(0, 0, REG_AT, REG_A0, 21, 0x02)); /* srl  a0, at, 21      */
         range_branch = code_ptr;

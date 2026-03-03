@@ -33,6 +33,14 @@ const int psx_pinned_reg[32] = {
 RegStatus vregs[32];
 uint32_t dirty_const_mask;
 
+/* SMRV — Speculative Memory Region Validation.
+ * Bitmask: bit r=1 means PSX reg r is known to hold a RAM address
+ * (physical < PSX_RAM_SIZE after masking).  Used to skip the
+ * 2-instruction range check in the memory hot path.
+ * $sp (reg 29) is always marked.  Other regs get marked when set
+ * via LUI/ADDIU/ORI to a RAM address, cleared on unknown writes. */
+uint32_t smrv_known_ram;
+
 /* Scratch register cache: tracks which PSX GPR value is in T8/T9.
  * -1 means the register holds no cached PSX GPR value. */
 int t8_cached_psx_reg = -1;
@@ -421,6 +429,9 @@ void emit_call_c(uint32_t func_addr)
      * from cpu.regs[] to pick up any changes (T0/T1/T2 are clobbered). */
     dyn_reload_slots();
     reg_cache_invalidate();
+    /* SMRV: C helper may change any cpu.regs[], invalidate all
+     * known-RAM hints except $sp which is always RAM. */
+    smrv_known_ram = (1u << 29);
 }
 
 void emit_call_c_lite(uint32_t func_addr)
@@ -511,12 +522,20 @@ void mark_vreg_const_lazy(int r, uint32_t val)
     vregs[r].value = val;
     vregs[r].is_dirty = 1;
     dirty_const_mask |= (1u << r);
+    /* SMRV: auto-set if this constant is a RAM address */
+    if ((val & 0x1FFFFFFF) < PSX_RAM_SIZE)
+        smrv_known_ram |= (1u << r);
+    else
+        smrv_known_ram &= ~(1u << r);
 }
 
 void mark_vreg_var(int r)
 {
     if (r == 0)
         return;
+    /* SMRV: clear by default; callers that preserve RAM-ness
+     * (e.g., ADDIU from known-RAM base) re-set it after this call. */
+    smrv_known_ram &= ~(1u << r);
     /* If the register held a lazy (dirty) constant that was never
      * materialized into the native pinned register or cpu.regs[],
      * we must materialize it NOW before losing the value.  This
@@ -567,6 +586,7 @@ void reset_vregs(void)
 {
     memset(vregs, 0, sizeof(vregs));
     dirty_const_mask = 0;
+    smrv_known_ram = (1u << 29); /* $sp always RAM */
     reg_cache_invalidate();
     dyn_reset_slots();
     /* $0 is special, but memset already handles it by setting is_const=0.

@@ -412,12 +412,16 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 mark_vreg_const_lazy(rd, get_vreg_const(rs) + get_vreg_const(rt));
                 break;
             }
+            /* SMRV: ADDU rd, rs, $0 (MOVE) or ADDU rd, $0, rt propagates RAM-ness */
+            int src_ram = (rt == 0 && smrv_is_known_ram(rs)) ||
+                          (rs == 0 && smrv_is_known_ram(rt));
             mark_vreg_var(rd);
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
             int d = emit_dst_reg(rd, REG_T8);
             EMIT_ADDU(d, s1, s2);
             emit_sync_reg(rd, d);
+            if (src_ram) smrv_set_ram(rd);
             break;
         }
         case 0x22: /* SUB — inline overflow detection */
@@ -525,12 +529,16 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 mark_vreg_const_lazy(rd, get_vreg_const(rs) | get_vreg_const(rt));
                 break;
             }
+            /* SMRV: OR rd, rs, $0 (MOVE) propagates RAM-ness */
+            int src_ram = (rt == 0 && smrv_is_known_ram(rs)) ||
+                          (rs == 0 && smrv_is_known_ram(rt));
             mark_vreg_var(rd);
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
             int d = emit_dst_reg(rd, REG_T8);
             EMIT_OR(d, s1, s2);
             emit_sync_reg(rd, d);
+            if (src_ram) smrv_set_ram(rd);
             break;
         }
         case 0x26: /* XOR */
@@ -618,6 +626,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             mark_vreg_const_lazy(rt, res);
             break;
         }
+        int rs_ram = smrv_is_known_ram(rs);
         mark_vreg_var(rt);
         int s1 = emit_use_reg(rs, REG_T8);
 
@@ -670,6 +679,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         t8_cached_psx_reg = -1;
         t9_cached_psx_reg = -1;
         emit_sync_reg(rt, d);
+        /* SMRV: ADDI from RAM base stays in RAM (if no overflow) */
+        if (rs_ram) smrv_set_ram(rt);
         break;
     }
     case 0x09: /* ADDIU */
@@ -679,11 +690,14 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             mark_vreg_const_lazy(rt, get_vreg_const(rs) + imm);
             break;
         }
+        int rs_ram = smrv_is_known_ram(rs);
         mark_vreg_var(rt);
         int s = emit_use_reg(rs, REG_T8);
         int d = emit_dst_reg(rt, REG_T8);
         EMIT_ADDIU(d, s, imm);
         emit_sync_reg(rt, d);
+        /* SMRV: ADDIU from RAM base with small offset stays in RAM */
+        if (rs_ram) smrv_set_ram(rt);
         break;
     }
     case 0x0A: /* SLTI */
@@ -735,11 +749,14 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             mark_vreg_const_lazy(rt, get_vreg_const(rs) | uimm);
             break;
         }
+        int rs_ram = smrv_is_known_ram(rs);
         mark_vreg_var(rt);
         int s = emit_use_reg(rs, REG_T8);
         int d = emit_dst_reg(rt, REG_T8);
         EMIT_ORI(d, s, uimm);
         emit_sync_reg(rt, d);
+        /* SMRV: ORI from RAM base (e.g., LUI+ORI pattern) stays in RAM */
+        if (rs_ram) smrv_set_ram(rt);
         break;
     }
     case 0x0E: /* XORI */
