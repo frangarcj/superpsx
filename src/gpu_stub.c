@@ -80,8 +80,7 @@ int gpu_cmd_ptr = 0;
 int gpu_transfer_words = 0;
 int gpu_transfer_total = 0;
 
-unsigned __int128 buf_image[1024];
-int buf_image_ptr = 0;
+/* buf_image removed — see F6 in gpu_vram.c / gpu_commands.c */
 
 uint32_t vram_gen_counter = 0;
 
