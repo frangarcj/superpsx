@@ -375,18 +375,22 @@ extern int t8_cached_psx_reg;
 extern int t9_cached_psx_reg;
 void reg_cache_invalidate(void);
 
-/* Dynamic register slots — write-through T0/T1/T2.
+/* Dynamic register slots — Dirty-tracked T0/T1/T2.
  * Per-block allocation: top-N non-pinned regs mapped to T0/T1/T2.
- * Write-through: every store updates both slot reg AND cpu.regs[],
- * so memory is always consistent — no writeback needed on exits.
+ * Dirty tracking: stores update ONLY the slot register; a SW to
+ * cpu.regs[] is deferred until the slot is flushed (block exit,
+ * call_c, abort).  dyn_slot_dirty is a 3-bit mask (bit i ↔ slot i).
  * T0/T1/T2 are EXCLUSIVE slots — never used as inline scratch.
  * Scratch registers: T8, T9, AT. */
 extern int dyn_slot_psx[DYN_SLOT_COUNT];
 extern int dyn_slots_active;
+extern uint8_t dyn_slot_dirty;
 void dyn_assign_slots(BlockScanResult *scan);
 void dyn_load_slots(void);
 void dyn_reload_slots(void);
 void dyn_reset_slots(void);
+void dyn_flush_dirty(void);
+void dyn_flush_dirty_reg(int r);
 
 /* Compile-loop helpers: use AT instead of T8/T9 for non-GPR temporaries */
 void emit_cpu_field_to_psx_reg(int field_offset, int r);

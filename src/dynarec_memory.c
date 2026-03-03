@@ -67,6 +67,7 @@ typedef struct {
     uint8_t   type;         /* 0=read, 1=write, 2=lwx, 3=swx */
     uint8_t   has_abort;    /* emit_abort_check after trampoline? */
     uint8_t   load_defer;   /* dynarec_load_defer at emission time */
+    uint8_t   saved_dyn_dirty; /* dyn_slot_dirty at emission time */
     int       rt_psx;       /* PSX register for store result */
 } ColdSlowEntry;
 
@@ -125,6 +126,7 @@ typedef struct {
     uint8_t   size;         /* 1/2/4 */
     uint8_t   is_signed;    /* Sign extension needed? */
     uint8_t   load_defer;   /* dynarec_load_defer at emit time */
+    uint8_t   saved_dyn_dirty; /* dyn_slot_dirty at emit time */
     int       rt_psx;       /* PSX register for read result store */
 } TLBBPEntry;
 static TLBBPEntry tlb_bp_queue[MAX_TLB_BP];
@@ -210,7 +212,12 @@ void tlb_patch_emit_all(void)
         EMIT_NOP();
 
         if (e->type == 0 && e->size >= 2)
+        {
+            uint8_t prev_dirty = dyn_slot_dirty;
+            dyn_slot_dirty = e->saved_dyn_dirty;
             emit_abort_check((uint32_t)e->cycle_offset);
+            dyn_slot_dirty = prev_dirty;
+        }
 
         /* Sign extension for signed loads */
         if (e->type == 0 && e->is_signed && e->size < 4)
@@ -311,7 +318,12 @@ void cold_slow_emit_all(void)
         EMIT_NOP();
 
         if (e->has_abort)
+        {
+            uint8_t prev_dirty = dyn_slot_dirty;
+            dyn_slot_dirty = e->saved_dyn_dirty;
             emit_abort_check((uint32_t)e->cycle_offset);
+            dyn_slot_dirty = prev_dirty;
+        }
 
         /* Sign extension for signed byte/halfword reads */
         if (e->type == 0 && e->is_signed && e->size < 4)
@@ -613,6 +625,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         p->size         = (uint8_t)size;
         p->is_signed    = (uint8_t)is_signed;
         p->load_defer   = (uint8_t)dynarec_load_defer;
+        p->saved_dyn_dirty = dyn_slot_dirty;
         p->rt_psx       = rt_psx;
     }
 
@@ -636,6 +649,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         e->type = 0; /* read */
         e->has_abort = (size >= 2) ? 1 : 0;
         e->load_defer = (uint8_t)dynarec_load_defer;
+        e->saved_dyn_dirty = dyn_slot_dirty;
         e->rt_psx = rt_psx;
     }
     reg_cache_invalidate();
@@ -885,6 +899,7 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         p->size         = (uint8_t)size;
         p->is_signed    = 0;
         p->load_defer   = 0;
+        p->saved_dyn_dirty = dyn_slot_dirty;
         p->rt_psx       = 0;
     }
 
@@ -908,6 +923,7 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         e->type = 1; /* write */
         e->has_abort = (size >= 2) ? 1 : 0;
         e->load_defer = 0;
+        e->saved_dyn_dirty = dyn_slot_dirty;
         e->rt_psx = 0;
     }
     reg_cache_invalidate();
@@ -977,6 +993,7 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
         e->type = 2; /* lwx */
         e->has_abort = 0;
         e->load_defer = (uint8_t)dynarec_load_defer;
+        e->saved_dyn_dirty = dyn_slot_dirty;
         e->rt_psx = rt_psx;
     }
     reg_cache_invalidate();
@@ -1043,6 +1060,7 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
         e->type = 3; /* swx */
         e->has_abort = 0;
         e->load_defer = 0;
+        e->saved_dyn_dirty = dyn_slot_dirty;
         e->rt_psx = 0;
     }
     reg_cache_invalidate();

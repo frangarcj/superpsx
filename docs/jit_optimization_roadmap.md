@@ -24,6 +24,9 @@
 | 18 | Mem Slow-Path Trampoline | ✅ | `code_buffer[128]`: partial cycle accounting (`partial_block_cycles`) |
 | 19 | BIOS HLE Native Injection | ✅ | A0/B0/C0 hooks compiled inline en bloques |
 | 20 | Branch/Load Delay Slots | ✅ | `in_delay_slot` tracking + `pending_load_reg/apply_now` |
+| 21 | SMRV (Speculative Memory Region Validation) | ✅ | `smrv_known_ram` bitmask. Skip SRL+BNE range check para bases conocidas-RAM. Propagación en ADDIU/ORI/ADDI/ADDU/OR |
+| 22 | DBL para Branches Condicionales | ✅ | Tanto taken como not-taken usan `emit_direct_link()` + back-patching. Solo JR/JALR usan hash dispatch |
+| 23 | Branch Folding (const-prop) | ✅ | BEQ/BNE/BLEZ/BGTZ/BLTZ/BGEZ/BLTZAL/BGEZAL. `is_vreg_const()` → branch_type=1 (unconditional), elimina path muerto |
 
 ---
 
@@ -43,17 +46,20 @@ Overhead real: ~590 SWs/frame (~0.2% del tiempo de frame). No justifica el esfue
 
 ---
 
-### 2. SMRV (Speculative Memory Region Validation)
-**Impacto:** Alto (5-8%) · **Esfuerzo:** 2-4 horas · **Riesgo:** Medio  
-**Estado actual:** ❌ No empezado
-
-El hot path de LW/SW emite ~8 instrucciones: `AND S3` → `SRL+SLTIU` range check → branch → `ADDU+LW`. Con predicción de que el base register apunta a RAM (>95% de accesos), se emite un fast path optimista sin range check.
-
-**Alternativa simple:** Inline cache per-site. Cold path backpatchea el branch para fast path directo la próxima vez.
+### 2. ~~SMRV~~ → Implementado (commit 0aa22e8)
+**Estado:** ✅ Completado. Movido a tabla de completados (#21).
 
 ---
 
-### 3. FlushCache Batching
+### 3. Branch Epilogue Delay-Slot Packing
+**Impacto:** Bajo (1 insn/epilogue) · **Esfuerzo:** 1 hora · **Riesgo:** Bajo  
+**Estado actual:** ❌ No empezado
+
+`emit_branch_epilogue()` tiene ~10 insns con 2 NOPs en delay slots (BGTZ + J abort). El SW de PC podría ir en el delay slot del BGTZ (ejecutado en ambos paths). Ahorra 1 insn/epilogue. Impacto marginal dado que super-blocks ya eliminan la mayoría de epilogues.
+
+---
+
+### 4. FlushCache Batching
 **Impacto:** Bajo-Medio (1-3%) · **Esfuerzo:** 30 min · **Riesgo:** Bajo  
 **Estado actual:** ❌ No empezado
 
@@ -61,7 +67,7 @@ El hot path de LW/SW emite ~8 instrucciones: `AND S3` → `SRL+SLTIU` range chec
 
 ---
 
-### 4. LQ/SQ Bulk Flush/Reload (PS2-específico)
+### 5. LQ/SQ Bulk Flush/Reload (PS2-específico)
 **Impacto:** Medio (3-5%) · **Esfuerzo:** 1 día · **Riesgo:** Bajo  
 **Estado actual:** ❌ No empezado
 
@@ -71,7 +77,7 @@ EE tiene LQ/SQ (128-bit load/store). `emit_flush_pinned` pasaría de 10 SW a 3-4
 
 ---
 
-### 5. Dynamic Register Allocation (full)
+### 6. Dynamic Register Allocation (full)
 **Impacto:** Crítico (15-25%) · **Esfuerzo:** 2-4 semanas · **Riesgo:** Alto  
 **Estado actual:** 🔄 Parcial (3 dynamic slots T0/T1/T2)
 
@@ -98,8 +104,8 @@ Full regalloc al estilo pcsx_rearmed: `regmap[HOST_REGS]` per-instruction con di
 ## Prioridad recomendada
 
 ```
-1. SMRV / inline cache          (2-4h — alto impacto, reduce hot path LW/SW)
-2. FlushCache batching          (30 min — cambio trivial)
+1. FlushCache batching          (30 min — cambio trivial)
+2. Branch epilogue delay-slot   (1h — 1 insn/epilogue)
 3. LQ/SQ bulk flush/reload      (1 día — medio impacto)
 4. Dynamic regalloc full        (2-4 semanas — máximo impacto)
 ```

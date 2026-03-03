@@ -34,6 +34,7 @@ typedef struct {
     uint32_t cycle_count;        /* Accumulated cycles at this branch point */
     RegStatus saved_vregs[32];   /* vreg state at branch point */
     uint32_t saved_dirty_mask;   /* dirty_const_mask at branch point */
+    uint8_t saved_dyn_dirty;     /* dyn_slot_dirty at branch point */
 } DeferredTakenEntry;
 
 static DeferredTakenEntry deferred_taken[MAX_CONTINUATIONS];
@@ -55,9 +56,11 @@ static void emit_deferred_taken_all(void)
         /* Restore vreg state for this branch point */
         memcpy(vregs, e->saved_vregs, sizeof(vregs));
         dirty_const_mask = e->saved_dirty_mask;
+        dyn_slot_dirty = e->saved_dyn_dirty;
 
         /* Emit standard branch epilogue inline */
         flush_dirty_consts();
+        dyn_flush_dirty();
         emit(MK_I(0x09, REG_S2, REG_S2, (int16_t)(-(int)e->cycle_count)));
         emit_load_imm32(REG_T8, e->target_pc);
         EMIT_SW(REG_T8, CPU_PC, REG_S0);
@@ -592,6 +595,7 @@ void emit_block_prologue(void)
 /* ---- Block epilogue: flush pinned, restore and return ---- */
 void emit_block_epilogue(void)
 {
+    dyn_flush_dirty();
     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
     EMIT_MOVE(REG_V0, REG_S2);
     emit_flush_pinned();
@@ -614,6 +618,8 @@ void emit_branch_epilogue(uint32_t target_pc)
 {
     /* Materialize any lazy constants before leaving the block */
     flush_dirty_consts();
+    /* Flush dirty dynamic slots so cpu.regs[] is consistent */
+    dyn_flush_dirty();
 
     /* Calculate remaining cycles after this block */
     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
@@ -874,6 +880,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                     dt->cycle_count = block_cycle_count;
                     memcpy(dt->saved_vregs, vregs, sizeof(vregs));
                     dt->saved_dirty_mask = dirty_const_mask;
+                    dt->saved_dyn_dirty = dyn_slot_dirty;
                     dt->branch_insn = code_ptr;
                     emit(MK_I(0x05, REG_AT, REG_ZERO, 0)); /* BNE at, zero, @taken */
                     EMIT_NOP();
@@ -901,6 +908,7 @@ uint32_t *compile_block(uint32_t psx_pc)
 
                     RegStatus saved_vregs[32];
                     uint32_t saved_dirty_mask = dirty_const_mask;
+                    uint8_t saved_dyn_dirty = dyn_slot_dirty;
                     memcpy(saved_vregs, vregs, sizeof(vregs));
 
                     /* Not taken: fall through PC */
@@ -913,6 +921,7 @@ uint32_t *compile_block(uint32_t psx_pc)
 
                     memcpy(vregs, saved_vregs, sizeof(vregs));
                     dirty_const_mask = saved_dirty_mask;
+                    dyn_slot_dirty = saved_dyn_dirty;
                     emit_branch_epilogue(branch_target);
                 }
             }
@@ -921,6 +930,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                 /* Register jump (JR/JALR): Inline hash dispatch.
                  * T8 is required by jump_dispatch_trampoline (hash computation). */
                 flush_dirty_consts();
+                dyn_flush_dirty();
                 EMIT_LW(REG_T8, CPU_PC, REG_S0);
                 EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
                 EMIT_J_ABS((uint32_t)jump_dispatch_trampoline_addr);
