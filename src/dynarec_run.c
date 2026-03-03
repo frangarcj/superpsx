@@ -291,26 +291,25 @@ void Init_Dynarec(void)
         *p++ = 0;
     }
 
-    /* ---- Lightweight C-call trampoline at code_buffer[68] ----
+    /* ---- Ultra-lite C-call trampoline at code_buffer[68] ----
      * For C helpers that do NOT read/write cpu.regs[] (memory R/W,
-     * LWL/LWR, SWL/SWR).  Only saves/restores the caller-saved
-     * pinned registers (T3-T7 = 5 regs), skipping the 5
-     * callee-saved S-regs (S4, S5, S6, S7, FP) which the C ABI
-     * preserves automatically.  Saves 16 instructions per call.
-     * Also preserves dynamic slot registers T0/T1/T2 on the stack. */
+     * LWL/LWR, SWL/SWR).  Saves ALL caller-saved registers directly
+     * to the block stack frame — never touches cpu.regs[].
+     * T0/T1/T2 (dynamic slots) at offsets 0,4,8.
+     * T3-T7 (caller-saved pinned) at offsets 12,16,20,24,76.
+     * Callee-saved S-regs (S4,S5,S6,S7,FP) preserved by C ABI. */
     call_c_trampoline_lite_addr = &code_buffer[68];
     {
         uint32_t *p = call_c_trampoline_lite_addr;
-        /* Save dynamic slot registers (T0/T1/T2) to stack frame offsets 0-8 */
-        *p++ = MK_I(0x2B, REG_SP, REG_T0, 0);            /* sw t0, 0(sp) */
-        *p++ = MK_I(0x2B, REG_SP, REG_T1, 4);            /* sw t1, 4(sp) */
-        *p++ = MK_I(0x2B, REG_SP, REG_T2, 8);            /* sw t2, 8(sp) */
-        /* Flush only caller-saved pinned regs to cpu struct */
-        *p++ = MK_I(0x2B, REG_S0, REG_T3, CPU_REG(2));   /* PSX $v0 */
-        *p++ = MK_I(0x2B, REG_S0, REG_T4, CPU_REG(3));   /* PSX $v1 */
-        *p++ = MK_I(0x2B, REG_S0, REG_T5, CPU_REG(4));   /* PSX $a0 */
-        *p++ = MK_I(0x2B, REG_S0, REG_T6, CPU_REG(5));   /* PSX $a1 */
-        *p++ = MK_I(0x2B, REG_S0, REG_T7, CPU_REG(6));   /* PSX $a2 */
+        /* Save all caller-clobbered registers to block stack frame */
+        *p++ = MK_I(0x2B, REG_SP, REG_T0, 0);            /* sw t0, 0(sp)  */
+        *p++ = MK_I(0x2B, REG_SP, REG_T1, 4);            /* sw t1, 4(sp)  */
+        *p++ = MK_I(0x2B, REG_SP, REG_T2, 8);            /* sw t2, 8(sp)  */
+        *p++ = MK_I(0x2B, REG_SP, REG_T3, 12);           /* sw t3, 12(sp) */
+        *p++ = MK_I(0x2B, REG_SP, REG_T4, 16);           /* sw t4, 16(sp) */
+        *p++ = MK_I(0x2B, REG_SP, REG_T5, 20);           /* sw t5, 20(sp) */
+        *p++ = MK_I(0x2B, REG_SP, REG_T6, 24);           /* sw t6, 24(sp) */
+        *p++ = MK_I(0x2B, REG_SP, REG_T7, 76);           /* sw t7, 76(sp) */
         /* Call target function (T8 = func_addr) */
         *p++ = MK_I(0x09, REG_SP, REG_SP, (uint32_t)(int32_t)-32);
         *p++ = MK_I(0x2B, REG_SP, REG_RA, 28);
@@ -318,16 +317,15 @@ void Init_Dynarec(void)
         *p++ = 0;
         *p++ = MK_I(0x23, REG_SP, REG_RA, 28);
         *p++ = MK_I(0x09, REG_SP, REG_SP, 32);
-        /* Reload caller-saved pinned regs */
-        *p++ = MK_I(0x23, REG_S0, REG_T3, CPU_REG(2));   /* PSX $v0 */
-        *p++ = MK_I(0x23, REG_S0, REG_T4, CPU_REG(3));   /* PSX $v1 */
-        *p++ = MK_I(0x23, REG_S0, REG_T5, CPU_REG(4));   /* PSX $a0 */
-        *p++ = MK_I(0x23, REG_S0, REG_T6, CPU_REG(5));   /* PSX $a1 */
-        *p++ = MK_I(0x23, REG_S0, REG_T7, CPU_REG(6));   /* PSX $a2 */
-        /* Restore dynamic slot registers */
-        *p++ = MK_I(0x23, REG_SP, REG_T0, 0);            /* lw t0, 0(sp) */
-        *p++ = MK_I(0x23, REG_SP, REG_T1, 4);            /* lw t1, 4(sp) */
-        *p++ = MK_I(0x23, REG_SP, REG_T2, 8);            /* lw t2, 8(sp) */
+        /* Restore all caller-clobbered registers from stack */
+        *p++ = MK_I(0x23, REG_SP, REG_T3, 12);           /* lw t3, 12(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_T4, 16);           /* lw t4, 16(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_T5, 20);           /* lw t5, 20(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_T6, 24);           /* lw t6, 24(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_T7, 76);           /* lw t7, 76(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_T0, 0);            /* lw t0, 0(sp)  */
+        *p++ = MK_I(0x23, REG_SP, REG_T1, 4);            /* lw t1, 4(sp)  */
+        *p++ = MK_I(0x23, REG_SP, REG_T2, 8);            /* lw t2, 8(sp)  */
         *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08);
         *p++ = 0;
     }
