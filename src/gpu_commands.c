@@ -7,6 +7,11 @@
  */
 #include "gpu_state.h"
 
+/* Static readback buffer for overlapping VRAM-to-VRAM copies.
+ * Max size: 1024×512×2 = 1MB (full bounding box). Avoids memalign/free
+ * per copy which is ~1000 cycles of kernel overhead on PS2. */
+static uint8_t vram_copy_readback[1024 * 512 * 2] __attribute__((aligned(64)));
+
 /* ── Command size lookup ─────────────────────────────────────────── */
 
 int GPU_GetCommandSize(uint32_t cmd)
@@ -390,8 +395,7 @@ void GPU_WriteGP0(uint32_t data)
                     int buf_bytes = uw_aligned * uh * 2;
                     int buf_qwc = (buf_bytes + 15) / 16;
 
-                    uint16_t *tbuf = (uint16_t *)memalign(64, buf_qwc * 16);
-                    if (tbuf)
+                    uint16_t *tbuf = (uint16_t *)vram_copy_readback;
                     {
                         Flush_GIF_Sync(); /* Must wait: direct GIF channel use follows */
 
@@ -505,17 +509,6 @@ void GPU_WriteGP0(uint32_t data)
                             }
                             buf_image_ptr = 0;
                         }
-                        Flush_GIF();
-
-                        free(tbuf);
-                    }
-                    else
-                    {
-                        Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
-                        Push_GIF_Data(GS_SET_BITBLTBUF(0, PSX_VRAM_FBW, GS_PSM_16S, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF); /* Local→Local: both src and dst */
-                        Push_GIF_Data(GS_SET_TRXPOS(sx, sy, dx, dy, 0), GS_REG_TRXPOS);
-                        Push_GIF_Data(GS_SET_TRXREG(w, h), GS_REG_TRXREG);
-                        Push_GIF_Data(GS_SET_TRXDIR(2), GS_REG_TRXDIR);
                         Flush_GIF();
                     }
                 }
