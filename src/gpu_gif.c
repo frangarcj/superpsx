@@ -60,13 +60,29 @@ void Flush_GIF(void)
     }
 }
 
-/* Synchronous flush: drain GIF buffer AND wait for DMA completion.
+/* Synchronous flush: drain GIF buffer AND wait for GS to finish rendering.
  * Required before directly using the GIF DMA channel (e.g. VRAM readback)
- * or when GS must have processed all prior commands. */
+ * or when GS must have processed all prior commands.
+ *
+ * dma_wait_fast() only ensures the EE→GIF DMA transfer is done.
+ * On real PS2 hardware, the GS may still be processing/rendering.
+ * We send a dummy GIF tag (NLOOP=0, EOP=1) and wait for GS_CSR FINISH
+ * to guarantee the GS has consumed everything in its FIFO. */
 void Flush_GIF_Sync(void)
 {
     Flush_GIF();
     dma_wait_fast();
+
+    /* Clear FINISH event, send empty EOP=1 tag, wait for GS completion */
+    *GS_REG_CSR = GS_SET_CSR(0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    static gif_qword_t finish_tag __attribute__((aligned(64)));
+    finish_tag.d0 = GIF_TAG_LO(0, 1, 0, 0, 0, 0); /* NLOOP=0, EOP=1 */
+    finish_tag.d1 = 0;
+    SyncDCache(&finish_tag, (void *)((uintptr_t)&finish_tag + 16));
+    dma_channel_send_normal(DMA_CHANNEL_GIF, &finish_tag, 1, 0, 0);
+    dma_wait_fast();
+    while (!(*GS_REG_CSR & 2))
+        ;
 }
 
 /* ── GS Environment Setup ────────────────────────────────────────── */

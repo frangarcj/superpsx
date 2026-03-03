@@ -20,6 +20,7 @@
 #include <string.h>
 #include <gs_psm.h>
 #include <gs_gp.h>
+#include <gs_privileged.h>
 #include <gif_tags.h>
 
 #define LOG_TAG "GPU"
