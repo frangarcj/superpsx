@@ -7,11 +7,6 @@
  */
 #include "gpu_state.h"
 
-/* Static readback buffer for overlapping VRAM-to-VRAM copies.
- * Max size: 1024×512×2 = 1MB (full bounding box). Avoids memalign/free
- * per copy which is ~1000 cycles of kernel overhead on PS2. */
-static uint8_t vram_copy_readback[1024 * 512 * 2] __attribute__((aligned(64)));
-
 /* ── Command size lookup ─────────────────────────────────────────── */
 
 int GPU_GetCommandSize(uint32_t cmd)
@@ -320,7 +315,11 @@ void GPU_WriteGP0(uint32_t data)
                     vram_gen_counter++;
                     Tex_Cache_DirtyRegion(dx, dy, w, h);
 
-                    /* Fast path: no wrapping → row-level memcpy/memmove */
+                    /* Copy in shadow VRAM (handles all overlap cases
+                     * correctly with PSX pixel-by-pixel semantics).
+                     * PSX copies left→right, top→bottom, wrapping at
+                     * 1024×512.  Overlapping src/dst produces well-defined
+                     * results due to the fixed copy order. */
                     if (sx + w <= 1024 && dx + w <= 1024 &&
                         sy + h <= 512 && dy + h <= 512)
                     {
@@ -368,160 +367,16 @@ void GPU_WriteGP0(uint32_t data)
                             }
                         }
                     }
-                }
 
-                int y_overlap_down = (dy > sy) && (dy < sy + h);
-
-                Flush_GIF();
-
-                if (y_overlap_down)
-                {
-                    int ux = (sx < dx) ? sx : dx;
-                    int uy = (sy < dy) ? sy : dy;
-                    int ux2 = ((sx + w) > (dx + w)) ? (sx + w) : (dx + w);
-                    int uy2 = ((sy + h) > (dy + h)) ? (sy + h) : (dy + h);
-                    int uw = ux2 - ux;
-                    int uh = uy2 - uy;
-
-                    if (uw > 1024)
-                        uw = 1024;
-                    if (uh > 512)
-                        uh = 512;
-
-                    int uw_aligned = (uw + 7) & ~7;
-                    if (ux + uw_aligned > 1024)
-                        uw_aligned = 1024 - ux;
-
-                    int buf_bytes = uw_aligned * uh * 2;
-                    int buf_qwc = (buf_bytes + 15) / 16;
-
-                    uint16_t *tbuf = (uint16_t *)vram_copy_readback;
-                    {
-                        Flush_GIF_Sync(); /* Must wait: direct GIF channel use follows */
-
-                        unsigned __int128 rb_packet[8] __attribute__((aligned(16)));
-                        uint64_t *rp = (uint64_t *)rb_packet;
-                        rp[0] = GIF_TAG_LO(4, 1, 0, 0, 0, 1);
-                        rp[1] = GIF_REG_AD;
-                        rp[2] = GS_SET_BITBLTBUF(0, PSX_VRAM_FBW, GS_PSM_16S, 0, 0, 0); /* Local→Host: source fields only */
-                        rp[3] = GS_REG_BITBLTBUF;
-                        rp[4] = (uint64_t)ux | ((uint64_t)uy << 16);
-                        rp[5] = GS_REG_TRXPOS;
-                        rp[6] = GS_SET_TRXREG(uw_aligned, uh);
-                        rp[7] = GS_REG_TRXREG;
-                        rp[8] = GS_SET_TRXDIR(1);
-                        rp[9] = GS_REG_TRXDIR;
-
-                        dma_channel_send_normal(DMA_CHANNEL_GIF, rb_packet, 5, 0, 0);
-                        dma_wait_fast();
-
-                        *GS_REG_BUSDIR = (uint64_t)1;
-                        uint32_t phys = (uint32_t)tbuf & 0x1FFFFFFF;
-                        uint32_t rem = buf_qwc;
-                        uint32_t addr = phys;
-                        while (rem > 0)
-                        {
-                            uint32_t xfer = (rem > 0xFFFF) ? 0xFFFF : rem;
-                            *D1_MADR = addr;
-                            *D1_QWC = xfer;
-                            *D1_CHCR = 0x100;
-                            while (*D1_CHCR & 0x100)
-                                ;
-                            addr += xfer * 16;
-                            rem -= xfer;
-                        }
-                        *GS_REG_BUSDIR = (uint64_t)0;
-
-                        uint16_t *uc = (uint16_t *)((uint32_t)tbuf | 0xA0000000);
-
-                        for (int row = 0; row < h; row++)
-                        {
-                            for (int col = 0; col < w; col++)
-                            {
-                                int sry = (sy + row) - uy;
-                                int srx = (sx + col) - ux;
-                                int dry = (dy + row) - uy;
-                                int drx = (dx + col) - ux;
-                                uc[dry * uw_aligned + drx] = uc[sry * uw_aligned + srx];
-                            }
-                        }
-
-                        Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
-                        Push_GIF_Data(GS_SET_BITBLTBUF(0, 0, 0, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF);
-                        Push_GIF_Data(GS_SET_TRXPOS(0, 0, dx, dy, 0), GS_REG_TRXPOS);
-                        Push_GIF_Data(GS_SET_TRXREG(w, h), GS_REG_TRXREG);
-                        Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR);
-                        Flush_GIF();
-
-                        buf_image_ptr = 0;
-                        uint32_t pend[4];
-                        int pc = 0;
-                        uint16_t prev_px = 0;
-                        int pixel_idx = 0;
-                        for (int row = 0; row < h; row++)
-                        {
-                            int dry = (dy + row) - uy;
-                            for (int col = 0; col < w; col++)
-                            {
-                                int drx = (dx + col) - ux;
-                                uint16_t px = uc[dry * uw_aligned + drx];
-                                if ((pixel_idx & 1) == 0)
-                                    prev_px = px;
-                                else
-                                {
-                                    pend[pc++] = (uint32_t)prev_px | ((uint32_t)px << 16);
-                                    if (pc >= 4)
-                                    {
-                                        uint64_t lo = (uint64_t)pend[0] | ((uint64_t)pend[1] << 32);
-                                        uint64_t hi = (uint64_t)pend[2] | ((uint64_t)pend[3] << 32);
-                                        buf_image[buf_image_ptr++] = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
-                                        pc = 0;
-                                        if (buf_image_ptr >= 1000)
-                                        {
-                                            Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 0, 0, 0, 2, 0), 0);
-                                            for (int i = 0; i < buf_image_ptr; i++)
-                                            {
-                                                uint64_t *pp = (uint64_t *)&buf_image[i];
-                                                Push_GIF_Data(pp[0], pp[1]);
-                                            }
-                                            buf_image_ptr = 0;
-                                        }
-                                    }
-                                }
-                                pixel_idx++;
-                            }
-                        }
-                        if (pixel_idx & 1)
-                            pend[pc++] = (uint32_t)prev_px;
-                        if (pc > 0)
-                        {
-                            while (pc < 4)
-                                pend[pc++] = 0;
-                            uint64_t lo = (uint64_t)pend[0] | ((uint64_t)pend[1] << 32);
-                            uint64_t hi = (uint64_t)pend[2] | ((uint64_t)pend[3] << 32);
-                            buf_image[buf_image_ptr++] = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
-                        }
-                        if (buf_image_ptr > 0)
-                        {
-                            Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 1, 0, 0, 2, 0), 0);
-                            for (int i = 0; i < buf_image_ptr; i++)
-                            {
-                                uint64_t *pp = (uint64_t *)&buf_image[i];
-                                Push_GIF_Data(pp[0], pp[1]);
-                            }
-                            buf_image_ptr = 0;
-                        }
-                        Flush_GIF();
-                    }
-                }
-                else
-                {
-                    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
-                    Push_GIF_Data(GS_SET_BITBLTBUF(0, PSX_VRAM_FBW, GS_PSM_16S, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF); /* Local→Local: both src and dst */
-                    Push_GIF_Data(GS_SET_TRXPOS(sx, sy, dx, dy, 0), GS_REG_TRXPOS);
-                    Push_GIF_Data(GS_SET_TRXREG(w, h), GS_REG_TRXREG);
-                    Push_GIF_Data(GS_SET_TRXDIR(2), GS_REG_TRXDIR);
-                    Flush_GIF();
+                    /* Upload the destination region from shadow VRAM to GS.
+                     * This replaces both the GS Local→Local copy and the
+                     * BUSDIR readback path.  Benefits:
+                     *  - Correct for ALL overlap cases (shadow already copied)
+                     *  - Applies STP fixup (Upload_Shadow_VRAM_Region does it)
+                     *  - No BUSDIR readback (fragile on real PS2 hardware)
+                     *  - No Flush_GIF_Sync stall
+                     *  - Eliminates 1MB vram_copy_readback buffer */
+                    Upload_Shadow_VRAM_Region(dx, dy, w, h);
                 }
             }
             else
