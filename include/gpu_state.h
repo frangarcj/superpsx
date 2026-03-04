@@ -171,8 +171,8 @@ extern int gpu_transfer_words;
 extern int gpu_transfer_total;
 
 /* IMAGE transfer buffer */
-/* buf_image removed — F6: IMAGE data now goes directly to GIF DMA buffer
- * via tag-slot reservation + backpatch, eliminating the 16KB copy. */
+extern unsigned __int128 buf_image[1024];
+extern int buf_image_ptr;
 
 /* ═══════════════════════════════════════════════════════════════════
  *  Internal functions (cross-module interface)

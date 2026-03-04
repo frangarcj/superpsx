@@ -27,3 +27,4 @@ isos/crash_pid*.txt
 # Analysis files (not tracked)
 jit_optimization_analysis.md
 superpsx_improvement_analysis.md
+gpu_audit.md.resolved

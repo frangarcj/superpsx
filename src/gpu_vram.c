@@ -44,12 +44,6 @@ void Upload_Shadow_VRAM_Region(int x, int y, int w, int h)
     Push_GIF_Data(GS_SET_TRXREG(w, h), GS_REG_TRXREG);
     Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR); // Host -> Local
 
-    /* Reserve IMAGE tag slot — backpatched with qword count before flush.
-     * Data goes directly to the GIF DMA buffer, eliminating the buf_image
-     * intermediate copy. */
-    gif_qword_t *image_tag = fast_gif_ptr++;
-    int image_count = 0;
-
     // Send pixel data from shadow VRAM
     for (int row = 0; row < h; row++)
     {
@@ -75,16 +69,19 @@ void Upload_Shadow_VRAM_Region(int x, int y, int w, int h)
             {
                 uint64_t lo = (uint64_t)pending[0] | ((uint64_t)pending[1] << 32);
                 uint64_t hi = (uint64_t)pending[2] | ((uint64_t)pending[3] << 32);
-                Push_GIF_Data(lo, hi);
-                image_count++;
+                unsigned __int128 q = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
+                buf_image[buf_image_ptr++] = q;
                 pc = 0;
 
-                if (image_count >= 1000)
+                if (buf_image_ptr >= 1000)
                 {
-                    *(unsigned __int128 *)image_tag = (unsigned __int128)GIF_TAG_LO(image_count, 0, 0, 0, 2, 0);
-                    Flush_GIF();
-                    image_tag = fast_gif_ptr++;
-                    image_count = 0;
+                    Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 0, 0, 0, 2, 0), 0);
+                    for (int i = 0; i < buf_image_ptr; i++)
+                    {
+                        uint64_t *pp = (uint64_t *)&buf_image[i];
+                        Push_GIF_Data(pp[0], pp[1]);
+                    }
+                    buf_image_ptr = 0;
                 }
             }
         }
@@ -96,17 +93,23 @@ void Upload_Shadow_VRAM_Region(int x, int y, int w, int h)
                 pending[pc++] = 0;
             uint64_t lo = (uint64_t)pending[0] | ((uint64_t)pending[1] << 32);
             uint64_t hi = (uint64_t)pending[2] | ((uint64_t)pending[3] << 32);
-            Push_GIF_Data(lo, hi);
-            image_count++;
+            unsigned __int128 q = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
+            buf_image[buf_image_ptr++] = q;
             pc = 0;
         }
     }
 
-    // Backpatch final IMAGE tag (EOP=1)
-    if (image_count > 0)
-        *(unsigned __int128 *)image_tag = (unsigned __int128)GIF_TAG_LO(image_count, 1, 0, 0, 2, 0);
-    else
-        fast_gif_ptr--; /* Cancel empty tag reservation */
+    // Final flush
+    if (buf_image_ptr > 0)
+    {
+        Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 1, 0, 0, 2, 0), 0);
+        for (int i = 0; i < buf_image_ptr; i++)
+        {
+            uint64_t *pp = (uint64_t *)&buf_image[i];
+            Push_GIF_Data(pp[0], pp[1]);
+        }
+        buf_image_ptr = 0;
+    }
     Flush_GIF();
 }
 
@@ -133,7 +136,8 @@ uint16_t *GS_ReadbackRegion(int x, int y, int w_aligned, int h, void *buf, int b
     dma_channel_send_normal(DMA_CHANNEL_GIF, rb_packet, 5, 0, 0);
     dma_wait_fast();
 
-    // Receive via VIF1 DMA
+    // Receive via VIF1 DMA (reverse GIF bus for GS→EE readback)
+    *GS_REG_BUSDIR = (uint64_t)1;
     uint32_t phys = (uint32_t)buf & 0x1FFFFFFF;
     uint32_t rem = buf_qwc;
     uint32_t addr = phys;
@@ -148,6 +152,7 @@ uint16_t *GS_ReadbackRegion(int x, int y, int w_aligned, int h, void *buf, int b
         addr += xfer * 16;
         rem -= xfer;
     }
+    *GS_REG_BUSDIR = (uint64_t)0;
 
     return (uint16_t *)((uint32_t)buf | 0xA0000000);
 }
@@ -163,9 +168,8 @@ void GS_UploadRegion(int x, int y, int w, int h, const uint16_t *pixels)
     Push_GIF_Data(GS_SET_TRXREG(w, h), GS_REG_TRXREG);
     Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR); // Host -> Local
 
-    // Pack pixels directly into GIF DMA buffer (tag-slot backpatch)
-    gif_qword_t *image_tag = fast_gif_ptr++;
-    int image_count = 0;
+    // Pack pixels into IMAGE transfer qwords
+    buf_image_ptr = 0;
     uint32_t pend[4];
     int pc = 0;
     int total = w * h;
@@ -181,33 +185,38 @@ void GS_UploadRegion(int x, int y, int w, int h, const uint16_t *pixels)
         {
             uint64_t lo = (uint64_t)pend[0] | ((uint64_t)pend[1] << 32);
             uint64_t hi = (uint64_t)pend[2] | ((uint64_t)pend[3] << 32);
-            Push_GIF_Data(lo, hi);
-            image_count++;
+            buf_image[buf_image_ptr++] = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
             pc = 0;
-            if (image_count >= 1000)
+            if (buf_image_ptr >= 1000)
             {
-                *(unsigned __int128 *)image_tag = (unsigned __int128)GIF_TAG_LO(image_count, 0, 0, 0, 2, 0);
-                Flush_GIF();
-                image_tag = fast_gif_ptr++;
-                image_count = 0;
+                Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 0, 0, 0, 2, 0), 0);
+                for (int j = 0; j < buf_image_ptr; j++)
+                {
+                    uint64_t *pp = (uint64_t *)&buf_image[j];
+                    Push_GIF_Data(pp[0], pp[1]);
+                }
+                buf_image_ptr = 0;
             }
         }
     }
-    // Flush remaining partial qword
+    // Flush remaining
     if (pc > 0)
     {
         while (pc < 4)
             pend[pc++] = 0;
         uint64_t lo = (uint64_t)pend[0] | ((uint64_t)pend[1] << 32);
         uint64_t hi = (uint64_t)pend[2] | ((uint64_t)pend[3] << 32);
-        Push_GIF_Data(lo, hi);
-        image_count++;
+        buf_image[buf_image_ptr++] = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
     }
-    // Backpatch final IMAGE tag (EOP=1)
-    if (image_count > 0)
-        *(unsigned __int128 *)image_tag = (unsigned __int128)GIF_TAG_LO(image_count, 1, 0, 0, 2, 0);
-    else
-        fast_gif_ptr--; /* Cancel empty tag reservation */
+    if (buf_image_ptr > 0)
+    {
+        Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 1, 0, 0, 2, 0), 0);
+        for (int j = 0; j < buf_image_ptr; j++)
+        {
+            uint64_t *pp = (uint64_t *)&buf_image[j];
+            Push_GIF_Data(pp[0], pp[1]);
+        }
+    }
 }
 
 void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uint32_t word_count)
@@ -231,9 +240,7 @@ void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uin
     Push_GIF_Data(GS_SET_TRXREG(w, h), GS_REG_TRXREG);
     Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR); // Host -> Local
 
-    // Tag-slot backpatch: write IMAGE data directly to GIF DMA buffer
-    gif_qword_t *image_tag = fast_gif_ptr++;
-    int image_count = 0;
+    buf_image_ptr = 0;
     uint32_t pend[4];
     int pc = 0;
     int px = x, py = y;
@@ -266,16 +273,18 @@ void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uin
         {
             uint64_t lo = (uint64_t)pend[0] | ((uint64_t)pend[1] << 32);
             uint64_t hi = (uint64_t)pend[2] | ((uint64_t)pend[3] << 32);
-            Push_GIF_Data(lo, hi);
-            image_count++;
+            buf_image[buf_image_ptr++] = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
             pc = 0;
 
-            if (image_count >= 1000)
+            if (buf_image_ptr >= 1000)
             {
-                *(unsigned __int128 *)image_tag = (unsigned __int128)GIF_TAG_LO(image_count, 0, 0, 0, 2, 0);
-                Flush_GIF();
-                image_tag = fast_gif_ptr++;
-                image_count = 0;
+                Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 0, 0, 0, 2, 0), 0); // IMAGE mode, EOP=0 (intermediate)
+                for (int j = 0; j < buf_image_ptr; j++)
+                {
+                    uint64_t *p = (uint64_t *)&buf_image[j];
+                    Push_GIF_Data(p[0], p[1]);
+                }
+                buf_image_ptr = 0;
             }
         }
     }
@@ -286,15 +295,19 @@ void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uin
             pend[pc++] = 0;
         uint64_t lo = (uint64_t)pend[0] | ((uint64_t)pend[1] << 32);
         uint64_t hi = (uint64_t)pend[2] | ((uint64_t)pend[3] << 32);
-        Push_GIF_Data(lo, hi);
-        image_count++;
+        buf_image[buf_image_ptr++] = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
     }
 
-    // Backpatch final IMAGE tag (EOP=1)
-    if (image_count > 0)
-        *(unsigned __int128 *)image_tag = (unsigned __int128)GIF_TAG_LO(image_count, 1, 0, 0, 2, 0);
-    else
-        fast_gif_ptr--; /* Cancel empty tag reservation */
+    if (buf_image_ptr > 0)
+    {
+        Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 1, 0, 0, 2, 0), 0); // IMAGE mode
+        for (int j = 0; j < buf_image_ptr; j++)
+        {
+            uint64_t *p = (uint64_t *)&buf_image[j];
+            Push_GIF_Data(p[0], p[1]);
+        }
+        buf_image_ptr = 0;
+    }
 
     Flush_GIF();
 }
@@ -357,7 +370,8 @@ void DumpVRAM(const char *filename)
     dma_channel_send_normal(DMA_CHANNEL_GIF, packet, 5, 0, 0);
     dma_wait_fast();
 
-    // 5. Receive data via VIF1 DMA (PCSX2-specific readback path)
+    // 5. Receive data via VIF1 DMA (reverse GIF bus for GS→EE readback)
+    *GS_REG_BUSDIR = (uint64_t)1;
     uint32_t phys_addr = (uint32_t)buf & 0x1FFFFFFF;
     uint32_t remaining_qwc = qwc;
     uint32_t current_addr = phys_addr;
@@ -376,6 +390,7 @@ void DumpVRAM(const char *filename)
         current_addr += transfer_qwc * 16;
         remaining_qwc -= transfer_qwc;
     }
+    *GS_REG_BUSDIR = (uint64_t)0;
 
     // 6. Read via uncached access and save to file
     uint8_t *uncached_buf = (uint8_t *)(phys_addr | 0xA0000000);

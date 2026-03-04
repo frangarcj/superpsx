@@ -138,11 +138,8 @@ void GPU_WriteGP0(uint32_t data)
 
         // For CT16S: accumulate raw 32-bit words into 128-bit qwords
         // Set STP bit for non-zero pixels → GS alpha=0x80 for opaque, 0x00 for transparent
-        // Tag-slot backpatch: write directly to GIF DMA buffer, no buf_image copy.
         static uint32_t pending_words[4];
         static int pending_count = 0;
-        static gif_qword_t *image_tag_slot = NULL;
-        static int image_qw_count = 0;
 
         {
             uint16_t gs_p0 = (uint16_t)(data & 0xFFFF);
@@ -157,21 +154,19 @@ void GPU_WriteGP0(uint32_t data)
         {
             uint64_t lo = (uint64_t)pending_words[0] | ((uint64_t)pending_words[1] << 32);
             uint64_t hi = (uint64_t)pending_words[2] | ((uint64_t)pending_words[3] << 32);
-            /* Reserve IMAGE tag slot on first qword of each batch */
-            if (!image_tag_slot) {
-                image_tag_slot = fast_gif_ptr++;
-                image_qw_count = 0;
-            }
-            Push_GIF_Data(lo, hi);
-            image_qw_count++;
+            unsigned __int128 q = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
+            buf_image[buf_image_ptr++] = q;
             pending_count = 0;
 
-            if (image_qw_count >= 1000)
+            if (buf_image_ptr >= 1000)
             {
-                *(unsigned __int128 *)image_tag_slot = (unsigned __int128)GIF_TAG_LO(image_qw_count, 0, 0, 0, 2, 0);
-                Flush_GIF();
-                image_tag_slot = NULL;
-                image_qw_count = 0;
+                Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 0, 0, 0, 2, 0), 0);
+                for (int i = 0; i < buf_image_ptr; i++)
+                {
+                    uint64_t *p = (uint64_t *)&buf_image[i];
+                    Push_GIF_Data(p[0], p[1]);
+                }
+                buf_image_ptr = 0;
             }
         }
 
@@ -184,25 +179,20 @@ void GPU_WriteGP0(uint32_t data)
                     pending_words[pending_count++] = 0;
                 uint64_t lo = (uint64_t)pending_words[0] | ((uint64_t)pending_words[1] << 32);
                 uint64_t hi = (uint64_t)pending_words[2] | ((uint64_t)pending_words[3] << 32);
-                if (!image_tag_slot) {
-                    image_tag_slot = fast_gif_ptr++;
-                    image_qw_count = 0;
-                }
-                Push_GIF_Data(lo, hi);
-                image_qw_count++;
+                unsigned __int128 q = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
+                buf_image[buf_image_ptr++] = q;
                 pending_count = 0;
             }
-            /* Backpatch final IMAGE tag (EOP=1) */
-            if (image_tag_slot && image_qw_count > 0)
+            if (buf_image_ptr > 0)
             {
-                *(unsigned __int128 *)image_tag_slot = (unsigned __int128)GIF_TAG_LO(image_qw_count, 1, 0, 0, 2, 0);
+                Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 1, 0, 0, 2, 0), 0);
+                for (int i = 0; i < buf_image_ptr; i++)
+                {
+                    uint64_t *p = (uint64_t *)&buf_image[i];
+                    Push_GIF_Data(p[0], p[1]);
+                }
+                buf_image_ptr = 0;
             }
-            else if (image_tag_slot)
-            {
-                fast_gif_ptr--; /* Cancel empty tag reservation */
-            }
-            image_tag_slot = NULL;
-            image_qw_count = 0;
             // Flush_GIF(); <-- Removed: batching primitives
 
             // Flush GS texture cache after VRAM upload
@@ -425,6 +415,7 @@ void GPU_WriteGP0(uint32_t data)
                         dma_channel_send_normal(DMA_CHANNEL_GIF, rb_packet, 5, 0, 0);
                         dma_wait_fast();
 
+                        *GS_REG_BUSDIR = (uint64_t)1;
                         uint32_t phys = (uint32_t)tbuf & 0x1FFFFFFF;
                         uint32_t rem = buf_qwc;
                         uint32_t addr = phys;
@@ -439,6 +430,7 @@ void GPU_WriteGP0(uint32_t data)
                             addr += xfer * 16;
                             rem -= xfer;
                         }
+                        *GS_REG_BUSDIR = (uint64_t)0;
 
                         uint16_t *uc = (uint16_t *)((uint32_t)tbuf | 0xA0000000);
 
@@ -461,9 +453,7 @@ void GPU_WriteGP0(uint32_t data)
                         Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR);
                         Flush_GIF();
 
-                        /* Tag-slot backpatch: write directly to GIF DMA buffer */
-                        gif_qword_t *image_tag = fast_gif_ptr++;
-                        int image_count = 0;
+                        buf_image_ptr = 0;
                         uint32_t pend[4];
                         int pc = 0;
                         uint16_t prev_px = 0;
@@ -484,15 +474,17 @@ void GPU_WriteGP0(uint32_t data)
                                     {
                                         uint64_t lo = (uint64_t)pend[0] | ((uint64_t)pend[1] << 32);
                                         uint64_t hi = (uint64_t)pend[2] | ((uint64_t)pend[3] << 32);
-                                        Push_GIF_Data(lo, hi);
-                                        image_count++;
+                                        buf_image[buf_image_ptr++] = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
                                         pc = 0;
-                                        if (image_count >= 1000)
+                                        if (buf_image_ptr >= 1000)
                                         {
-                                            *(unsigned __int128 *)image_tag = (unsigned __int128)GIF_TAG_LO(image_count, 0, 0, 0, 2, 0);
-                                            Flush_GIF();
-                                            image_tag = fast_gif_ptr++;
-                                            image_count = 0;
+                                            Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 0, 0, 0, 2, 0), 0);
+                                            for (int i = 0; i < buf_image_ptr; i++)
+                                            {
+                                                uint64_t *pp = (uint64_t *)&buf_image[i];
+                                                Push_GIF_Data(pp[0], pp[1]);
+                                            }
+                                            buf_image_ptr = 0;
                                         }
                                     }
                                 }
@@ -507,14 +499,18 @@ void GPU_WriteGP0(uint32_t data)
                                 pend[pc++] = 0;
                             uint64_t lo = (uint64_t)pend[0] | ((uint64_t)pend[1] << 32);
                             uint64_t hi = (uint64_t)pend[2] | ((uint64_t)pend[3] << 32);
-                            Push_GIF_Data(lo, hi);
-                            image_count++;
+                            buf_image[buf_image_ptr++] = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
                         }
-                        /* Backpatch final IMAGE tag (EOP=1) */
-                        if (image_count > 0)
-                            *(unsigned __int128 *)image_tag = (unsigned __int128)GIF_TAG_LO(image_count, 1, 0, 0, 2, 0);
-                        else
-                            fast_gif_ptr--; /* Cancel empty tag reservation */
+                        if (buf_image_ptr > 0)
+                        {
+                            Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 1, 0, 0, 2, 0), 0);
+                            for (int i = 0; i < buf_image_ptr; i++)
+                            {
+                                uint64_t *pp = (uint64_t *)&buf_image[i];
+                                Push_GIF_Data(pp[0], pp[1]);
+                            }
+                            buf_image_ptr = 0;
+                        }
                         Flush_GIF();
                     }
                 }

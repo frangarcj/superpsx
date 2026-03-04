@@ -107,7 +107,8 @@ int gpu_transfer_words = 0;
 int gpu_transfer_total = 0;
 
 /* IMAGE transfer buffer */
-/* buf_image removed — see F6 in gpu_vram.c / gpu_commands.c */
+unsigned __int128 buf_image[1024];
+int buf_image_ptr = 0;
 
 /* ═══════════════════════════════════════════════════════════════════
  *  GPU_Read / GPU_ReadStatus / GPU_VBlank / GPU_Flush
