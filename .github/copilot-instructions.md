@@ -51,13 +51,13 @@ make -C build run GAMEARGS=isos/CrashBandicoot/CrashBandicoot.cue
 
 ## JIT Playground
 
-A separate ELF (`jit_playground.elf`) for testing the dynarec in isolation with a mini-DSL. 59 micro-tests split across 4 category files.
+A separate ELF (`jit_playground.elf`) for testing the dynarec in isolation with a mini-DSL. 62 micro-tests split across 4 category files.
 
 ```bash
 # Build playground (EXCLUDE_FROM_ALL — not built by default)
 cmake --build build --target jit_playground.elf 2>&1 | tail -5
 
-# Run playground (expect: 59/59 passed) — 15s is enough
+# Run playground (expect: 62/62 passed) — 15s is enough
 perl -e 'alarm 15; exec @ARGV' make -C build run-playground \
   > /tmp/playground_out.txt 2>&1; \
 grep -E "Results|FAIL" /tmp/playground_out.txt
@@ -70,19 +70,19 @@ grep -E "Results|FAIL" /tmp/playground_out.txt
 - `tests/jit/test_alu.c` — ALU, shifts, mul/div, comparisons, HI/LO (21 tests)
 - `tests/jit/test_memory.c` — Load/Store + ISC: LW/SW, LB/SB, LH/SH, LWL/LWR, SWL/SWR, MFC0, ISC checks (13 tests)
 - `tests/jit/test_branch.c` — Branches: BEQ, BNE, BLTZ, BGEZ, BLEZ, BGTZ, delay slots (7 tests)
-- `tests/jit/test_block.c` — Interactions, cross-block, loops, nested JAL, all-32-regs, prologue/pin (18 tests)
+- `tests/jit/test_block.c` — Interactions, cross-block, loops, nested JAL, all-32-regs, dynamic alloc stress, prologue/pin (21 tests)
 - `docs/jit_playground.md` — Design document
 
 **Adding new tests:** Write a `static void test_xxx(void)` in the appropriate category file using `BEGIN_TEST/SET_REG/EMIT/RUN/EXPECT_REG/END_TEST` macros, then call it from the category runner (`pg_run_alu_tests`, `pg_run_memory_tests`, `pg_run_branch_tests`, or `pg_run_block_tests`).
 
-**Before committing JIT changes:** run the playground (`59/59 passed`) in addition to the standard GTE/CPU/Timer tests.
+**Before committing JIT changes:** run the playground (`62/62 passed`) in addition to the standard GTE/CPU/Timer tests.
 
 ## Testing Protocol
 
 Before committing ANY change to the dynarec or emulation core:
 
 1. Build must succeed with zero warnings (except known ones in tlb_handler.c when TLB disabled)
-2. **JIT Playground: 59/59 passed** (for dynarec changes)
+2. **JIT Playground: 62/62 passed** (for dynarec changes)
 3. GTE: 1150 passed, 0 failed
 4. CPU: Result 00000101 (check PCSX2 emulog.txt, NOT stdout)
 5. Timer test: must complete without hangs

@@ -4,8 +4,8 @@
  * Covers: store-load forwarding, loops, JAL/JR chains,
  *         cross-block register persistence (pinned + non-pinned),
  *         multi-block chains, super-blocks, nested calls, conditional paths,
- *         all-32-regs comprehensive test.
- * 14 tests total.
+ *         all-32-regs comprehensive test, dynamic allocator stress.
+ * 21 tests total.
  */
 #include "playground.h"
 
@@ -488,6 +488,138 @@ static void test_all_32_regs(void)
 }
 
 /* ================================================================
+ *  Dynamic Allocator Stress Tests
+ *
+ *  These validate that the dynamic register allocator works
+ *  correctly with many non-pinned regs, across C-call trampolines,
+ *  and across block boundaries with different slot assignments.
+ *  Currently 3 dynamic slots (T0-T2); after refactor to 8 (T0-T7)
+ *  these tests must still pass.
+ * ================================================================ */
+
+/* Use 8 non-pinned PSX regs (t0-t7) + a3 as accumulator in one block.
+ * There are only 3 dynamic slots, so at least 6 regs must spill to
+ * cpu.regs[].  After the refactor to 8 slots, all fit in hardware. */
+static void test_many_dynamic_regs(void)
+{
+    BEGIN_TEST("many_dynamic_regs");
+    SET_REG(R_T0, 10);
+    SET_REG(R_T1, 20);
+    SET_REG(R_T2, 30);
+    SET_REG(R_T3, 40);
+    SET_REG(R_T4, 50);
+    SET_REG(R_T5, 60);
+    SET_REG(R_T6, 70);
+    SET_REG(R_T7, 80);
+
+    /* Chain: a3 = sum of t0..t7 = 360 */
+    EMIT(PSX_ADDU(R_A3, R_T0, R_T1));   /* a3 = 10+20 = 30  */
+    EMIT(PSX_ADDU(R_A3, R_A3, R_T2));   /* a3 = 30+30 = 60  */
+    EMIT(PSX_ADDU(R_A3, R_A3, R_T3));   /* a3 = 60+40 = 100 */
+    EMIT(PSX_ADDU(R_A3, R_A3, R_T4));   /* a3 = 100+50 = 150 */
+    EMIT(PSX_ADDU(R_A3, R_A3, R_T5));   /* a3 = 150+60 = 210 */
+    EMIT(PSX_ADDU(R_A3, R_A3, R_T6));   /* a3 = 210+70 = 280 */
+    EMIT(PSX_ADDU(R_A3, R_A3, R_T7));   /* a3 = 280+80 = 360 */
+
+    /* Also write back to some non-pinned regs to test write-through */
+    EMIT(PSX_ADDU(R_T0, R_T1, R_T2));   /* t0 = 20+30 = 50  (overwrite) */
+    EMIT(PSX_ADDU(R_T3, R_T4, R_T5));   /* t3 = 50+60 = 110 (overwrite) */
+
+    RUN(2000);
+
+    EXPECT_REG(R_A3, 360);   /* accumulator result */
+    EXPECT_REG(R_T0, 50);    /* overwritten */
+    EXPECT_REG(R_T3, 110);   /* overwritten */
+    /* Read-only inputs must survive in cpu.regs[] */
+    EXPECT_REG(R_T1, 20);
+    EXPECT_REG(R_T4, 50);
+    EXPECT_REG(R_T7, 80);
+    END_TEST();
+}
+
+/* Trigger SMC (Self-Modifying Code) detection mid-block by writing to
+ * the code page (0x80010000).  This exercises the lite C-call trampoline
+ * which saves/restores T0-T7.  Dynamic slot values must survive. */
+static void test_dynamic_survives_smc(void)
+{
+    BEGIN_TEST("dynamic_survives_smc");
+    /* Use non-pinned regs that go through dynamic slots */
+    SET_REG(R_T0, 0xAABBCCDD);
+    SET_REG(R_T1, 0x11223344);
+    SET_REG(R_T2, 0x55667788);
+    SET_REG(R_S2, 0xDEADDEAD);   /* data to write */
+
+    /* Build code page address in t3 */
+    EMIT(PSX_LUI(R_T3, 0x8001));               /* t3 = 0x80010000 (code page) */
+
+    /* Compute a3 = t0 + t1 BEFORE the SMC write */
+    EMIT(PSX_ADDU(R_A3, R_T0, R_T1));          /* a3 = 0xBBDE0021 */
+
+    /* Write to code page → triggers SMC detection → lite trampoline
+     * saves T0-T7, calls jit_smc_handler, restores T0-T7.
+     * Writing at offset 0x100 avoids overwriting our own JR $ra exit. */
+    EMIT(PSX_SW(R_S2, 0x100, R_T3));           /* SW to 0x80010100 */
+
+    /* After trampoline returns, dynamic slots must still be correct.
+     * Compute a3 += t2 using values that must survive the trampoline. */
+    EMIT(PSX_ADDU(R_A3, R_A3, R_T2));          /* a3 = 0xBBDE0021 + 0x55667788 */
+
+    RUN(5000);
+
+    /* If lite trampoline corrupted T0-T2, a3 would be wrong */
+    EXPECT_REG(R_A3, 0x114477A9u);
+    /* Dynamic slot values must survive the trampoline */
+    EXPECT_REG(R_T0, 0xAABBCCDD);
+    EXPECT_REG(R_T1, 0x11223344);
+    EXPECT_REG(R_T2, 0x55667788);
+    END_TEST();
+}
+
+/* Two blocks with different dominant non-pinned regs.
+ * Block 1: heavy use of t0-t3 (get dynamic slots T0-T2).
+ * Block 2: heavy use of s2-s5 (different dynamic slot assignment).
+ * Values computed in block 1 must be readable in block 2 via cpu.regs[]
+ * (write-through ensures cpu.regs[] is always current). */
+static void test_dynamic_cross_block_alloc(void)
+{
+    BEGIN_TEST("dynamic_cross_block_alloc");
+
+    SET_REG(R_T0, 100);
+    SET_REG(R_T1, 200);
+    SET_REG(R_T2, 300);
+    SET_REG(R_T3, 400);
+    SET_REG(R_S2, 0);
+    SET_REG(R_S3, 0);
+
+    /* Block 1: heavy use of t0-t3 */
+    EMIT(PSX_ADDU(R_T0, R_T0, R_T1));    /* t0 = 100+200 = 300 */
+    EMIT(PSX_ADDU(R_T2, R_T2, R_T3));    /* t2 = 300+400 = 700 */
+    EMIT(PSX_ADDU(R_T0, R_T0, R_T2));    /* t0 = 300+700 = 1000 */
+
+    /* Force block boundary with J */
+    uint32_t block2_pc = PG_CODE_BASE + 12 * 4;
+    EMIT(PSX_J((block2_pc >> 2) & 0x03FFFFFF));
+    EMIT(PSX_NOP());
+    for (int i = 5; i < 12; i++) EMIT(PSX_NOP());  /* pad to insn 12 */
+
+    /* Block 2: heavy use of s2-s3, reads t0 from block 1 */
+    EMIT(PSX_ADDIU(R_S2, R_S2, 10));     /* s2 = 10 */
+    EMIT(PSX_ADDIU(R_S3, R_S3, 20));     /* s3 = 20 */
+    EMIT(PSX_ADDU(R_S2, R_S2, R_T0));    /* s2 = 10 + 1000 = 1010 */
+    EMIT(PSX_ADDU(R_S3, R_S3, R_S2));    /* s3 = 20 + 1010 = 1030 */
+
+    RUN(10000);
+
+    /* Block 1 result must survive into block 2 */
+    EXPECT_REG(R_T0, 1000);
+    EXPECT_REG(R_T2, 700);
+    /* Block 2 results using cross-block values */
+    EXPECT_REG(R_S2, 1010);
+    EXPECT_REG(R_S3, 1030);
+    END_TEST();
+}
+
+/* ================================================================
  *  Prologue / Register Pin Tests
  *
  *  These validate that the prologue/epilogue correctly handles
@@ -659,6 +791,11 @@ void pg_run_block_tests(void)
     test_loop_accumulate_memory();
     test_conditional_both_paths();
     test_all_32_regs();
+
+    printf("\n--- Dynamic Allocator Stress ---\n");
+    test_many_dynamic_regs();
+    test_dynamic_survives_smc();
+    test_dynamic_cross_block_alloc();
 
     printf("\n--- Prologue / Register Pin ---\n");
     test_prologue_only_caller_pins();
