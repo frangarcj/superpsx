@@ -16,4 +16,5 @@ void pg_run_all_tests(void)
     pg_run_memory_tests();
     pg_run_branch_tests();
     pg_run_block_tests();
+    pg_run_dirty_tests();
 }

@@ -448,7 +448,7 @@ void emit_call_c(uint32_t func_addr)
     /* Materialize any lazy constants before the C call */
     flush_dirty_consts();
     /* Flush dirty dynamic slots so C helper sees current cpu.regs[] */
-    dyn_flush_all_slots(); /* A: emit_call_c */
+    dyn_flush_all_slots(); /* A: emit_call_c — flush-all (mid-block C call) */
     /* Flush S2 to memory so C code sees current cycles_left */
     EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
 
@@ -471,7 +471,7 @@ void emit_call_c_lite(uint32_t func_addr)
     /* Materialize any lazy constants before the C call */
     flush_dirty_consts();
     /* Flush dirty dynamic slots so C helper sees current cpu.regs[] */
-    dyn_flush_all_slots(); /* B: emit_call_c_lite */
+    dyn_flush_all_slots(); /* B: emit_call_c_lite — flush-all (mid-block C call) */
     /* Lightweight trampoline for C helpers that do NOT read/write cpu.regs[].
      * Saves/restores ALL 8 dynamic slot regs (T0-T7) to stack.
      * Callee-saved pins (S4/S5/S6/S7) preserved by C ABI. */
@@ -513,7 +513,7 @@ void emit_abort_check(uint32_t cycles)
      * Save/restore dyn_dirty_mask because the flush only runs on the
      * abort path — the normal (non-abort) path still has dirty slots. */
     uint8_t saved_dyn_mask = dyn_dirty_mask;
-    dyn_flush_all_slots(); /* C: emit_abort_check */
+    dyn_flush_dirty_slots(); /* C: emit_abort_check — dirty-only */
     dyn_dirty_mask = saved_dyn_mask;
 
     /* Inside abort path: subtract only the cycles consumed up to this

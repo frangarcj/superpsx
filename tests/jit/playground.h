@@ -332,6 +332,7 @@ void pg_run_alu_tests(void);      /* test_alu.c    */
 void pg_run_memory_tests(void);   /* test_memory.c */
 void pg_run_branch_tests(void);   /* test_branch.c */
 void pg_run_block_tests(void);    /* test_block.c  */
+void pg_run_dirty_tests(void);    /* test_dirty.c  */
 
 /* Master runner — calls all category runners above */
 void pg_run_all_tests(void);

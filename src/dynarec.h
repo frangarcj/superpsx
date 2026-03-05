@@ -29,7 +29,7 @@
 #define PATCH_SITE_MAX 8192
 
 #define SCAN_MAX_INSNS 64 /* Max instructions analyzed per block scan */
-#define DYN_SLOT_COUNT 8   /* Dynamic register slots: T0-T7 (write-through to cpu.regs[]) */
+#define DYN_SLOT_COUNT 8   /* Dynamic register slots: T0-T7 (dirty writeback to cpu.regs[]) */
 
 /* ================================================================
  *  Shared types

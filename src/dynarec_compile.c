@@ -62,7 +62,7 @@ static void emit_deferred_taken_all(void)
 
         /* Emit standard branch epilogue inline */
         flush_dirty_consts();
-        dyn_flush_all_slots(); /* D: block exit — full flush for correctness */
+        dyn_flush_all_slots(); /* D: deferred taken — flush-all (required: dirty-only causes glitches in Crash) */
         emit(MK_I(0x09, REG_S2, REG_S2, (int16_t)(-(int)e->cycle_count)));
         emit_load_imm32(REG_T8, e->target_pc);
         EMIT_SW(REG_T8, CPU_PC, REG_S0);
@@ -613,7 +613,7 @@ void emit_block_epilogue(void)
 {
     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
     EMIT_MOVE(REG_V0, REG_S2);
-    dyn_flush_all_slots(); /* E: emit_block_epilogue — block exit */
+    dyn_flush_dirty_slots(); /* E: block epilogue — dirty-only */
     emit_flush_pinned();
     EMIT_LW(REG_FP, 68, REG_SP);
     EMIT_LW(REG_S7, 60, REG_SP);
@@ -635,7 +635,7 @@ void emit_branch_epilogue(uint32_t target_pc)
     /* Materialize any lazy constants before leaving the block */
     flush_dirty_consts();
     /* Flush dirty dynamic slots so cpu.regs[] is consistent */
-    dyn_flush_all_slots(); /* F: emit_branch_epilogue — block exit */
+    dyn_flush_dirty_slots(); /* F: branch epilogue — dirty-only */
 
     /* Calculate remaining cycles after this block */
     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
@@ -966,7 +966,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                 /* Register jump (JR/JALR): Inline hash dispatch.
                  * T8 is required by jump_dispatch_trampoline (hash computation). */
                 flush_dirty_consts();
-                dyn_flush_all_slots(); /* G: JR/JALR dispatch — block exit */
+                dyn_flush_dirty_slots(); /* G: JR/JALR dispatch — dirty-only */
                 EMIT_LW(REG_T8, CPU_PC, REG_S0);
                 EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
                 EMIT_J_ABS((uint32_t)jump_dispatch_trampoline_addr);
