@@ -217,6 +217,10 @@ string(REPLACE ";" "\\;" PCSX2_CMD_ESC "${PCSX2_CMD}")
 set(PLAYGROUND_SOURCES
     tests/jit/playground_main.c
     tests/jit/playground_tests.c
+    tests/jit/test_alu.c
+    tests/jit/test_memory.c
+    tests/jit/test_branch.c
+    tests/jit/test_block.c
     src/cpu.c
     src/memory.c
     src/scheduler.c

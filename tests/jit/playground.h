@@ -317,9 +317,14 @@ extern PGTestCtx pg_ctx;
 } while(0)
 
 /* ================================================================
- *  Test registration
+ *  Test category runners (one per file)
  * ================================================================ */
-/* Each test file calls these from pg_run_all_tests() */
+void pg_run_alu_tests(void);      /* test_alu.c    */
+void pg_run_memory_tests(void);   /* test_memory.c */
+void pg_run_branch_tests(void);   /* test_branch.c */
+void pg_run_block_tests(void);    /* test_block.c  */
+
+/* Master runner — calls all category runners above */
 void pg_run_all_tests(void);
 
 #endif /* PLAYGROUND_H */
