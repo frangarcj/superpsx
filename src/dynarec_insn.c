@@ -292,6 +292,199 @@ static void emit_interpolate_color(int sf)
     EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);
 }
 
+/* Emit inline MVMVA: MAC = Matrix × Vector + Translation, then store MAC+IR.
+ * mx: 0=RT, 1=Light(L), 2=Color(LC)
+ * v:  0=V0, 1=V1, 2=V2, 3=IR1-3
+ * cv: 0=TR, 1=BK, 3=nothing (cv=2/FC bugged path not inlined)
+ * sf/lm: compile-time flags
+ *
+ * Output: V0=MAC1, V1=MAC2, A0=MAC3 (stored to memory). IR1-3 stored.
+ * Uses MULT/MADD for 3-row dot products (7 words per row).
+ * Clobbers: T8, T9, AT, V0, V1, A0, A1, A2, A3.
+ *
+ * Matrix ctrl layout (packed int16 pairs):
+ *   ctrl[b+0] = M11|M12, ctrl[b+1] = M13|M21
+ *   ctrl[b+2] = M22|M23, ctrl[b+3] = M31|M32
+ *   ctrl[b+4] = M33 (lo16 only)
+ * where b=0(RT), 8(Light), 16(Color)
+ */
+static void emit_inline_mvmva(int mx, int v, int cv, int sf, int lm)
+{
+    /* Load vector into V0/V1/A0 */
+    if (v < 3) {
+        int base = v * 2;  /* data[0,2,4] for V0,V1,V2 */
+        EMIT_LH(REG_V0, CPU_CP2_DATA(base) + 0, REG_S0);     /* VX */
+        EMIT_LH(REG_V1, CPU_CP2_DATA(base) + 2, REG_S0);     /* VY */
+        EMIT_LH(REG_A0, CPU_CP2_DATA(base + 1), REG_S0);     /* VZ */
+    } else {
+        /* v=3: IR1-3 as vector */
+        EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);
+        EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);
+        EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);
+    }
+
+    /* Matrix base in ctrl regs */
+    int cb = (mx == 0) ? 0 : (mx == 1) ? 8 : 16;
+
+    /* Row 1: M11*VX + M12*VY + M13*VZ */
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb) + 0, REG_S0);       /* M11 */
+    EMIT_MULT(REG_T8, REG_V0);                             /* HI:LO = M11*VX */
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb) + 2, REG_S0);       /* M12 */
+    EMIT_MADD(REG_T8, REG_V1);                             /* HI:LO += M12*VY */
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb+1) + 0, REG_S0);     /* M13 */
+    EMIT_MADD(REG_T8, REG_A0);                             /* HI:LO += M13*VZ */
+    EMIT_MFLO(REG_A1);                                     /* A1 = row1 */
+
+    /* Row 2: M21*VX + M22*VY + M23*VZ */
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb+1) + 2, REG_S0);     /* M21 */
+    EMIT_MULT(REG_T8, REG_V0);
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb+2) + 0, REG_S0);     /* M22 */
+    EMIT_MADD(REG_T8, REG_V1);
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb+2) + 2, REG_S0);     /* M23 */
+    EMIT_MADD(REG_T8, REG_A0);
+    EMIT_MFLO(REG_A2);                                     /* A2 = row2 */
+
+    /* Row 3: M31*VX + M32*VY + M33*VZ */
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb+3) + 0, REG_S0);     /* M31 */
+    EMIT_MULT(REG_T8, REG_V0);
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb+3) + 2, REG_S0);     /* M32 */
+    EMIT_MADD(REG_T8, REG_V1);
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb+4) + 0, REG_S0);     /* M33 */
+    EMIT_MADD(REG_T8, REG_A0);
+    EMIT_MFLO(REG_A3);                                     /* A3 = row3 */
+
+    /* Add translation vector (shifted << 12 before adding to raw products) */
+    if (cv == 0) {
+        /* TR: ctrl[5-7] */
+        EMIT_LW(REG_T8, CPU_CP2_CTRL(5), REG_S0);
+        EMIT_SLL(REG_T8, REG_T8, 12);
+        EMIT_ADDU(REG_A1, REG_A1, REG_T8);
+        EMIT_LW(REG_T8, CPU_CP2_CTRL(6), REG_S0);
+        EMIT_SLL(REG_T8, REG_T8, 12);
+        EMIT_ADDU(REG_A2, REG_A2, REG_T8);
+        EMIT_LW(REG_T8, CPU_CP2_CTRL(7), REG_S0);
+        EMIT_SLL(REG_T8, REG_T8, 12);
+        EMIT_ADDU(REG_A3, REG_A3, REG_T8);
+    } else if (cv == 1) {
+        /* BK: ctrl[13-15] */
+        EMIT_LW(REG_T8, CPU_CP2_CTRL(13), REG_S0);
+        EMIT_SLL(REG_T8, REG_T8, 12);
+        EMIT_ADDU(REG_A1, REG_A1, REG_T8);
+        EMIT_LW(REG_T8, CPU_CP2_CTRL(14), REG_S0);
+        EMIT_SLL(REG_T8, REG_T8, 12);
+        EMIT_ADDU(REG_A2, REG_A2, REG_T8);
+        EMIT_LW(REG_T8, CPU_CP2_CTRL(15), REG_S0);
+        EMIT_SLL(REG_T8, REG_T8, 12);
+        EMIT_ADDU(REG_A3, REG_A3, REG_T8);
+    }
+    /* cv=3: no translation */
+
+    /* sf shift */
+    if (sf) {
+        EMIT_SRA(REG_A1, REG_A1, 12);
+        EMIT_SRA(REG_A2, REG_A2, 12);
+        EMIT_SRA(REG_A3, REG_A3, 12);
+    }
+
+    /* Move to V0/V1/A0 (needed for push_color/IR_sat helpers) */
+    EMIT_MOVE(REG_V0, REG_A1);
+    EMIT_MOVE(REG_V1, REG_A2);
+    EMIT_MOVE(REG_A0, REG_A3);
+
+    /* Store MAC1-3 */
+    EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);
+    EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);
+    EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);
+
+    /* IR saturation + store IR1-3 */
+    /* Need IR for step 2 vectorv=3 reads, so must store IR here */
+    emit_ir_sat_store(lm);
+}
+
+/* Emit RGBC×IR<<4 accumulator computation.
+ * Reads RGBC + IR1-3 from memory, computes acc = (rgb_byte × ir_value) << 4.
+ * Output: V0=acc1, V1=acc2, A0=acc3.
+ * Clobbers: T8, T9, A1, A2, A3. (~18 words) */
+static void emit_rgbc_times_ir_shl4(void)
+{
+    /* Extract R,G,B from RGBC */
+    EMIT_LW(REG_T8, CPU_CP2_DATA(6), REG_S0);
+    EMIT_ANDI(REG_V0, REG_T8, 0xFF);                      /* V0 = R */
+    emit(MK_R(0, 0, REG_T8, REG_T9, 8, 0x02));           /* SRL T9,T8,8 */
+    EMIT_ANDI(REG_V1, REG_T9, 0xFF);                      /* V1 = G */
+    emit(MK_R(0, 0, REG_T8, REG_T9, 16, 0x02));          /* SRL T9,T8,16 */
+    EMIT_ANDI(REG_A0, REG_T9, 0xFF);                      /* A0 = B */
+
+    /* Load IR1-3 */
+    EMIT_LH(REG_A1, CPU_CP2_DATA(9),  REG_S0);           /* A1 = IR1 */
+    EMIT_LH(REG_A2, CPU_CP2_DATA(10), REG_S0);           /* A2 = IR2 */
+    EMIT_LH(REG_A3, CPU_CP2_DATA(11), REG_S0);           /* A3 = IR3 */
+
+    /* acc = (rgb × ir) << 4 */
+    EMIT_MULT(REG_V0, REG_A1); EMIT_MFLO(REG_V0);
+    EMIT_SLL(REG_V0, REG_V0, 4);                          /* V0 = (R*IR1)<<4 */
+
+    EMIT_MULT(REG_V1, REG_A2); EMIT_MFLO(REG_V1);
+    EMIT_SLL(REG_V1, REG_V1, 4);                          /* V1 = (G*IR2)<<4 */
+
+    EMIT_MULT(REG_A0, REG_A3); EMIT_MFLO(REG_A0);
+    EMIT_SLL(REG_A0, REG_A0, 4);                          /* A0 = (B*IR3)<<4 */
+}
+
+/* Emit store_mac_ir + push_color + FLAG=0 for ops that need
+ * MAC store → push_color → IR saturation (NCCS, CC pattern).
+ * Expects: V0=product1, V1=product2, A0=product3 (raw values).
+ * sf: shift by 12 for MAC. lm: IR saturation bound. */
+static void emit_sf_mac_push_ir(int sf, int lm)
+{
+    if (sf) {
+        EMIT_SRA(REG_V0, REG_V0, 12);
+        EMIT_SRA(REG_V1, REG_V1, 12);
+        EMIT_SRA(REG_A0, REG_A0, 12);
+    }
+    EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);
+    EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);
+    EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);
+    emit_push_color_inline();
+    emit_ir_sat_store(lm);
+}
+
+/* Emit NCS core for vertex v: Light×V + BK+Color×IR → push_color.
+ * 2× mvmva + reload MAC + push_color. (~150 words) */
+static void emit_ncs_core(int v, int sf, int lm)
+{
+    emit_inline_mvmva(1, v, 3, sf, lm);   /* Light × V, no TR */
+    emit_inline_mvmva(2, 3, 1, sf, lm);   /* BK + Color × IR */
+    /* mvmva left saturated IR in V0/V1/A0; reload MAC for push_color */
+    EMIT_LW(REG_V0, CPU_CP2_DATA(25), REG_S0);
+    EMIT_LW(REG_V1, CPU_CP2_DATA(26), REG_S0);
+    EMIT_LW(REG_A0, CPU_CP2_DATA(27), REG_S0);
+    emit_push_color_inline();
+    /* FLAG=0 already set by emit_ir_sat_store inside mvmva */
+}
+
+/* Emit NCCS core for vertex v: 2× mvmva + RGBC×IR<<4 → store_mac_ir + push_color.
+ * (~190 words) */
+static void emit_nccs_core(int v, int sf, int lm)
+{
+    emit_inline_mvmva(1, v, 3, sf, lm);
+    emit_inline_mvmva(2, 3, 1, sf, lm);
+    emit_rgbc_times_ir_shl4();             /* V0/V1/A0 = (rgb×ir)<<4 */
+    emit_sf_mac_push_ir(sf, lm);           /* sf + MAC + push_color + IR sat + FLAG=0 */
+}
+
+/* Emit NCDS core for vertex v: 2× mvmva + RGBC×IR<<4 → interpolate + push_color.
+ * (~230 words) */
+static void emit_ncds_core(int v, int sf, int lm)
+{
+    emit_inline_mvmva(1, v, 3, sf, lm);
+    emit_inline_mvmva(2, 3, 1, sf, lm);
+    emit_rgbc_times_ir_shl4();             /* V0/V1/A0 = acc = (rgb×ir)<<4 */
+    emit_interpolate_color(sf);            /* FC interpolation, stores MAC */
+    emit_push_color_inline();
+    emit_ir_sat_store(lm);                 /* FLAG=0 */
+}
+
 /* ---- Main instruction emitter ---- */
 int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 {
@@ -1475,53 +1668,93 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             case 0x13: /* NCDS */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, gte_sf);
-                emit_load_imm32(REG_A2, gte_lm);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_NCDS);
+                if (gte_use_vu0) {
+                    emit_ncds_core(0, gte_sf, gte_lm);
+                } else {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, gte_sf);
+                    emit_load_imm32(REG_A2, gte_lm);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_NCDS);
+                }
                 break;
             case 0x14: /* CDP */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, gte_sf);
-                emit_load_imm32(REG_A2, gte_lm);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_CDP);
+                if (gte_use_vu0) {
+                    /* BK + Color × IR → RGBC×IR<<4 → interpolate + push_color */
+                    emit_inline_mvmva(2, 3, 1, gte_sf, gte_lm);
+                    emit_rgbc_times_ir_shl4();
+                    emit_interpolate_color(gte_sf);
+                    emit_push_color_inline();
+                    emit_ir_sat_store(gte_lm);
+                } else {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, gte_sf);
+                    emit_load_imm32(REG_A2, gte_lm);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_CDP);
+                }
                 break;
             case 0x16: /* NCDT */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, gte_sf);
-                emit_load_imm32(REG_A2, gte_lm);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_NCDT);
+                if (gte_use_vu0) {
+                    emit_ncds_core(0, gte_sf, gte_lm);
+                    emit_ncds_core(1, gte_sf, gte_lm);
+                    emit_ncds_core(2, gte_sf, gte_lm);
+                } else {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, gte_sf);
+                    emit_load_imm32(REG_A2, gte_lm);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_NCDT);
+                }
                 break;
             case 0x1B: /* NCCS */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, gte_sf);
-                emit_load_imm32(REG_A2, gte_lm);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_NCCS);
+                if (gte_use_vu0) {
+                    emit_nccs_core(0, gte_sf, gte_lm);
+                } else {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, gte_sf);
+                    emit_load_imm32(REG_A2, gte_lm);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_NCCS);
+                }
                 break;
             case 0x1C: /* CC */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, gte_sf);
-                emit_load_imm32(REG_A2, gte_lm);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_CC);
+                if (gte_use_vu0) {
+                    /* BK + Color × IR → RGBC×IR<<4 → store_mac_ir + push_color */
+                    emit_inline_mvmva(2, 3, 1, gte_sf, gte_lm);
+                    emit_rgbc_times_ir_shl4();
+                    emit_sf_mac_push_ir(gte_sf, gte_lm);
+                } else {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, gte_sf);
+                    emit_load_imm32(REG_A2, gte_lm);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_CC);
+                }
                 break;
             case 0x1E: /* NCS */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, gte_sf);
-                emit_load_imm32(REG_A2, gte_lm);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_NCS);
+                if (gte_use_vu0) {
+                    emit_ncs_core(0, gte_sf, gte_lm);
+                } else {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, gte_sf);
+                    emit_load_imm32(REG_A2, gte_lm);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_NCS);
+                }
                 break;
             case 0x20: /* NCT */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, gte_sf);
-                emit_load_imm32(REG_A2, gte_lm);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_NCT);
+                if (gte_use_vu0) {
+                    emit_ncs_core(0, gte_sf, gte_lm);
+                    emit_ncs_core(1, gte_sf, gte_lm);
+                    emit_ncs_core(2, gte_sf, gte_lm);
+                } else {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, gte_sf);
+                    emit_load_imm32(REG_A2, gte_lm);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_NCT);
+                }
                 break;
             case 0x28: /* SQR */
                 if (gte_use_vu0)
@@ -2040,11 +2273,17 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x3F: /* NCCT */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, gte_sf);
-                emit_load_imm32(REG_A2, gte_lm);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_NCCT);
+                if (gte_use_vu0) {
+                    emit_nccs_core(0, gte_sf, gte_lm);
+                    emit_nccs_core(1, gte_sf, gte_lm);
+                    emit_nccs_core(2, gte_sf, gte_lm);
+                } else {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, gte_sf);
+                    emit_load_imm32(REG_A2, gte_lm);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_NCCT);
+                }
                 break;
             default:
             {
