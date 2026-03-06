@@ -858,20 +858,22 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* COP2 (GTE) */
     case 0x12:
     {
-        flush_dirty_consts(); /* Flush before COP-usable conditional */
-        reg_cache_invalidate();
-        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T8, REG_T8, 30, 0x02));
-        emit(MK_I(0x0C, REG_T8, REG_T8, 1));
-        uint32_t *skip_cu2 = code_ptr;
-        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
-        EMIT_NOP();
-        emit_load_imm32(REG_A0, psx_pc);
-        emit_load_imm32(REG_A1, 2);
-        { uint8_t saved_dirty = dyn_dirty_mask;
-        emit_call_c((uint32_t)Helper_CU_Exception);
-        dyn_dirty_mask = saved_dirty; }
-        *skip_cu2 = (*skip_cu2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu2 - 1) & 0xFFFF);
+        if (!block_cu2_hoisted) {
+            flush_dirty_consts(); /* Flush before COP-usable conditional */
+            reg_cache_invalidate();
+            EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
+            emit(MK_R(0, 0, REG_T8, REG_T8, 30, 0x02));
+            emit(MK_I(0x0C, REG_T8, REG_T8, 1));
+            uint32_t *skip_cu2 = code_ptr;
+            emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
+            EMIT_NOP();
+            emit_load_imm32(REG_A0, psx_pc);
+            emit_load_imm32(REG_A1, 2);
+            { uint8_t saved_dirty = dyn_dirty_mask;
+            emit_call_c((uint32_t)Helper_CU_Exception);
+            dyn_dirty_mask = saved_dirty; }
+            *skip_cu2 = (*skip_cu2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu2 - 1) & 0xFFFF);
+        }
 
         if (total_instructions < 20000000)
         {
@@ -918,19 +920,69 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             }
             else if (rs == 0x04)
             {
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, rd);
-                emit_load_psx_reg(6, rt);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_WriteData);
+                /* MTC2: write PSX reg rt → GTE data register rd.
+                 * Inline simple writes to avoid emit_call_c_lite overhead.
+                 * Complex regs (15=SXY FIFO, 28=IRGB, 30=LZCS) keep C call. */
+                int rd5 = rd & 0x1F;
+                switch (rd5) {
+                case 15: case 28: case 30:
+                    /* Complex: SXY FIFO push / IRGB / LZCS+LZCR */
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, rd5);
+                    emit_load_psx_reg(6, rt);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_WriteData);
+                    break;
+                case 29: case 31:
+                    /* Read-only: no-op */
+                    break;
+                case 1: case 3: case 5: case 8: case 9: case 10: case 11:
+                    /* Sign-extend from low 16 bits: D(r) = (int32_t)(int16_t)val */
+                    emit_load_psx_reg(REG_T8, rt);
+                    emit(MK_R(0, 0, REG_T8, REG_T8, 16, 0x00));  /* sll t8, t8, 16  */
+                    emit(MK_R(0, 0, REG_T8, REG_T8, 16, 0x03));  /* sra t8, t8, 16  */
+                    EMIT_SW(REG_T8, CPU_CP2_DATA(rd5), REG_S0);
+                    break;
+                case 7: case 16: case 17: case 18: case 19:
+                    /* Zero-extend to 16 bits: D(r) = val & 0xFFFF */
+                    emit_load_psx_reg(REG_T8, rt);
+                    emit(MK_I(0x0C, REG_T8, REG_T8, 0xFFFF));    /* andi t8, 0xFFFF */
+                    EMIT_SW(REG_T8, CPU_CP2_DATA(rd5), REG_S0);
+                    break;
+                default:
+                    /* Simple write: D(r) = val */
+                    emit_load_psx_reg(REG_T8, rt);
+                    EMIT_SW(REG_T8, CPU_CP2_DATA(rd5), REG_S0);
+                    break;
+                }
             }
             else if (rs == 0x06)
             {
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, rd);
-                emit_load_psx_reg(6, rt);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_WriteCtrl);
+                /* CTC2: write PSX reg rt → GTE control register rd.
+                 * Inline simple writes; keep C call for FLAG (rd=31). */
+                int rd5 = rd & 0x1F;
+                switch (rd5) {
+                case 31:
+                    /* FLAG: complex bit-check logic */
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, rd5);
+                    emit_load_psx_reg(6, rt);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_WriteCtrl);
+                    break;
+                case 4: case 12: case 20: case 26: case 27: case 29: case 30:
+                    /* Sign-extend from low 16 bits */
+                    emit_load_psx_reg(REG_T8, rt);
+                    emit(MK_R(0, 0, REG_T8, REG_T8, 16, 0x00));  /* sll t8, 16 */
+                    emit(MK_R(0, 0, REG_T8, REG_T8, 16, 0x03));  /* sra t8, 16 */
+                    EMIT_SW(REG_T8, CPU_CP2_CTRL(rd5), REG_S0);
+                    break;
+                default:
+                    /* Simple write: C(r) = val */
+                    emit_load_psx_reg(REG_T8, rt);
+                    EMIT_SW(REG_T8, CPU_CP2_CTRL(rd5), REG_S0);
+                    break;
+                }
             }
             else
             {
@@ -1215,20 +1267,22 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* LWC2 */
     case 0x32:
     {
-        flush_dirty_consts(); /* Flush before COP-usable conditional */
-        reg_cache_invalidate();
-        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T8, REG_T8, 30, 0x02));
-        emit(MK_I(0x0C, REG_T8, REG_T8, 1));
-        uint32_t *skip_lwc2 = code_ptr;
-        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
-        EMIT_NOP();
-        emit_load_imm32(REG_A0, psx_pc);
-        emit_load_imm32(REG_A1, 2);
-        { uint8_t saved_dirty = dyn_dirty_mask;
-        emit_call_c((uint32_t)Helper_CU_Exception);
-        dyn_dirty_mask = saved_dirty; }
-        *skip_lwc2 = (*skip_lwc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc2 - 1) & 0xFFFF);
+        if (!block_cu2_hoisted) {
+            flush_dirty_consts(); /* Flush before COP-usable conditional */
+            reg_cache_invalidate();
+            EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
+            emit(MK_R(0, 0, REG_T8, REG_T8, 30, 0x02));
+            emit(MK_I(0x0C, REG_T8, REG_T8, 1));
+            uint32_t *skip_lwc2 = code_ptr;
+            emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
+            EMIT_NOP();
+            emit_load_imm32(REG_A0, psx_pc);
+            emit_load_imm32(REG_A1, 2);
+            { uint8_t saved_dirty = dyn_dirty_mask;
+            emit_call_c((uint32_t)Helper_CU_Exception);
+            dyn_dirty_mask = saved_dirty; }
+            *skip_lwc2 = (*skip_lwc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc2 - 1) & 0xFFFF);
+        }
 
         /* Memory read via LUT fast path (result in V0), then GTE write */
         {
@@ -1286,20 +1340,22 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* SWC2 */
     case 0x3A:
     {
-        flush_dirty_consts(); /* Flush before COP-usable conditional */
-        reg_cache_invalidate();
-        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T8, REG_T8, 30, 0x02));
-        emit(MK_I(0x0C, REG_T8, REG_T8, 1));
-        uint32_t *skip_swc2 = code_ptr;
-        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
-        EMIT_NOP();
-        emit_load_imm32(REG_A0, psx_pc);
-        emit_load_imm32(REG_A1, 2);
-        { uint8_t saved_dirty = dyn_dirty_mask;
-        emit_call_c((uint32_t)Helper_CU_Exception);
-        dyn_dirty_mask = saved_dirty; }
-        *skip_swc2 = (*skip_swc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc2 - 1) & 0xFFFF);
+        if (!block_cu2_hoisted) {
+            flush_dirty_consts(); /* Flush before COP-usable conditional */
+            reg_cache_invalidate();
+            EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
+            emit(MK_R(0, 0, REG_T8, REG_T8, 30, 0x02));
+            emit(MK_I(0x0C, REG_T8, REG_T8, 1));
+            uint32_t *skip_swc2 = code_ptr;
+            emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
+            EMIT_NOP();
+            emit_load_imm32(REG_A0, psx_pc);
+            emit_load_imm32(REG_A1, 2);
+            { uint8_t saved_dirty = dyn_dirty_mask;
+            emit_call_c((uint32_t)Helper_CU_Exception);
+            dyn_dirty_mask = saved_dirty; }
+            *skip_swc2 = (*skip_swc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc2 - 1) & 0xFFFF);
+        }
 
         /* GTE read → V0 (data to store) */
         EMIT_MOVE(REG_A0, REG_S0);

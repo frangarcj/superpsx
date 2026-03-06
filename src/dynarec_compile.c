@@ -17,6 +17,7 @@ uint32_t emit_current_psx_pc = 0;
 uint32_t block_pinned_dirty_mask = 0;
 int block_isc_cached = 0;  /* 1 if ISC bit cached in SP+80 for current block */
 int block_has_isc_write = 0;  /* 1 if block has MTC0 to SR (can toggle ISC bit 16) */
+int block_cu2_hoisted = 0;  /* 1 if CU2 check hoisted to block prologue */
 int dynarec_load_defer = 0;
 int dynarec_lwx_pending = 0;
 
@@ -513,10 +514,13 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
     out->insn_count = count;
 
     /* Phase 2: forward pass — compute reg read/write masks + access counts
-     *          + detect MTC0 to SR (COP0 reg 12) for ISC optimization */
+     *          + detect MTC0 to SR (COP0 reg 12) for ISC optimization
+     *          + detect COP2/LWC2/SWC2 for CU2 check hoisting */
     uint32_t written = 0, read = 0;
     int found_mtc0_sr = 0;
     int found_isc_write = 0;
+    int found_cop2 = 0;
+    uint32_t first_cop2_pc_offset = 0; /* instruction index of first COP2 */
     memset(out->reg_access_count, 0, sizeof(out->reg_access_count));
     for (int i = 0; i < count; i++)
     {
@@ -533,6 +537,16 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
          * but does NOT touch ISC bit 16 */
         if (OP(code[i]) == 0x10 && (code[i] & 0x3F) == 0x10 && (code[i] & 0x02000000))
             found_mtc0_sr = 1;
+        /* Detect COP2 (0x12), LWC2 (0x32), SWC2 (0x3A) for CU2 hoisting */
+        {
+            int op_i = OP(code[i]);
+            if (op_i == 0x12 || op_i == 0x32 || op_i == 0x3A) {
+                if (!found_cop2) {
+                    found_cop2 = 1;
+                    first_cop2_pc_offset = i;
+                }
+            }
+        }
         /* Count unique per-instruction register accesses (read or write) */
         uint32_t amask = rmask | wmask;
         while (amask) {
@@ -546,6 +560,8 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
     out->regs_read_mask = read;
     out->has_mtc0_sr = found_mtc0_sr;
     out->has_isc_write = found_isc_write;
+    out->has_cop2 = found_cop2;
+    out->first_cop2_pc = first_cop2_pc_offset; /* stored as instruction index; caller converts to PC */
 
     /* Compute pinned_written_mask: which pinned regs are written */
     uint32_t pinned_set = 0;
@@ -742,6 +758,39 @@ uint32_t *compile_block(uint32_t psx_pc)
         block_isc_cached = 0;
     }
     block_has_isc_write = scan.has_isc_write;
+
+    /* CU2 hoisting: if block has COP2/LWC2/SWC2 and SR is invariant,
+     * check CU2 enable (SR bit 30) once at block entry.  If disabled,
+     * call the CU exception for the first COP2 instruction and abort.
+     * Per-instruction CU2 checks (~10 words each) are then skipped.
+     * With 16 COP2 insns per block: ~160 words saved, ~15 words added. */
+    if (scan.has_cop2 && !scan.has_mtc0_sr) {
+        block_cu2_hoisted = 1;
+        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);     /* t8 = SR       */
+        emit(MK_R(0, 0, REG_T8, REG_T8, 30, 0x02));         /* srl t8, 30    */
+        emit(MK_I(0x0C, REG_T8, REG_T8, 1));                /* andi t8, 1    */
+        uint32_t *skip_cu2 = code_ptr;
+        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));              /* bne t8,$0,skip (CU2 enabled) */
+        EMIT_NOP();
+        /* Cold path: CU2 disabled → trigger exception + abort */
+        {
+            uint32_t cu2_exc_pc = psx_pc + scan.first_cop2_pc * 4;
+            emit_load_imm32(REG_A0, cu2_exc_pc);             /* a0 = first COP2 PC */
+            emit_load_imm32(REG_A1, 2);                      /* a1 = cop_num=2     */
+            uint8_t saved_dirty = dyn_dirty_mask;
+            uint32_t saved_smrv = smrv_known_ram;
+            emit_call_c((uint32_t)Helper_CU_Exception);
+            dyn_dirty_mask = saved_dirty;
+            smrv_known_ram = saved_smrv;
+        }
+        EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+        EMIT_NOP();
+        /* Patch BNE to skip past cold path */
+        *skip_cu2 = (*skip_cu2 & 0xFFFF0000) |
+                     ((uint32_t)(code_ptr - skip_cu2 - 1) & 0xFFFF);
+    } else {
+        block_cu2_hoisted = 0;
+    }
 
     /* Inject BIOS HLE hooks natively so that DBL jumps do not bypass them.
      * Charge a nominal 10 cycles for HLE overhead (the block's instructions

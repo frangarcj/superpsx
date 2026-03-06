@@ -70,6 +70,8 @@ typedef struct {
     int insn_count;               /* Number of PSX instructions in block (incl. delay slot) */
     int has_mtc0_sr;              /* 1 if block contains MTC0 to COP0 reg 12 (SR) or RFE */
     int has_isc_write;            /* 1 if block has MTC0 to SR (can toggle ISC bit 16) — excludes RFE */
+    int has_cop2;                 /* 1 if block contains COP2/LWC2/SWC2 instructions */
+    uint32_t first_cop2_pc;       /* PC of first COP2/LWC2/SWC2 instruction (for hoisted CU2 exception) */
     uint8_t reg_access_count[32]; /* per-reg instruction access frequency (capped 255) */
 } BlockScanResult;
 
@@ -268,6 +270,7 @@ extern uint32_t emit_cycle_offset;
 extern uint32_t block_pinned_dirty_mask; /* Pinned regs written in current block */
 extern int block_isc_cached;             /* 1 if ISC bit is cached in SP+0 for this block */
 extern int block_has_isc_write;          /* 1 if block can toggle ISC via MTC0 to SR (not RFE) */
+extern int block_cu2_hoisted;            /* 1 if CU2 check hoisted to block prologue */
 extern uint32_t emit_current_psx_pc;
 extern int dynarec_load_defer;
 extern int dynarec_lwx_pending;

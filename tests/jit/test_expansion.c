@@ -2,11 +2,11 @@
  * JIT Playground — Expansion Ratio Tests
  *
  * Measures the code expansion ratio (native EE words per PSX instruction)
- * for each instruction category.  This is compile-only: blocks are
- * compiled but NOT executed.
+ * for each instruction category.  Each test compiles a block and asserts
+ * that native_count does not exceed a threshold (current baseline).
  *
- * The output is a table:
- *   <instruction>  <psx_count> PSX → <native_count> EE  (<ratio>x)
+ * When an optimization reduces expansion, LOWER the threshold to lock in
+ * the improvement.  Tests FAIL if expansion regresses above the threshold.
  *
  * The expansion ratio is the key metric for JIT code density optimization.
  * Lower is better — PSX and EE share the MIPS ISA, so the ideal ratio
@@ -32,33 +32,24 @@ static void expansion_enable_cop2(void)
  *  Core measurement function
  *
  *  Places `count` repetitions of `insn` into code area, appends
- *  JR $ra + NOP, compiles via dynarec, and reports native_count.
- *
- *  If setup_fn is non-NULL, it's called before compilation to set
- *  up CPU state (e.g., enable COP2 in SR).
- *
- *  Returns native_count, or -1 on error.
+ *  JR $ra + NOP, compiles via dynarec, and returns native_count.
  * ================================================================ */
 typedef void (*setup_fn_t)(void);
 
-static int measure_block(const uint32_t *insns, int insn_types,
-                          int repeat, const char *name,
-                          setup_fn_t setup)
+static int compile_and_measure(const uint32_t *insns, int insn_types,
+                               int repeat, setup_fn_t setup)
 {
     /* Reset CPU state */
     memset(&cpu, 0, sizeof(cpu));
     cpu.regs[R_SP] = 0x801FFF00u;
     cpu.regs[R_RA] = PG_HALT_BASE;
-
-    /* Enable COP0 always (game-like SR value) */
     cpu.cop0[PSX_COP0_SR_IDX] = (1u << 28); /* CU0 enable */
-
     if (setup) setup();
 
     /* Reset JIT cache */
     pg_reset_jit_cache();
 
-    /* Place instructions: repeat the pattern `repeat` times */
+    /* Place instructions */
     uint32_t *code = (uint32_t *)(psx_ram + PG_CODE_OFFSET);
     memset(code, 0, 4096);
     int total_insns = 0;
@@ -68,7 +59,6 @@ static int measure_block(const uint32_t *insns, int insn_types,
             code[total_insns++] = insns[i];
         }
     }
-    /* JR $ra + NOP epilogue */
     code[total_insns]     = PSX_JR(R_RA);
     code[total_insns + 1] = PSX_NOP();
 
@@ -80,121 +70,148 @@ static int measure_block(const uint32_t *insns, int insn_types,
         halt[1] = 0x00000000u;
     }
 
-    /* Compile (but don't run) */
+    /* Compile */
     BlockEntry *be = NULL;
     uint32_t *block = dynarec_ensure_block(PG_CODE_BASE, &be);
-    if (!block || !be) {
-        printf("  %-20s  COMPILE FAILED\n", name);
-        return -1;
-    }
-
-    int psx_n = (int)be->instr_count;
-    int ee_n  = (int)be->native_count;
-    float ratio = (psx_n > 0) ? (float)ee_n / (float)psx_n : 0.0f;
-
-    printf("  %-20s  %3d PSX -> %4d EE  (%4.1fx)\n",
-           name, psx_n, ee_n, ratio);
-
-    return ee_n;
+    if (!block || !be) return -1;
+    return (int)be->native_count;
 }
 
-/* Convenience: measure a single repeated instruction */
-static int measure_single(uint32_t insn, int repeat, const char *name,
-                           setup_fn_t setup)
+/* ---- Assertion helper: check expansion within threshold ---- */
+static void check_expansion(const char *name, int ee_words, int max_ee,
+                             PGTestCtx *ctx)
 {
-    return measure_block(&insn, 1, repeat, name, setup);
+    float ratio = (ee_words > 0) ? (float)ee_words / 18.0f : 0.0f; /* 18 PSX = 16 repeat + JR + NOP */
+    if (ee_words <= max_ee) {
+        printf("    %-16s  %4d EE  (%4.1fx)  [max %d] OK\n",
+               name, ee_words, ratio, max_ee);
+    } else {
+        printf("  [FAIL] %-16s  %4d EE  (%4.1fx)  EXCEEDS max %d\n",
+               name, ee_words, ratio, max_ee);
+        ctx->fail_count++;
+    }
+}
+
+#define REPEAT 16
+
+/* ================================================================
+ *  Test: ALU expansion (ADDU, ADDIU, SLL, LUI, etc.)
+ *  Current baseline: 36-38 EE words for 18 PSX insns (~2.1x)
+ * ================================================================ */
+static void test_expansion_alu(void)
+{
+    BEGIN_TEST("expansion_alu");
+    int ee;
+
+    ee = compile_and_measure(&(uint32_t){PSX_ADDU(R_T1, R_T2, R_T3)}, 1, REPEAT, NULL);
+    check_expansion("ADDU", ee, 40, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){PSX_ADDIU(R_T1, R_T2, 42)}, 1, REPEAT, NULL);
+    check_expansion("ADDIU", ee, 40, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){PSX_AND(R_T1, R_T2, R_T3)}, 1, REPEAT, NULL);
+    check_expansion("AND", ee, 40, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){PSX_SLL(R_T1, R_T2, 5)}, 1, REPEAT, NULL);
+    check_expansion("SLL", ee, 40, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){PSX_LUI(R_T1, 0x8000)}, 1, REPEAT, NULL);
+    check_expansion("LUI", ee, 40, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){PSX_SLT(R_T1, R_T2, R_T3)}, 1, REPEAT, NULL);
+    check_expansion("SLT", ee, 40, &pg_ctx);
+
+    END_TEST();
 }
 
 /* ================================================================
- *  Expansion ratio measurements — grouped by category
+ *  Test: Multiply/Divide expansion
+ *  MULT: 147 EE (8.2x), DIV: 275 EE (15.3x), DIVU: 243 EE (13.5x)
  * ================================================================ */
-
-#define REPEAT 16  /* Number of instruction repetitions per block */
-
-/* ---- ALU R-type ---- */
-static void measure_alu_rtype(void)
+static void test_expansion_muldiv(void)
 {
-    printf("\n  --- ALU R-type ---\n");
-    measure_single(PSX_ADDU(R_T1, R_T2, R_T3), REPEAT, "ADDU", NULL);
-    measure_single(PSX_SUBU(R_T1, R_T2, R_T3), REPEAT, "SUBU", NULL);
-    measure_single(PSX_AND(R_T1, R_T2, R_T3),  REPEAT, "AND",  NULL);
-    measure_single(PSX_OR(R_T1, R_T2, R_T3),   REPEAT, "OR",   NULL);
-    measure_single(PSX_XOR(R_T1, R_T2, R_T3),  REPEAT, "XOR",  NULL);
-    measure_single(PSX_NOR(R_T1, R_T2, R_T3),  REPEAT, "NOR",  NULL);
-    measure_single(PSX_SLT(R_T1, R_T2, R_T3),  REPEAT, "SLT",  NULL);
-    measure_single(PSX_SLTU(R_T1, R_T2, R_T3), REPEAT, "SLTU", NULL);
+    BEGIN_TEST("expansion_muldiv");
+    int ee;
+
+    ee = compile_and_measure(&(uint32_t){PSX_MULT(R_T1, R_T2)}, 1, REPEAT, NULL);
+    check_expansion("MULT", ee, 150, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){PSX_MULTU(R_T1, R_T2)}, 1, REPEAT, NULL);
+    check_expansion("MULTU", ee, 150, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){PSX_DIV(R_T1, R_T2)}, 1, REPEAT, NULL);
+    check_expansion("DIV", ee, 280, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){PSX_DIVU(R_T1, R_T2)}, 1, REPEAT, NULL);
+    check_expansion("DIVU", ee, 250, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){PSX_MFHI(R_T1)}, 1, REPEAT, NULL);
+    check_expansion("MFHI", ee, 40, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){PSX_MFLO(R_T1)}, 1, REPEAT, NULL);
+    check_expansion("MFLO", ee, 40, &pg_ctx);
+
+    END_TEST();
 }
 
-/* ---- ALU I-type ---- */
-static void measure_alu_itype(void)
+/* ================================================================
+ *  Test: Load/Store expansion
+ *  LW: 420 (23.3x), SW: 481 (26.7x), LB: 131 (7.3x)
+ * ================================================================ */
+static void test_expansion_loadstore(void)
 {
-    printf("\n  --- ALU I-type ---\n");
-    measure_single(PSX_ADDIU(R_T1, R_T2, 42),  REPEAT, "ADDIU", NULL);
-    measure_single(PSX_ANDI(R_T1, R_T2, 0xFF), REPEAT, "ANDI",  NULL);
-    measure_single(PSX_ORI(R_T1, R_T2, 0xFF),  REPEAT, "ORI",   NULL);
-    measure_single(PSX_XORI(R_T1, R_T2, 0xFF), REPEAT, "XORI",  NULL);
-    measure_single(PSX_SLTI(R_T1, R_T2, 42),   REPEAT, "SLTI",  NULL);
-    measure_single(PSX_SLTIU(R_T1, R_T2, 42),  REPEAT, "SLTIU", NULL);
-    measure_single(PSX_LUI(R_T1, 0x8000),      REPEAT, "LUI",   NULL);
+    BEGIN_TEST("expansion_loadstore");
+    int ee;
+
+    ee = compile_and_measure(&(uint32_t){PSX_LW(R_T1, 0, R_SP)}, 1, REPEAT, NULL);
+    check_expansion("LW", ee, 425, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){PSX_SW(R_T1, 0, R_SP)}, 1, REPEAT, NULL);
+    check_expansion("SW", ee, 485, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){PSX_LB(R_T1, 0, R_SP)}, 1, REPEAT, NULL);
+    check_expansion("LB", ee, 135, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){PSX_SB(R_T1, 0, R_SP)}, 1, REPEAT, NULL);
+    check_expansion("SB", ee, 355, &pg_ctx);
+
+    END_TEST();
 }
 
-/* ---- Shifts ---- */
-static void measure_shifts(void)
+/* ================================================================
+ *  Test: COP2/GTE expansion
+ *  MTC2: 433 (24.1x), MFC2: 305 (16.9x), RTPS: 416 (23.1x)
+ * ================================================================ */
+static void test_expansion_gte(void)
 {
-    printf("\n  --- Shifts ---\n");
-    measure_single(PSX_SLL(R_T1, R_T2, 5),     REPEAT, "SLL",  NULL);
-    measure_single(PSX_SRL(R_T1, R_T2, 5),     REPEAT, "SRL",  NULL);
-    measure_single(PSX_SRA(R_T1, R_T2, 5),     REPEAT, "SRA",  NULL);
-    measure_single(PSX_SLLV(R_T1, R_T2, R_T3), REPEAT, "SLLV", NULL);
-    measure_single(PSX_SRLV(R_T1, R_T2, R_T3), REPEAT, "SRLV", NULL);
-    measure_single(PSX_SRAV(R_T1, R_T2, R_T3), REPEAT, "SRAV", NULL);
+    BEGIN_TEST("expansion_gte");
+    int ee;
+
+    ee = compile_and_measure(&(uint32_t){PSX_MTC2(R_T1, GTE_VXY0)}, 1, REPEAT, expansion_enable_cop2);
+    check_expansion("MTC2", ee, 90, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){PSX_MFC2(R_T1, GTE_VXY0)}, 1, REPEAT, expansion_enable_cop2);
+    check_expansion("MFC2", ee, 90, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){GTE_CMD_RTPS(1, 1)}, 1, REPEAT, expansion_enable_cop2);
+    check_expansion("COP2 RTPS", ee, 230, &pg_ctx);
+
+    ee = compile_and_measure(&(uint32_t){GTE_CMD_NCLIP}, 1, REPEAT, expansion_enable_cop2);
+    check_expansion("COP2 NCLIP", ee, 200, &pg_ctx);
+
+    END_TEST();
 }
 
-/* ---- Multiply / Divide ---- */
-static void measure_muldiv(void)
+/* ================================================================
+ *  Test: Mixed game patterns
+ *  GTE xform: 424 (24.9x), SW burst: 484 (26.9x)
+ * ================================================================ */
+static void test_expansion_mixed(void)
 {
-    printf("\n  --- Multiply / Divide ---\n");
-    measure_single(PSX_MULT(R_T1, R_T2),  REPEAT, "MULT",  NULL);
-    measure_single(PSX_MULTU(R_T1, R_T2), REPEAT, "MULTU", NULL);
-    measure_single(PSX_DIV(R_T1, R_T2),   REPEAT, "DIV",   NULL);
-    measure_single(PSX_DIVU(R_T1, R_T2),  REPEAT, "DIVU",  NULL);
-    measure_single(PSX_MFHI(R_T1),         REPEAT, "MFHI",  NULL);
-    measure_single(PSX_MFLO(R_T1),         REPEAT, "MFLO",  NULL);
-}
+    BEGIN_TEST("expansion_mixed");
+    int ee;
 
-/* ---- Load / Store ---- */
-static void measure_loadstore(void)
-{
-    printf("\n  --- Load / Store ---\n");
-    /* Use $sp (pinned to S4) as base — always valid RAM address */
-    measure_single(PSX_LW(R_T1, 0, R_SP),  REPEAT, "LW",  NULL);
-    measure_single(PSX_LH(R_T1, 0, R_SP),  REPEAT, "LH",  NULL);
-    measure_single(PSX_LB(R_T1, 0, R_SP),  REPEAT, "LB",  NULL);
-    measure_single(PSX_LBU(R_T1, 0, R_SP), REPEAT, "LBU", NULL);
-    measure_single(PSX_LHU(R_T1, 0, R_SP), REPEAT, "LHU", NULL);
-    measure_single(PSX_SW(R_T1, 0, R_SP),  REPEAT, "SW",  NULL);
-    measure_single(PSX_SH(R_T1, 0, R_SP),  REPEAT, "SH",  NULL);
-    measure_single(PSX_SB(R_T1, 0, R_SP),  REPEAT, "SB",  NULL);
-}
-
-/* ---- COP2 (GTE) ---- */
-static void measure_gte(void)
-{
-    printf("\n  --- COP2 (GTE) ---\n");
-    measure_single(PSX_MTC2(R_T1, GTE_VXY0), REPEAT, "MTC2", expansion_enable_cop2);
-    measure_single(PSX_MFC2(R_T1, GTE_VXY0), REPEAT, "MFC2", expansion_enable_cop2);
-    measure_single(PSX_CTC2(R_T1, GTE_TRX),  REPEAT, "CTC2", expansion_enable_cop2);
-    measure_single(PSX_CFC2(R_T1, GTE_TRX),  REPEAT, "CFC2", expansion_enable_cop2);
-    measure_single(GTE_CMD_RTPS(1, 1),        REPEAT, "COP2 RTPS", expansion_enable_cop2);
-    measure_single(GTE_CMD_NCLIP,             REPEAT, "COP2 NCLIP", expansion_enable_cop2);
-}
-
-/* ---- Mixed patterns (realistic game code) ---- */
-static void measure_mixed(void)
-{
-    printf("\n  --- Mixed (typical game patterns) ---\n");
-
-    /* ALU chain: t1 = t2 + t3; t4 = t1 & 0xFF; etc */
+    /* ALU chain */
     {
         uint32_t alu_chain[] = {
             PSX_ADDU(R_T1, R_T2, R_T3),
@@ -202,19 +219,11 @@ static void measure_mixed(void)
             PSX_SLL(R_T5, R_T4, 2),
             PSX_OR(R_T6, R_T5, R_T1),
         };
-        measure_block(alu_chain, 4, 4, "ALU chain (4x4)", NULL);
+        ee = compile_and_measure(alu_chain, 4, 4, NULL);
+        check_expansion("ALU chain", ee, 50, &pg_ctx);
     }
 
-    /* Load-use: LW + ADDU using loaded value */
-    {
-        uint32_t load_use[] = {
-            PSX_LW(R_T1, 0, R_SP),
-            PSX_ADDU(R_T2, R_T1, R_T3),
-        };
-        measure_block(load_use, 2, 8, "LW+use (2x8)", NULL);
-    }
-
-    /* GTE transform pattern (Crash-like) */
+    /* GTE transform (Crash-like) */
     {
         uint32_t gte_xform[] = {
             PSX_MTC2(R_T1, GTE_VXY0),
@@ -223,10 +232,11 @@ static void measure_mixed(void)
             PSX_MFC2(R_T3, GTE_SXY2),
             PSX_SW(R_T3, 0, R_SP),
         };
-        measure_block(gte_xform, 5, 3, "GTE xform (5x3)", expansion_enable_cop2);
+        ee = compile_and_measure(gte_xform, 5, 3, expansion_enable_cop2);
+        check_expansion("GTE xform", ee, 210, &pg_ctx);
     }
 
-    /* Store burst: multiple SWs to sequential offsets */
+    /* SW burst */
     {
         uint32_t sw_burst[] = {
             PSX_SW(R_T1, 0, R_SP),
@@ -234,28 +244,11 @@ static void measure_mixed(void)
             PSX_SW(R_T3, 8, R_SP),
             PSX_SW(R_T4, 12, R_SP),
         };
-        measure_block(sw_burst, 4, 4, "SW burst (4x4)", NULL);
+        ee = compile_and_measure(sw_burst, 4, 4, NULL);
+        check_expansion("SW burst", ee, 490, &pg_ctx);
     }
-}
 
-/* ================================================================
- *  Baseline: measure prologue+epilogue overhead
- * ================================================================ */
-static void measure_baseline(void)
-{
-    printf("\n  --- Baseline (prologue + epilogue overhead) ---\n");
-
-    /* Empty block: just JR $ra + NOP (2 PSX insns → minimum native code) */
-    measure_single(PSX_NOP(), 0, "empty (JR+NOP)", NULL);
-
-    /* 1 NOP — JIT NOP should be essentially free */
-    measure_single(PSX_NOP(), 1, "1x NOP", NULL);
-
-    /* 4 NOPs */
-    measure_single(PSX_NOP(), 4, "4x NOP", NULL);
-
-    /* 16 NOPs */
-    measure_single(PSX_NOP(), 16, "16x NOP", NULL);
+    END_TEST();
 }
 
 
@@ -264,17 +257,10 @@ static void measure_baseline(void)
  * ================================================================ */
 void pg_run_expansion_tests(void)
 {
-    printf("\n=== Expansion Ratio Report ===\n");
-    printf("  (REPEAT=%d instructions per block unless noted)\n", REPEAT);
-
-    measure_baseline();
-    measure_alu_rtype();
-    measure_alu_itype();
-    measure_shifts();
-    measure_muldiv();
-    measure_loadstore();
-    measure_gte();
-    measure_mixed();
-
-    printf("\n=== End Expansion Ratio Report ===\n\n");
+    printf("--- Expansion Ratio Tests ---\n");
+    test_expansion_alu();
+    test_expansion_muldiv();
+    test_expansion_loadstore();
+    test_expansion_gte();
+    test_expansion_mixed();
 }
