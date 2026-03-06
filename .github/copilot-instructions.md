@@ -53,13 +53,13 @@ make -C build run GAMEARGS=isos/CrashBandicoot/CrashBandicoot.cue
 
 ## JIT Playground
 
-A separate ELF (`jit_playground.elf`) for testing the dynarec in isolation with a mini-DSL. 77 micro-tests split across 7 category files, plus an expansion ratio report.
+A separate ELF (`jit_playground.elf`) for testing the dynarec in isolation with a mini-DSL. 82 micro-tests split across 7 category files, plus an expansion ratio report.
 
 ```bash
 # Build playground (EXCLUDE_FROM_ALL — not built by default)
 cmake --build build --target jit_playground.elf 2>&1 | tail -5
 
-# Run playground (expect: 77/77 passed) — 20s is enough
+# Run playground (expect: 82/82 passed) — 20s is enough
 perl -e 'alarm 20; exec @ARGV' make -C build run-playground \
   > ./build/playground_out.txt 2>&1; \
 pkill -f pcsx2 2>/dev/null; \
@@ -82,14 +82,14 @@ grep -E "Results|FAIL" ./build/playground_out.txt
 
 **Adding new tests:** Write a `static void test_xxx(void)` in the appropriate category file using `BEGIN_TEST/SET_REG/EMIT/RUN/EXPECT_REG/END_TEST` macros, then call it from the category runner (`pg_run_alu_tests`, `pg_run_memory_tests`, `pg_run_branch_tests`, `pg_run_block_tests`, `pg_run_dirty_tests`, or `pg_run_gte_tests`).
 
-**Before committing JIT changes:** run the playground (`77/77 passed`) in addition to the standard GTE/CPU/Timer tests.
+**Before committing JIT changes:** run the playground (`82/82 passed`) in addition to the standard GTE/CPU/Timer tests.
 
 ## Testing Protocol
 
 Before committing ANY change to the dynarec or emulation core:
 
 1. Build must succeed with zero warnings (except known ones in tlb_handler.c when TLB disabled)
-2. **JIT Playground: 77/77 passed** (for dynarec changes)
+2. **JIT Playground: 82/82 passed** (for dynarec changes)
 3. GTE: 1150 passed, 0 failed
 4. CPU: Result 00000101
 5. Timer test: must complete without hangs
@@ -108,11 +108,21 @@ Before committing ANY change to the dynarec or emulation core:
 4 PSX registers are permanently pinned to EE callee-saved registers:
 
 - Pinned: gp→S6, sp→S4, fp→S7, ra→S5
-- Infrastructure: S0=cpu ptr, S1=RAM/TLB base, S2=cycles, S3=mask(0x1FFFFFFF)
+- Infrastructure: S0=cpu ptr, S1=RAM/TLB base, S2=cycles, S3=mask(0x1FFFFFFF), FP($s8)=&jit_ht[0]
 - Dynamic slots: T0-T7 (8 slots, frequency-based per-block assignment, dirty writeback)
 - Scratch: T8, T9 (with scratch cache for non-pinned regs), AT
 
 The other 27 non-pinned PSX GPRs compete for 8 dynamic slots (T0-T7). Unslotted regs go through `LW/SW` to `cpu.regs[]` (offset from S0).
+
+### Alignment Tracking
+
+`align_known_mask` (uint32_t bitmask) tracks PSX registers known to be word-aligned at compile time. Pinned regs ($gp/$sp/$fp/$ra) are always marked via `ALIGN_PINNED_MASK`. Propagation rules: LUI → always aligned, ADDIU/ADDI from aligned + `(imm & 3)==0` → aligned, MOVE from aligned → aligned. When alignment is known AND offset is naturally aligned, memory emitters skip the ANDI+BNE alignment check (saves 2 native words per access).
+
+### Cold Slow Path (P7/P10)
+
+Memory access slow paths (IO, misaligned, out-of-range) are deferred to block end via `cold_queue[]`. Each cold entry patches forward branches from the inline fast path. For writes with `has_abort=1`, a shared per-block abort check subroutine is emitted once and called via JAL (2 words per entry vs 5-13 inline). The shared stub flushes all assigned dynamic slots and jumps to the abort trampoline.
+
+Externally pushed cold entries (e.g., SWC2 inline from dynarec_insn.c) use `cold_slow_push()` API.
 
 ### Dirty Writeback Protocol
 
@@ -126,7 +136,7 @@ Dynamic slots use compile-time dirty tracking via `dyn_dirty_mask` (uint8_t):
 
 - **A** (emit_call_c): `dirty-only` — mid-block full C call
 - **B** (emit_call_c_lite): `dirty-only` — mid-block lite C call
-- **C** (emit_abort_check): `dirty-only` — conditional abort path
+- **C** (emit_abort_check / P10 shared stub): `dirty-only` (inline) or `all-assigned` (shared stub) — conditional abort path
 - **D** (deferred taken): `dirty-only` — branch-taken cold code
 - **E** (block epilogue): `dirty-only` — block exit return to C
 - **F** (branch epilogue): `dirty-only` — direct block link exit
@@ -144,18 +154,31 @@ Trampolines at fixed offsets in `code_buffer[]`:
 
 - [0]: slow-path, [2]: abort, [32]: full C-call, [68]: lite C-call, [96]: jump dispatch, [128]: mem slow-path
 - JIT blocks start at [144+]
-- `DYNAREC_PROLOGUE_WORDS` (skip in direct block links)
+- `DYNAREC_PROLOGUE_WORDS` = 22 (skip in direct block links)
 
 ## Current Roadmap
 
 See `docs/jit_optimization_roadmap.md` for the master roadmap.
 See `docs/expansion_optimization_proposals.md` for expansion ratio data and reduction proposals.
 
-Next major optimization targets (by priority):
-1. **Hoist CU2 check** to block prologue (COP2: 24x → ~8x)
-2. **Inline MTC2/MFC2** data transfers (COP2 xfer: 24x → ~3x)
-3. **SMRV** memory fast-path (LW/SW: 23-27x → ~8-10x)
-4. **DIV simplification** (15x → ~5x)
+Completed optimizations (P1-P10):
+- P1: CU2 hoist to prologue (COP2 24x → ~10x)
+- P3/P3ext: Inline MTC2/MFC2/LWC2/SWC2 data transfers (24x → ~5x)
+- P4: Branchless DIV/DIVU (15x → ~11x)
+- P5: FP($s8) for jit_ht fast dispatch
+- P6: Alignment tracking — skip alignment checks for known-aligned regs (LW 22x → 7.4x)
+- P7: SWC2 cold slow path via cold_slow_push() API
+- P9: Fill delay slots in trampolines and cold stubs
+- P10: Shared cold abort check stub (SW 24x → 22x)
+
+Current expansion baselines (82/82 playground tests):
+- ALU: ADDU 40 (2.2x), ADDIU 39 (2.2x), SLL 39 (2.2x), LUI 38 (2.1x)
+- MulDiv: MULT 149 (8.3x), DIV 197 (10.9x), DIVU 165 (9.2x)
+- Memory: LW 133 (7.4x), SW 395 (21.9x), LB 133 (7.4x), SB 355 (19.7x)
+- GTE: MTC2 82 (4.6x), MFC2 83 (4.6x), RTPS 208 (11.6x), LWC2 144 (8.0x), SWC2 422 (23.4x)
+- Mixed: GTE xform 187 (10.4x), SW burst 401 (22.3x)
+
+Next optimization targets: see `docs/expansion_optimization_proposals.md`
 
 ## File Management
 
