@@ -1632,11 +1632,41 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x2A: /* DPCT */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, gte_sf);
-                emit_load_imm32(REG_A2, gte_lm);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_DPCT);
+                if (gte_use_vu0)
+                {
+                    /* ---- Inline DPCT (fast path) ----
+                     * 3× iteration of DPCS, but reads RGB0 (data[20]) instead
+                     * of RGBC. push_color shifts the FIFO each iteration,
+                     * so RGB0 changes between iterations.
+                     * IR sat + FLAG=0 only on final iteration.
+                     */
+                    int dpct_iter;
+                    for (dpct_iter = 0; dpct_iter < 3; dpct_iter++) {
+                        /* Extract R,G,B from RGB0 and shift << 16 */
+                        EMIT_LW(REG_T8, CPU_CP2_DATA(20), REG_S0);
+                        EMIT_ANDI(REG_V0, REG_T8, 0xFF);
+                        emit(MK_R(0, 0, REG_T8, REG_T9, 8, 0x02));
+                        EMIT_ANDI(REG_V1, REG_T9, 0xFF);
+                        emit(MK_R(0, 0, REG_T8, REG_T9, 16, 0x02));
+                        EMIT_ANDI(REG_A0, REG_T9, 0xFF);
+                        EMIT_SLL(REG_V0, REG_V0, 16);
+                        EMIT_SLL(REG_V1, REG_V1, 16);
+                        EMIT_SLL(REG_A0, REG_A0, 16);
+
+                        emit_interpolate_color(gte_sf);
+                        emit_push_color_inline();
+                    }
+                    /* IR saturation + FLAG=0 only for final result */
+                    emit_ir_sat_store(gte_lm);
+                }
+                else
+                {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, gte_sf);
+                    emit_load_imm32(REG_A2, gte_lm);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_DPCT);
+                }
                 break;
             case 0x2D: /* AVSZ3 */
                 if (gte_use_vu0)
