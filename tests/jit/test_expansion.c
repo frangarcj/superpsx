@@ -212,7 +212,7 @@ static void test_expansion_gte(void)
     check_expansion("LWC2", ee, 420, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_SWC2(GTE_VXY0, 0, R_SP)}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("SWC2", ee, 645, &pg_ctx);
+    check_expansion("SWC2", ee, 500, &pg_ctx);
 
     END_TEST();
 }

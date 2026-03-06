@@ -481,6 +481,11 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
 void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset);
 void cold_slow_reset(void);
 void cold_slow_emit_all(void);
+void cold_slow_push(uint32_t *branches[], int num_branches,
+                    uint32_t *return_point, uint32_t func_addr,
+                    uint32_t psx_pc, int16_t cycle_offset,
+                    uint8_t size, uint8_t type, uint8_t has_abort,
+                    uint8_t saved_dirty);
 void tlb_patch_emit_all(void);
 int TLB_Backpatch(uint32_t epc);
 extern int tlb_bp_map_count;
