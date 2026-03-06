@@ -124,6 +124,7 @@ extern int gte_use_vu0;
 
 /* GTE inline command wrappers (skip GTE_Execute dispatcher) */
 void GTE_Inline_RTPS(R3000CPU *cpu, int sf, int lm);
+void GTE_RTPS_Project(R3000CPU *cpu, int last); /* division + screen proj for JIT inline */
 void GTE_Inline_NCLIP(R3000CPU *cpu);
 void GTE_Inline_OP(R3000CPU *cpu, int sf, int lm);
 void GTE_Inline_DPCS(R3000CPU *cpu, int sf, int lm);

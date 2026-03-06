@@ -235,7 +235,7 @@ static void test_expansion_gte(void)
     check_expansion("MFC2", ee, 85, &pg_ctx);
 
     r = compile_and_measure_ex(&(uint32_t){GTE_CMD_RTPS(1, 1)}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("COP2 RTPS", r.native, 210, &pg_ctx);
+    check_expansion("COP2 RTPS", r.native, 1400, &pg_ctx);
     printf("      -> effective: %d EE (%4.1fx) [%d lite calls × %d tramp]\n",
            r.effective, (float)r.effective / 18.0f, r.lite_calls, TRAMP_LITE_WORDS);
 
@@ -288,7 +288,7 @@ static void test_expansion_mixed(void)
             PSX_SW(R_T3, 0, R_SP),
         };
         ee = compile_and_measure(gte_xform, 5, 3, expansion_enable_cop2);
-        check_expansion("GTE xform", ee, 192, &pg_ctx);
+        check_expansion("GTE xform", ee, 450, &pg_ctx);
     }
 
     /* SW burst */

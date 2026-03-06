@@ -485,6 +485,47 @@ static void emit_ncds_core(int v, int sf, int lm)
     emit_ir_sat_store(lm);                 /* FLAG=0 */
 }
 
+/* Emit RTPS core for vertex v: RT×V+TR → MAC/IR → push_sz → C-call project.
+ * Inlines the matrix multiply and SZ FIFO push; delegates UNR division,
+ * screen projection, SXY push and depth cueing to GTE_RTPS_Project (C).
+ * last=1 → also compute MAC0/IR0 (depth cueing). */
+static void emit_rtps_core(int v, int sf, int lm, int last)
+{
+    /* Step 1: RT × V + TR → MAC1-3, IR1-3 (inline matrix multiply) */
+    emit_inline_mvmva(0, v, 0, sf, lm);
+
+    /* Step 2: Push SZ FIFO inline.
+     * SZ3 = saturate_sz( sf ? MAC3 : MAC3>>12 )
+     * MAC3 is stored in memory by emit_inline_mvmva. */
+    EMIT_LW(REG_T8, CPU_CP2_DATA(27), REG_S0);         /* T8 = MAC3 */
+    if (!sf) {
+        EMIT_SRA(REG_T8, REG_T8, 12);                  /* sf=0: need raw>>12 */
+    }
+    /* Saturate SZ to [0, 0xFFFF] */
+    emit(MK_R(0, REG_T8, REG_ZERO, REG_AT, 0, 0x2A)); /* SLT AT, T8, $0 */
+    EMIT_MOVN(REG_T8, REG_ZERO, REG_AT);               /* neg → 0 */
+    EMIT_ORI(REG_T9, REG_ZERO, 0xFFFF);                /* T9 = 0xFFFF */
+    emit(MK_R(0, REG_T9, REG_T8, REG_AT, 0, 0x2A));   /* SLT AT, T9, T8 */
+    EMIT_MOVN(REG_T8, REG_T9, REG_AT);                 /* >0xFFFF → 0xFFFF */
+    /* Shift FIFO: SZ0←SZ1, SZ1←SZ2, SZ2←old SZ3, SZ3←new */
+    EMIT_LW(REG_V0, CPU_CP2_DATA(17), REG_S0);         /* V0 = SZ1 */
+    EMIT_LW(REG_V1, CPU_CP2_DATA(18), REG_S0);         /* V1 = SZ2 */
+    EMIT_LW(REG_A0, CPU_CP2_DATA(19), REG_S0);         /* A0 = old SZ3 */
+    EMIT_SW(REG_V0, CPU_CP2_DATA(16), REG_S0);         /* SZ0 = SZ1 */
+    EMIT_SW(REG_V1, CPU_CP2_DATA(17), REG_S0);         /* SZ1 = SZ2 */
+    EMIT_SW(REG_A0, CPU_CP2_DATA(18), REG_S0);         /* SZ2 = old SZ3 */
+    EMIT_SW(REG_T8, CPU_CP2_DATA(19), REG_S0);         /* SZ3 = new */
+
+    /* Step 3: Division + screen projection + SXY push + depth cue (C call).
+     * GTE_RTPS_Project reads H, SZ3, IR1, IR2, OFX, OFY, DQA, DQB from cpu. */
+    EMIT_MOVE(REG_A0, REG_S0);
+    emit_load_imm32(REG_A1, last);
+    emit_call_c_lite((uint32_t)GTE_RTPS_Project);
+
+    /* FLAG=0 (inline path skips flag tracking) */
+    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);
+}
+
 /* ---- Main instruction emitter ---- */
 int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 {
@@ -1431,11 +1472,15 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             switch (gte_func)
             {
             case 0x01: /* RTPS */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, gte_sf);
-                emit_load_imm32(REG_A2, gte_lm);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_RTPS);
+                if (gte_use_vu0) {
+                    emit_rtps_core(0, gte_sf, gte_lm, 1);
+                } else {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, gte_sf);
+                    emit_load_imm32(REG_A2, gte_lm);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_RTPS);
+                }
                 break;
             case 0x06: /* NCLIP */
                 if (gte_use_vu0)
@@ -2003,11 +2048,17 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x30: /* RTPT */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, gte_sf);
-                emit_load_imm32(REG_A2, gte_lm);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_RTPT);
+                if (gte_use_vu0) {
+                    emit_rtps_core(0, gte_sf, gte_lm, 0);
+                    emit_rtps_core(1, gte_sf, gte_lm, 0);
+                    emit_rtps_core(2, gte_sf, gte_lm, 1);
+                } else {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, gte_sf);
+                    emit_load_imm32(REG_A2, gte_lm);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_RTPT);
+                }
                 break;
             case 0x3D: /* GPF */
                 if (gte_use_vu0)

@@ -1770,6 +1770,32 @@ static void gte_mvmva_vu0(R3000CPU *cpu, int lm, int mx, int v, int cv)
 #endif /* _EE */
 
 /* ================================================================
+ * RTPS projection helper for JIT inline path.
+ * Called after matrix multiply + SZ push are done inline in the JIT.
+ * Performs: UNR division, screen projection, SXY FIFO push,
+ * and optionally depth cueing (MAC0/IR0).
+ * ================================================================ */
+void GTE_RTPS_Project(R3000CPU *cpu, int last)
+{
+    uint32_t div_result = gte_divide(
+        (uint16_t)(int16_t)(int32_t)C(c_H), D(d_SZ3));
+
+    int64_t sx_mac = (int64_t)(int32_t)div_result *
+                     (int16_t)(int32_t)D(d_IR1) + (int32_t)C(c_OFX);
+    int64_t sy_mac = (int64_t)(int32_t)div_result *
+                     (int16_t)(int32_t)D(d_IR2) + (int32_t)C(c_OFY);
+
+    push_sxy(cpu, (int32_t)(sx_mac >> 16), (int32_t)(sy_mac >> 16));
+
+    if (last) {
+        int64_t dq_mac = (int64_t)(int16_t)(int32_t)C(c_DQA) *
+                         (int32_t)div_result + (int32_t)C(c_DQB);
+        D(d_MAC0) = (uint32_t)(int32_t)dq_mac;
+        D(d_IR0) = (uint32_t)saturate_ir0(dq_mac >> 12);
+    }
+}
+
+/* ================================================================
  * Standalone GTE command wrappers for dynarec inlining.
  * Each wrapper does: flag_reset() + command + flag_update_bit31() + FLAG write.
  * This allows the dynarec to JAL directly to these instead of the generic
