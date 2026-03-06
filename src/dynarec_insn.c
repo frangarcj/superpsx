@@ -1660,11 +1660,17 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 int mx = (opcode >> 17) & 3;
                 int v = (opcode >> 15) & 3;
                 int cv = (opcode >> 13) & 3;
-                uint32_t packed = gte_sf | (gte_lm << 1) | (mx << 2) | (v << 4) | (cv << 6);
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, packed);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_MVMVA);
+                if (gte_use_vu0 && mx < 3 && cv != 2) {
+                    /* Inline: mx=0(RT)/1(L)/2(LC), v=0-3, cv=0(TR)/1(BK)/3(none) */
+                    emit_inline_mvmva(mx, v, cv, gte_sf, gte_lm);
+                } else {
+                    /* Bugged paths (mx=3, cv=2) or vu0 disabled → C fallback */
+                    uint32_t packed = gte_sf | (gte_lm << 1) | (mx << 2) | (v << 4) | (cv << 6);
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, packed);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_MVMVA);
+                }
                 break;
             }
             case 0x13: /* NCDS */
