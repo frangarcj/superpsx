@@ -1109,11 +1109,117 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x0C: /* OP */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, gte_sf);
-                emit_load_imm32(REG_A2, gte_lm);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_OP);
+                if (gte_use_vu0)
+                {
+                    /* ---- Inline OP (fast path) ----
+                     * Cross product: D × IR
+                     * MAC1 = IR3*D2 - IR2*D3
+                     * MAC2 = IR1*D3 - IR3*D1
+                     * MAC3 = IR2*D1 - IR1*D2
+                     * D1=lo16(RT11RT12), D2=lo16(RT22RT23), D3=lo16(RT33)
+                     * Then store_mac_ir (sf shift + IR saturation)
+                     * FLAG = 0
+                     *
+                     * Scratch: T8(D1),T9(D2),AT(D3), V0(IR1),V1(IR2),A0(IR3)
+                     *          A1-A3(MAC/temps)
+                     */
+
+                    /* Load rotation diagonal D1,D2,D3 (lo16 = signed halfword) */
+                    EMIT_LH(REG_T8, CPU_CP2_CTRL(0),  REG_S0);     /* T8 = D1 = lo16(RT11RT12) */
+                    EMIT_LH(REG_T9, CPU_CP2_CTRL(2),  REG_S0);     /* T9 = D2 = lo16(RT22RT23) */
+                    EMIT_LH(REG_AT, CPU_CP2_CTRL(4),  REG_S0);     /* AT = D3 = lo16(RT33) */
+
+                    /* Load IR1-3 */
+                    EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);     /* V0 = IR1 */
+                    EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);     /* V1 = IR2 */
+                    EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);     /* A0 = IR3 */
+
+                    /* MAC1 = IR3*D2 - IR2*D3 */
+                    EMIT_MULT(REG_A0, REG_T9);                     /* LO = IR3*D2 */
+                    EMIT_MFLO(REG_A1);                              /* A1 = IR3*D2 */
+                    EMIT_MULT(REG_V1, REG_AT);                     /* LO = IR2*D3 */
+                    EMIT_MFLO(REG_A2);                              /* A2 = IR2*D3 */
+                    EMIT_SUBU(REG_A1, REG_A1, REG_A2);             /* A1 = MAC1 */
+
+                    /* MAC2 = IR1*D3 - IR3*D1 */
+                    EMIT_MULT(REG_V0, REG_AT);                     /* LO = IR1*D3 */
+                    EMIT_MFLO(REG_A2);                              /* A2 = IR1*D3 */
+                    EMIT_MULT(REG_A0, REG_T8);                     /* LO = IR3*D1 */
+                    EMIT_MFLO(REG_A3);                              /* A3 = IR3*D1 */
+                    EMIT_SUBU(REG_A2, REG_A2, REG_A3);             /* A2 = MAC2 */
+
+                    /* MAC3 = IR2*D1 - IR1*D2 */
+                    EMIT_MULT(REG_V1, REG_T8);                     /* LO = IR2*D1 */
+                    EMIT_MFLO(REG_A3);                              /* A3 = IR2*D1 */
+                    EMIT_MULT(REG_V0, REG_T9);                     /* LO = IR1*D2 */
+                    EMIT_MFLO(REG_V0);                              /* V0 = IR1*D2 (reuse) */
+                    EMIT_SUBU(REG_A3, REG_A3, REG_V0);             /* A3 = MAC3 */
+
+                    /* sf=1: shift right by 12 */
+                    if (gte_sf) {
+                        EMIT_SRA(REG_A1, REG_A1, 12);
+                        EMIT_SRA(REG_A2, REG_A2, 12);
+                        EMIT_SRA(REG_A3, REG_A3, 12);
+                    }
+
+                    /* Store MAC1-3 */
+                    EMIT_SW(REG_A1, CPU_CP2_DATA(25), REG_S0);     /* MAC1 */
+                    EMIT_SW(REG_A2, CPU_CP2_DATA(26), REG_S0);     /* MAC2 */
+                    EMIT_SW(REG_A3, CPU_CP2_DATA(27), REG_S0);     /* MAC3 */
+
+                    /* Saturate IR: clamp [lo..0x7FFF] */
+                    EMIT_ORI(REG_T9, REG_ZERO, 0x7FFF);            /* T9 = upper bound */
+                    if (gte_lm) {
+                        /* lm=1: clamp [0, 0x7FFF] */
+                        emit(MK_R(0, REG_A1, REG_ZERO, REG_T8, 0, 0x2A)); /* SLT T8,A1,$0 */
+                        EMIT_MOVN(REG_A1, REG_ZERO, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_A1, REG_T8, 0, 0x2A)); /* SLT T8,T9,A1 */
+                        EMIT_MOVN(REG_A1, REG_T9, REG_T8);
+
+                        emit(MK_R(0, REG_A2, REG_ZERO, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A2, REG_ZERO, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_A2, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A2, REG_T9, REG_T8);
+
+                        emit(MK_R(0, REG_A3, REG_ZERO, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A3, REG_ZERO, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_A3, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A3, REG_T9, REG_T8);
+                    } else {
+                        /* lm=0: clamp [-0x8000, 0x7FFF] */
+                        EMIT_ADDIU(REG_V0, REG_ZERO, -0x8000);     /* V0 = -32768 */
+
+                        emit(MK_R(0, REG_A1, REG_V0, REG_T8, 0, 0x2A)); /* SLT T8,A1,V0 */
+                        EMIT_MOVN(REG_A1, REG_V0, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_A1, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A1, REG_T9, REG_T8);
+
+                        emit(MK_R(0, REG_A2, REG_V0, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A2, REG_V0, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_A2, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A2, REG_T9, REG_T8);
+
+                        emit(MK_R(0, REG_A3, REG_V0, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A3, REG_V0, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_A3, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A3, REG_T9, REG_T8);
+                    }
+
+                    /* Store IR1-3 + FLAG=0 */
+                    EMIT_SW(REG_A1, CPU_CP2_DATA(9),  REG_S0);     /* IR1 */
+                    EMIT_SW(REG_A2, CPU_CP2_DATA(10), REG_S0);     /* IR2 */
+                    EMIT_SW(REG_A3, CPU_CP2_DATA(11), REG_S0);     /* IR3 */
+                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);   /* FLAG = 0 */
+                    /* Total: sf=0/lm=1: 41w, sf=1/lm=0: 45w */
+                }
+                else
+                {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, gte_sf);
+                    emit_load_imm32(REG_A2, gte_lm);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_OP);
+                }
                 break;
             case 0x10: /* DPCS */
                 EMIT_MOVE(REG_A0, REG_S0);
@@ -1368,18 +1474,273 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 emit_call_c_lite((uint32_t)GTE_Inline_RTPT);
                 break;
             case 0x3D: /* GPF */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, gte_sf);
-                emit_load_imm32(REG_A2, gte_lm);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_GPF);
+                if (gte_use_vu0)
+                {
+                    /* ---- Inline GPF (fast path) ----
+                     * MAC_n = IR_n × IR0  [>> 12 if sf=1]
+                     * IR_n  = clamp(MAC_n, lo..0x7FFF)
+                     * push_color: RGB FIFO shift + pack MAC>>4
+                     * FLAG = 0
+                     *
+                     * Scratch: T8(IR0), V0(MAC1), V1(MAC2), A0(MAC3)
+                     *          A1-A3, T9, AT for push_color + saturation
+                     */
+
+                    /* Load IR0, IR1-3 */
+                    EMIT_LH(REG_T8, CPU_CP2_DATA(8),  REG_S0);     /* T8 = IR0 */
+                    EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);     /* V0 = IR1 */
+                    EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);     /* V1 = IR2 */
+                    EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);     /* A0 = IR3 */
+
+                    /* Multiply: MAC_n = IR_n × IR0 */
+                    EMIT_MULT(REG_V0, REG_T8);                     /* LO = IR1*IR0 */
+                    EMIT_MFLO(REG_V0);                              /* V0 = product1 */
+                    EMIT_MULT(REG_V1, REG_T8);                     /* LO = IR2*IR0 */
+                    EMIT_MFLO(REG_V1);                              /* V1 = product2 */
+                    EMIT_MULT(REG_A0, REG_T8);                     /* LO = IR3*IR0 */
+                    EMIT_MFLO(REG_A0);                              /* A0 = product3 */
+
+                    /* sf=1: shift for MAC */
+                    if (gte_sf) {
+                        EMIT_SRA(REG_V0, REG_V0, 12);
+                        EMIT_SRA(REG_V1, REG_V1, 12);
+                        EMIT_SRA(REG_A0, REG_A0, 12);
+                    }
+
+                    /* Store MAC1-3 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);     /* MAC1 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);     /* MAC2 */
+                    EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);     /* MAC3 */
+
+                    /* ---- push_color (V0,V1,A0 = MAC values, preserved) ---- */
+                    /* RGB FIFO shift */
+                    EMIT_LW(REG_T8, CPU_CP2_DATA(21), REG_S0);     /* T8 = RGB1 */
+                    EMIT_LW(REG_T9, CPU_CP2_DATA(22), REG_S0);     /* T9 = RGB2 */
+                    EMIT_SW(REG_T8, CPU_CP2_DATA(20), REG_S0);     /* RGB0 = RGB1 */
+                    EMIT_SW(REG_T9, CPU_CP2_DATA(21), REG_S0);     /* RGB1 = RGB2 */
+
+                    /* Color: r/g/b = clamp(MAC>>4, 0, 255) */
+                    EMIT_SRA(REG_A1, REG_V0, 4);                   /* A1 = r = MAC1>>4 */
+                    EMIT_SRA(REG_A2, REG_V1, 4);                   /* A2 = g = MAC2>>4 */
+                    EMIT_SRA(REG_A3, REG_A0, 4);                   /* A3 = b = MAC3>>4 */
+
+                    /* Clamp lower to 0 */
+                    emit(MK_R(0, REG_A1, REG_ZERO, REG_T8, 0, 0x2A)); /* SLT T8,A1,$0 */
+                    EMIT_MOVN(REG_A1, REG_ZERO, REG_T8);
+                    emit(MK_R(0, REG_A2, REG_ZERO, REG_T8, 0, 0x2A));
+                    EMIT_MOVN(REG_A2, REG_ZERO, REG_T8);
+                    emit(MK_R(0, REG_A3, REG_ZERO, REG_T8, 0, 0x2A));
+                    EMIT_MOVN(REG_A3, REG_ZERO, REG_T8);
+
+                    /* Clamp upper to 255 */
+                    EMIT_ORI(REG_T9, REG_ZERO, 0xFF);              /* T9 = 255 */
+                    emit(MK_R(0, REG_T9, REG_A1, REG_T8, 0, 0x2A)); /* SLT T8,T9,A1 */
+                    EMIT_MOVN(REG_A1, REG_T9, REG_T8);
+                    emit(MK_R(0, REG_T9, REG_A2, REG_T8, 0, 0x2A));
+                    EMIT_MOVN(REG_A2, REG_T9, REG_T8);
+                    emit(MK_R(0, REG_T9, REG_A3, REG_T8, 0, 0x2A));
+                    EMIT_MOVN(REG_A3, REG_T9, REG_T8);
+
+                    /* Get code byte from RGBC */
+                    EMIT_LW(REG_AT, CPU_CP2_DATA(6), REG_S0);      /* AT = RGBC */
+                    emit(MK_R(0, 0, REG_AT, REG_AT, 24, 0x02));    /* SRL AT, AT, 24 */
+
+                    /* Pack: RGB2 = r | (g<<8) | (b<<16) | (code<<24) */
+                    EMIT_SLL(REG_AT, REG_AT, 24);                  /* AT = code<<24 */
+                    EMIT_SLL(REG_A3, REG_A3, 16);                  /* A3 = b<<16 */
+                    EMIT_OR(REG_AT, REG_AT, REG_A3);               /* AT |= b<<16 */
+                    EMIT_SLL(REG_A2, REG_A2, 8);                   /* A2 = g<<8 */
+                    EMIT_OR(REG_AT, REG_AT, REG_A2);               /* AT |= g<<8 */
+                    EMIT_OR(REG_AT, REG_AT, REG_A1);               /* AT |= r */
+                    EMIT_SW(REG_AT, CPU_CP2_DATA(22), REG_S0);     /* RGB2 */
+
+                    /* ---- Saturate IR (V0,V1,A0 = MAC, still valid) ---- */
+                    EMIT_ORI(REG_T9, REG_ZERO, 0x7FFF);            /* T9 = upper bound */
+                    if (gte_lm) {
+                        /* lm=1: clamp [0, 0x7FFF] */
+                        emit(MK_R(0, REG_V0, REG_ZERO, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V0, REG_ZERO, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_V0, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V0, REG_T9, REG_T8);
+
+                        emit(MK_R(0, REG_V1, REG_ZERO, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V1, REG_ZERO, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_V1, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V1, REG_T9, REG_T8);
+
+                        emit(MK_R(0, REG_A0, REG_ZERO, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A0, REG_ZERO, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_A0, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A0, REG_T9, REG_T8);
+                    } else {
+                        /* lm=0: clamp [-0x8000, 0x7FFF] */
+                        EMIT_ADDIU(REG_A1, REG_ZERO, -0x8000);     /* A1 = -32768 */
+
+                        emit(MK_R(0, REG_V0, REG_A1, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V0, REG_A1, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_V0, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V0, REG_T9, REG_T8);
+
+                        emit(MK_R(0, REG_V1, REG_A1, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V1, REG_A1, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_V1, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V1, REG_T9, REG_T8);
+
+                        emit(MK_R(0, REG_A0, REG_A1, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A0, REG_A1, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_A0, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A0, REG_T9, REG_T8);
+                    }
+
+                    /* Store IR1-3 + FLAG=0 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(9),  REG_S0);     /* IR1 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(10), REG_S0);     /* IR2 */
+                    EMIT_SW(REG_A0, CPU_CP2_DATA(11), REG_S0);     /* IR3 */
+                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);   /* FLAG = 0 */
+                }
+                else
+                {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, gte_sf);
+                    emit_load_imm32(REG_A2, gte_lm);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_GPF);
+                }
                 break;
             case 0x3E: /* GPL */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, gte_sf);
-                emit_load_imm32(REG_A2, gte_lm);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_GPL);
+                if (gte_use_vu0)
+                {
+                    /* ---- Inline GPL (fast path) ----
+                     * Same as GPF but with MAC base:
+                     * MAC_n = old_MAC_n + IR_n × IR0  [sf applied to product]
+                     * If sf=1: new_MAC = old_MAC + (product >> 12)
+                     * If sf=0: new_MAC = old_MAC + product
+                     * Then push_color + IR saturation
+                     * FLAG = 0
+                     *
+                     * Scratch: T8(IR0), V0(MAC1), V1(MAC2), A0(MAC3)
+                     *          T9,AT for old MAC loads, A1-A3 for push_color+sat
+                     */
+
+                    /* Load IR0, IR1-3, compute products */
+                    EMIT_LH(REG_T8, CPU_CP2_DATA(8),  REG_S0);     /* T8 = IR0 */
+                    EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);     /* V0 = IR1 */
+                    EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);     /* V1 = IR2 */
+                    EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);     /* A0 = IR3 */
+
+                    EMIT_MULT(REG_V0, REG_T8);                     /* LO = IR1*IR0 */
+                    EMIT_MFLO(REG_V0);                              /* V0 = product1 */
+                    EMIT_MULT(REG_V1, REG_T8);                     /* LO = IR2*IR0 */
+                    EMIT_MFLO(REG_V1);                              /* V1 = product2 */
+                    EMIT_MULT(REG_A0, REG_T8);                     /* LO = IR3*IR0 */
+                    EMIT_MFLO(REG_A0);                              /* A0 = product3 */
+
+                    /* sf=1: shift products before adding base */
+                    if (gte_sf) {
+                        EMIT_SRA(REG_V0, REG_V0, 12);
+                        EMIT_SRA(REG_V1, REG_V1, 12);
+                        EMIT_SRA(REG_A0, REG_A0, 12);
+                    }
+
+                    /* Add old MAC base */
+                    EMIT_LW(REG_T8, CPU_CP2_DATA(25), REG_S0);     /* T8 = old MAC1 */
+                    EMIT_LW(REG_T9, CPU_CP2_DATA(26), REG_S0);     /* T9 = old MAC2 */
+                    EMIT_LW(REG_AT, CPU_CP2_DATA(27), REG_S0);     /* AT = old MAC3 */
+                    EMIT_ADDU(REG_V0, REG_V0, REG_T8);             /* V0 = new MAC1 */
+                    EMIT_ADDU(REG_V1, REG_V1, REG_T9);             /* V1 = new MAC2 */
+                    EMIT_ADDU(REG_A0, REG_A0, REG_AT);             /* A0 = new MAC3 */
+
+                    /* Store MAC1-3 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);     /* MAC1 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);     /* MAC2 */
+                    EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);     /* MAC3 */
+
+                    /* ---- push_color (same as GPF) ---- */
+                    EMIT_LW(REG_T8, CPU_CP2_DATA(21), REG_S0);     /* T8 = RGB1 */
+                    EMIT_LW(REG_T9, CPU_CP2_DATA(22), REG_S0);     /* T9 = RGB2 */
+                    EMIT_SW(REG_T8, CPU_CP2_DATA(20), REG_S0);     /* RGB0 = RGB1 */
+                    EMIT_SW(REG_T9, CPU_CP2_DATA(21), REG_S0);     /* RGB1 = RGB2 */
+
+                    EMIT_SRA(REG_A1, REG_V0, 4);                   /* A1 = r = MAC1>>4 */
+                    EMIT_SRA(REG_A2, REG_V1, 4);                   /* A2 = g = MAC2>>4 */
+                    EMIT_SRA(REG_A3, REG_A0, 4);                   /* A3 = b = MAC3>>4 */
+
+                    emit(MK_R(0, REG_A1, REG_ZERO, REG_T8, 0, 0x2A));
+                    EMIT_MOVN(REG_A1, REG_ZERO, REG_T8);
+                    emit(MK_R(0, REG_A2, REG_ZERO, REG_T8, 0, 0x2A));
+                    EMIT_MOVN(REG_A2, REG_ZERO, REG_T8);
+                    emit(MK_R(0, REG_A3, REG_ZERO, REG_T8, 0, 0x2A));
+                    EMIT_MOVN(REG_A3, REG_ZERO, REG_T8);
+
+                    EMIT_ORI(REG_T9, REG_ZERO, 0xFF);
+                    emit(MK_R(0, REG_T9, REG_A1, REG_T8, 0, 0x2A));
+                    EMIT_MOVN(REG_A1, REG_T9, REG_T8);
+                    emit(MK_R(0, REG_T9, REG_A2, REG_T8, 0, 0x2A));
+                    EMIT_MOVN(REG_A2, REG_T9, REG_T8);
+                    emit(MK_R(0, REG_T9, REG_A3, REG_T8, 0, 0x2A));
+                    EMIT_MOVN(REG_A3, REG_T9, REG_T8);
+
+                    EMIT_LW(REG_AT, CPU_CP2_DATA(6), REG_S0);
+                    emit(MK_R(0, 0, REG_AT, REG_AT, 24, 0x02));    /* SRL AT,AT,24 */
+
+                    EMIT_SLL(REG_AT, REG_AT, 24);
+                    EMIT_SLL(REG_A3, REG_A3, 16);
+                    EMIT_OR(REG_AT, REG_AT, REG_A3);
+                    EMIT_SLL(REG_A2, REG_A2, 8);
+                    EMIT_OR(REG_AT, REG_AT, REG_A2);
+                    EMIT_OR(REG_AT, REG_AT, REG_A1);
+                    EMIT_SW(REG_AT, CPU_CP2_DATA(22), REG_S0);     /* RGB2 */
+
+                    /* ---- Saturate IR (same as GPF) ---- */
+                    EMIT_ORI(REG_T9, REG_ZERO, 0x7FFF);
+                    if (gte_lm) {
+                        emit(MK_R(0, REG_V0, REG_ZERO, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V0, REG_ZERO, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_V0, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V0, REG_T9, REG_T8);
+
+                        emit(MK_R(0, REG_V1, REG_ZERO, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V1, REG_ZERO, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_V1, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V1, REG_T9, REG_T8);
+
+                        emit(MK_R(0, REG_A0, REG_ZERO, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A0, REG_ZERO, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_A0, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A0, REG_T9, REG_T8);
+                    } else {
+                        EMIT_ADDIU(REG_A1, REG_ZERO, -0x8000);
+
+                        emit(MK_R(0, REG_V0, REG_A1, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V0, REG_A1, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_V0, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V0, REG_T9, REG_T8);
+
+                        emit(MK_R(0, REG_V1, REG_A1, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V1, REG_A1, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_V1, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_V1, REG_T9, REG_T8);
+
+                        emit(MK_R(0, REG_A0, REG_A1, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A0, REG_A1, REG_T8);
+                        emit(MK_R(0, REG_T9, REG_A0, REG_T8, 0, 0x2A));
+                        EMIT_MOVN(REG_A0, REG_T9, REG_T8);
+                    }
+
+                    /* Store IR1-3 + FLAG=0 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(9),  REG_S0);     /* IR1 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(10), REG_S0);     /* IR2 */
+                    EMIT_SW(REG_A0, CPU_CP2_DATA(11), REG_S0);     /* IR3 */
+                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);   /* FLAG = 0 */
+                }
+                else
+                {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, gte_sf);
+                    emit_load_imm32(REG_A2, gte_lm);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_GPL);
+                }
                 break;
             case 0x3F: /* NCCT */
                 EMIT_MOVE(REG_A0, REG_S0);
