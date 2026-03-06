@@ -21,7 +21,8 @@ Thumbs.db
 
 # Test binaries and data
 test.exe
-tests/
+tests/*
+!tests/jit/
 isos/crash_pid*.txt
 
 # Analysis files (not tracked)
