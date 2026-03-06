@@ -116,7 +116,7 @@ uint64_t hblank_frame_start_cycle = 0;                              /* Cycle at 
 /* Frame limiter: wall-clock target for next VBlank */
 static uint32_t frame_limit_next_ms = 0;
 static const uint32_t FRAME_TIME_NTSC_US = 16667; /* 1000000 / 60 */
-static const uint32_t FRAME_TIME_PAL_US  = 20000; /* 1000000 / 50 */
+static const uint32_t FRAME_TIME_PAL_US = 20000;  /* 1000000 / 50 */
 
 #ifdef ENABLE_PERF_REPORT
 static uint64_t perf_last_report_cycle = 0;
@@ -129,8 +129,8 @@ static uint32_t run_iterations = 0;
 static uint32_t idle_skip_pc = 0;
 static uint32_t idle_skip_count = 0;
 static uint32_t poll_detect_pc = 0;
-static uint32_t *poll_patched_addr = NULL;  /* Location of patched instructions */
-static uint32_t  poll_patched_saved[2];     /* Original 2 instructions at that location */
+static uint32_t *poll_patched_addr = NULL; /* Location of patched instructions */
+static uint32_t poll_patched_saved[2];     /* Original 2 instructions at that location */
 
 #ifdef ENABLE_VRAM_DUMP
 static uint32_t next_vram_dump = 1000000;
@@ -223,10 +223,10 @@ void Init_Dynarec(void)
         uint32_t *p = &code_buffer[2];
         *p++ = MK_R(0, REG_S2, 0, REG_V0, 0, 0x25); /* or v0, s2, zero */
         /* Flush 4 pinned PSX regs to cpu struct */
-        *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(28));  /* PSX $gp */
-        *p++ = MK_I(0x2B, REG_S0, REG_S4, CPU_REG(29));  /* PSX $sp */
-        *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(30));  /* PSX $fp */
-        *p++ = MK_I(0x2B, REG_S0, REG_S5, CPU_REG(31));  /* PSX $ra */
+        *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(28)); /* PSX $gp */
+        *p++ = MK_I(0x2B, REG_S0, REG_S4, CPU_REG(29)); /* PSX $sp */
+        *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(30)); /* PSX $fp */
+        *p++ = MK_I(0x2B, REG_S0, REG_S5, CPU_REG(31)); /* PSX $ra */
         /* Restore EE callee-saved registers */
         *p++ = MK_I(0x23, REG_SP, REG_FP, 68);
         *p++ = MK_I(0x23, REG_SP, REG_S7, 60);
@@ -238,9 +238,8 @@ void Init_Dynarec(void)
         *p++ = MK_I(0x23, REG_SP, REG_S1, 36);
         *p++ = MK_I(0x23, REG_SP, REG_S0, 40);
         *p++ = MK_I(0x23, REG_SP, REG_RA, 44);
-        *p++ = MK_I(0x09, REG_SP, REG_SP, 96);
-        *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08);
-        *p++ = 0;
+        *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08); /* jr ra */
+        *p++ = MK_I(0x09, REG_SP, REG_SP, 96); /* (delay) addiu sp, sp, 96 (P9) */
     }
 
     /* ---- C-call trampoline at code_buffer[32] ---- */
@@ -252,10 +251,10 @@ void Init_Dynarec(void)
          * and the inline dyn_reload_slots() must pick up those changes.
          * Only the lite trampoline saves/restores T0-T7. */
         /* Flush 4 pinned regs to cpu struct (exception safety) */
-        *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(28));  /* PSX $gp */
-        *p++ = MK_I(0x2B, REG_S0, REG_S4, CPU_REG(29));  /* PSX $sp */
-        *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(30));  /* PSX $fp */
-        *p++ = MK_I(0x2B, REG_S0, REG_S5, CPU_REG(31));  /* PSX $ra */
+        *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(28)); /* PSX $gp */
+        *p++ = MK_I(0x2B, REG_S0, REG_S4, CPU_REG(29)); /* PSX $sp */
+        *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(30)); /* PSX $fp */
+        *p++ = MK_I(0x2B, REG_S0, REG_S5, CPU_REG(31)); /* PSX $ra */
         /* Call target function (T8 = func_addr) */
         *p++ = MK_I(0x09, REG_SP, REG_SP, (uint32_t)(int32_t)-32);
         *p++ = MK_I(0x2B, REG_SP, REG_RA, 28);
@@ -266,10 +265,10 @@ void Init_Dynarec(void)
         /* Reload 4 pinned regs: C helpers may write to cpu.regs[]
          * for any register (e.g., Helper_ADD writes to cpu.regs[rd]).
          * Dynamic slots are reloaded inline by dyn_reload_slots(). */
-        *p++ = MK_I(0x23, REG_S0, REG_S6, CPU_REG(28));  /* PSX $gp */
-        *p++ = MK_I(0x23, REG_S0, REG_S4, CPU_REG(29));  /* PSX $sp */
-        *p++ = MK_I(0x23, REG_S0, REG_S7, CPU_REG(30));  /* PSX $fp */
-        *p++ = MK_I(0x23, REG_S0, REG_S5, CPU_REG(31));  /* PSX $ra */
+        *p++ = MK_I(0x23, REG_S0, REG_S6, CPU_REG(28)); /* PSX $gp */
+        *p++ = MK_I(0x23, REG_S0, REG_S4, CPU_REG(29)); /* PSX $sp */
+        *p++ = MK_I(0x23, REG_S0, REG_S7, CPU_REG(30)); /* PSX $fp */
+        *p++ = MK_I(0x23, REG_S0, REG_S5, CPU_REG(31)); /* PSX $ra */
         *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08);
         *p++ = 0;
     }
@@ -284,14 +283,14 @@ void Init_Dynarec(void)
     {
         uint32_t *p = call_c_trampoline_lite_addr;
         /* Save all caller-clobbered registers to block stack frame */
-        *p++ = MK_I(0x2B, REG_SP, REG_T0, 0);            /* sw t0, 0(sp)  */
-        *p++ = MK_I(0x2B, REG_SP, REG_T1, 4);            /* sw t1, 4(sp)  */
-        *p++ = MK_I(0x2B, REG_SP, REG_T2, 8);            /* sw t2, 8(sp)  */
-        *p++ = MK_I(0x2B, REG_SP, REG_T3, 12);           /* sw t3, 12(sp) */
-        *p++ = MK_I(0x2B, REG_SP, REG_T4, 16);           /* sw t4, 16(sp) */
-        *p++ = MK_I(0x2B, REG_SP, REG_T5, 20);           /* sw t5, 20(sp) */
-        *p++ = MK_I(0x2B, REG_SP, REG_T6, 24);           /* sw t6, 24(sp) */
-        *p++ = MK_I(0x2B, REG_SP, REG_T7, 76);           /* sw t7, 76(sp) */
+        *p++ = MK_I(0x2B, REG_SP, REG_T0, 0);  /* sw t0, 0(sp)  */
+        *p++ = MK_I(0x2B, REG_SP, REG_T1, 4);  /* sw t1, 4(sp)  */
+        *p++ = MK_I(0x2B, REG_SP, REG_T2, 8);  /* sw t2, 8(sp)  */
+        *p++ = MK_I(0x2B, REG_SP, REG_T3, 12); /* sw t3, 12(sp) */
+        *p++ = MK_I(0x2B, REG_SP, REG_T4, 16); /* sw t4, 16(sp) */
+        *p++ = MK_I(0x2B, REG_SP, REG_T5, 20); /* sw t5, 20(sp) */
+        *p++ = MK_I(0x2B, REG_SP, REG_T6, 24); /* sw t6, 24(sp) */
+        *p++ = MK_I(0x2B, REG_SP, REG_T7, 76); /* sw t7, 76(sp) */
         /* Call target function (T8 = func_addr) */
         *p++ = MK_I(0x09, REG_SP, REG_SP, (uint32_t)(int32_t)-32);
         *p++ = MK_I(0x2B, REG_SP, REG_RA, 28);
@@ -300,14 +299,14 @@ void Init_Dynarec(void)
         *p++ = MK_I(0x23, REG_SP, REG_RA, 28);
         *p++ = MK_I(0x09, REG_SP, REG_SP, 32);
         /* Restore all caller-clobbered registers from stack */
-        *p++ = MK_I(0x23, REG_SP, REG_T3, 12);           /* lw t3, 12(sp) */
-        *p++ = MK_I(0x23, REG_SP, REG_T4, 16);           /* lw t4, 16(sp) */
-        *p++ = MK_I(0x23, REG_SP, REG_T5, 20);           /* lw t5, 20(sp) */
-        *p++ = MK_I(0x23, REG_SP, REG_T6, 24);           /* lw t6, 24(sp) */
-        *p++ = MK_I(0x23, REG_SP, REG_T7, 76);           /* lw t7, 76(sp) */
-        *p++ = MK_I(0x23, REG_SP, REG_T0, 0);            /* lw t0, 0(sp)  */
-        *p++ = MK_I(0x23, REG_SP, REG_T1, 4);            /* lw t1, 4(sp)  */
-        *p++ = MK_I(0x23, REG_SP, REG_T2, 8);            /* lw t2, 8(sp)  */
+        *p++ = MK_I(0x23, REG_SP, REG_T3, 12); /* lw t3, 12(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_T4, 16); /* lw t4, 16(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_T5, 20); /* lw t5, 20(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_T6, 24); /* lw t6, 24(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_T7, 76); /* lw t7, 76(sp) */
+        *p++ = MK_I(0x23, REG_SP, REG_T0, 0);  /* lw t0, 0(sp)  */
+        *p++ = MK_I(0x23, REG_SP, REG_T1, 4);  /* lw t1, 4(sp)  */
+        *p++ = MK_I(0x23, REG_SP, REG_T2, 8);  /* lw t2, 8(sp)  */
         *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08);
         *p++ = 0;
     }
@@ -332,7 +331,7 @@ void Init_Dynarec(void)
         /* 1. If cycles <= 0, abort to C scheduler */
         *p++ = MK_I(0x07, REG_S2, REG_ZERO, 0); /* bgtz s2, +0 (patched below) */
         uint32_t *cyc_branch = p - 1;
-        *p++ = 0;                                             /* delay: nop */
+        *p++ = MK_R(0, 0, REG_T8, REG_T9, 12, 0x02);          /* (delay) srl t9, t8, 12 (P9) */
         *p++ = MK_J(2, (uint32_t)abort_trampoline_addr >> 2); /* j abort */
         *p++ = 0;                                             /* delay: nop */
 
@@ -341,8 +340,8 @@ void Init_Dynarec(void)
         int32_t cyc_off = (int32_t)(cyc_ok - cyc_branch - 1);
         *cyc_branch = (*cyc_branch & 0xFFFF0000) | ((uint32_t)cyc_off & 0xFFFF);
 
-        /* 2. Compute hash: t9 = ((t8 >> 12) ^ t8) & JIT_HT_MASK */
-        *p++ = MK_R(0, 0, REG_T8, REG_T9, 12, 0x02);     /* srl  t9, t8, 12 */
+        /* 2. Compute hash: t9 = ((t8 >> 12) ^ t8) & JIT_HT_MASK
+         *    SRL already done in BGTZ delay slot above (P9) */
         *p++ = MK_R(0, REG_T9, REG_T8, REG_T9, 0, 0x26); /* xor  t9, t9, t8 */
         *p++ = MK_I(0x0C, REG_T9, REG_T9, JIT_HT_MASK);  /* andi t9, t9, MASK */
 
@@ -354,14 +353,14 @@ void Init_Dynarec(void)
         *p++ = MK_R(0, REG_T9, REG_FP, REG_T9, 0, 0x21); /* addu t9, t9, fp */
 
         /* 6. Check slot 0: at = psx_pc[0], compare with t8 */
-        *p++ = MK_I(0x23, REG_T9, REG_AT, 0);  /* lw at, 0(t9) = psx_pc[0] */
-        *p++ = MK_I(0x04, REG_AT, REG_T8, 0);  /* beq at, t8, @hit (patched) */
+        *p++ = MK_I(0x23, REG_T9, REG_AT, 0); /* lw at, 0(t9) = psx_pc[0] */
+        *p++ = MK_I(0x04, REG_AT, REG_T8, 0); /* beq at, t8, @hit (patched) */
         uint32_t *hit0_branch = p - 1;
-        *p++ = MK_I(0x23, REG_T9, REG_AT, 8);  /* (delay) lw at, 8(t9) = native[0] */
+        *p++ = MK_I(0x23, REG_T9, REG_AT, 8); /* (delay) lw at, 8(t9) = native[0] */
 
         /* 7. Slot 0 miss — check slot 1 */
-        *p++ = MK_I(0x23, REG_T9, REG_AT, 4);  /* lw at, 4(t9) = psx_pc[1] */
-        *p++ = MK_I(0x05, REG_AT, REG_T8, 0);  /* bne at, t8, @miss (patched) */
+        *p++ = MK_I(0x23, REG_T9, REG_AT, 4); /* lw at, 4(t9) = psx_pc[1] */
+        *p++ = MK_I(0x05, REG_AT, REG_T8, 0); /* bne at, t8, @miss (patched) */
         uint32_t *miss_branch = p - 1;
         *p++ = MK_I(0x23, REG_T9, REG_AT, 12); /* (delay) lw at, 12(t9) = native[1] */
 
@@ -371,7 +370,7 @@ void Init_Dynarec(void)
         *hit0_branch = (*hit0_branch & 0xFFFF0000) | ((uint32_t)hit0_off & 0xFFFF);
 
         *p++ = MK_R(0, REG_AT, 0, 0, 0, 0x08); /* jr at */
-        *p++ = 0;                                /* delay: nop */
+        *p++ = 0;                              /* delay: nop */
 
         /* 9. @miss: fall through to abort trampoline */
         uint32_t *miss_target = p;
@@ -400,9 +399,8 @@ void Init_Dynarec(void)
         *p++ = MK_I(0x2B, REG_S0, REG_AT, CPU_CURRENT_PC);          /* sw at, cpu.current_pc */
         *p++ = MK_I(0x0F, 0, REG_AT, pbc_hi);                       /* lui at, hi(&pbc) -- AT reused as scratch */
         *p++ = MK_I(0x2B, REG_AT, REG_T9, (int16_t)pbc_lo);         /* sw t9, lo(&pbc) */
-        *p++ = MK_I(0x2B, REG_S0, REG_S2, CPU_CYCLES_LEFT);         /* sw s2, cpu.cycles_left */
         *p++ = MK_J(3, (uint32_t)call_c_trampoline_lite_addr >> 2); /* jal lite_tramp */
-        *p++ = 0;                                                   /* delay: nop */
+        *p++ = MK_I(0x2B, REG_S0, REG_S2, CPU_CYCLES_LEFT);         /* (delay) sw s2, cpu.cycles_left (P9) */
         *p++ = MK_I(0x23, REG_SP, REG_RA, 64);                      /* lw ra, 64(sp) */
         *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08);                      /* jr ra */
         *p++ = 0;                                                   /* delay: nop */
@@ -448,7 +446,8 @@ static inline void update_dynarec_stats(BlockEntry *be, uint32_t cycles_taken)
 #ifdef ENABLE_SUBSYSTEM_PROFILER
 #define HOTSPOT_SIZE 1024
 #define HOTSPOT_MASK (HOTSPOT_SIZE - 1)
-static struct {
+static struct
+{
     uint32_t pc;
     uint64_t total_cycles;
     uint32_t count;
@@ -460,7 +459,8 @@ static uint64_t hotspot_idle_cycles_skipped = 0;
 static inline void hotspot_record(uint32_t pc, uint32_t cycles)
 {
     int idx = ((pc >> 2) ^ (pc >> 14)) & HOTSPOT_MASK;
-    if (hotspot_table[idx].pc == pc || hotspot_table[idx].count == 0) {
+    if (hotspot_table[idx].pc == pc || hotspot_table[idx].count == 0)
+    {
         hotspot_table[idx].pc = pc;
         hotspot_table[idx].total_cycles += cycles;
         hotspot_table[idx].count++;
@@ -474,16 +474,25 @@ void jit_hotspot_dump_and_reset(FILE *out)
     int top_idx[15];
     uint64_t top_cycles[15];
     int i, j;
-    for (i = 0; i < 15; i++) { top_idx[i] = -1; top_cycles[i] = 0; }
+    for (i = 0; i < 15; i++)
+    {
+        top_idx[i] = -1;
+        top_cycles[i] = 0;
+    }
 
-    for (i = 0; i < HOTSPOT_SIZE; i++) {
-        if (hotspot_table[i].count == 0) continue;
-        for (j = 0; j < 15; j++) {
-            if (hotspot_table[i].total_cycles > top_cycles[j]) {
+    for (i = 0; i < HOTSPOT_SIZE; i++)
+    {
+        if (hotspot_table[i].count == 0)
+            continue;
+        for (j = 0; j < 15; j++)
+        {
+            if (hotspot_table[i].total_cycles > top_cycles[j])
+            {
                 /* Shift down */
-                for (int k = 14; k > j; k--) {
-                    top_idx[k] = top_idx[k-1];
-                    top_cycles[k] = top_cycles[k-1];
+                for (int k = 14; k > j; k--)
+                {
+                    top_idx[k] = top_idx[k - 1];
+                    top_cycles[k] = top_cycles[k - 1];
                 }
                 top_idx[j] = i;
                 top_cycles[j] = hotspot_table[i].total_cycles;
@@ -496,7 +505,8 @@ void jit_hotspot_dump_and_reset(FILE *out)
     fprintf(out, "  Idle skips: %u  (cycles skipped: %llu)\n",
             (unsigned)hotspot_idle_skips,
             (unsigned long long)hotspot_idle_cycles_skipped);
-    for (i = 0; i < 15 && top_idx[i] >= 0; i++) {
+    for (i = 0; i < 15 && top_idx[i] >= 0; i++)
+    {
         int idx = top_idx[i];
         fprintf(out, "  %2d. PC=%08X  cycles=%10llu  count=%6u  avg=%u\n",
                 i + 1,
@@ -511,7 +521,11 @@ void jit_hotspot_dump_and_reset(FILE *out)
     hotspot_idle_cycles_skipped = 0;
 }
 #else
-static inline void hotspot_record(uint32_t pc, uint32_t cycles) { (void)pc; (void)cycles; }
+static inline void hotspot_record(uint32_t pc, uint32_t cycles)
+{
+    (void)pc;
+    (void)cycles;
+}
 void jit_hotspot_dump_and_reset(FILE *out) { (void)out; }
 #endif
 
@@ -707,18 +721,21 @@ uint32_t *dynarec_ensure_block(uint32_t pc, BlockEntry **out_be)
     uint32_t *block = be ? be->native : NULL;
 
     /* Ensure the block is in the hash table for fast JR/JALR dispatch */
-    if (block) {
+    if (block)
+    {
         uint32_t h = jit_ht_hash(pc);
         if (jit_ht[h].psx_pc[0] != pc)
             jit_ht_add(pc, block);
     }
 
-    if (!block) {
+    if (!block)
+    {
         PROF_PUSH(PROF_JIT_COMPILE);
         block = compile_block(pc);
         PROF_POP(PROF_JIT_COMPILE);
         PROF_COUNT_COMPILE();
-        if (block) {
+        if (block)
+        {
             be = lookup_block(pc);
             apply_pending_patches(pc, block);
             jit_ht_add(pc, block);
@@ -727,7 +744,8 @@ uint32_t *dynarec_ensure_block(uint32_t pc, BlockEntry **out_be)
         }
     }
 
-    if (out_be) *out_be = be;
+    if (out_be)
+        *out_be = be;
     return block;
 }
 
@@ -741,13 +759,15 @@ static inline int run_jit_chain(uint64_t deadline)
     if (__builtin_expect(pc == poll_detect_pc, 0))
     {
         /* Restore original instructions if we patched the block */
-        if (poll_patched_addr) {
+        if (poll_patched_addr)
+        {
             poll_patched_addr[0] = poll_patched_saved[0];
             poll_patched_addr[1] = poll_patched_saved[1];
             poll_patched_addr = NULL;
         }
         poll_detect_pc = 0;
-        if (deadline > global_cycles) {
+        if (deadline > global_cycles)
+        {
 #ifdef ENABLE_SUBSYSTEM_PROFILER
             hotspot_idle_skips++;
             hotspot_idle_cycles_skipped += (deadline - global_cycles);
@@ -861,7 +881,8 @@ static inline int run_jit_chain(uint64_t deadline)
         uint32_t threshold = (be->is_idle == 1) ? 1 : 2;
         if (++idle_skip_count >= threshold)
         {
-            if (deadline > global_cycles) {
+            if (deadline > global_cycles)
+            {
 #ifdef ENABLE_SUBSYSTEM_PROFILER
                 hotspot_idle_skips++;
                 hotspot_idle_cycles_skipped += (deadline - global_cycles);
@@ -890,7 +911,8 @@ static inline int run_jit_chain(uint64_t deadline)
         /* Patch the block's entry point: overwrite first body instruction
          * with J abort_trampoline.  When any chain reaches this block via
          * DBL, it will immediately exit instead of executing the loop. */
-        if (!poll_patched_addr && be && be->native) {
+        if (!poll_patched_addr && be && be->native)
+        {
             uint32_t *entry = be->native + DYNAREC_PROLOGUE_WORDS;
             poll_patched_saved[0] = entry[0];
             poll_patched_saved[1] = entry[1];
@@ -902,7 +924,8 @@ static inline int run_jit_chain(uint64_t deadline)
     else
     {
         /* Non-self-loop: clear polling state and restore any patch */
-        if (poll_patched_addr) {
+        if (poll_patched_addr)
+        {
             poll_patched_addr[0] = poll_patched_saved[0];
             poll_patched_addr[1] = poll_patched_saved[1];
             poll_patched_addr = NULL;

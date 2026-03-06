@@ -44,7 +44,8 @@ static int compile_and_measure(const uint32_t *insns, int insn_types,
     cpu.regs[R_SP] = 0x801FFF00u;
     cpu.regs[R_RA] = PG_HALT_BASE;
     cpu.cop0[PSX_COP0_SR_IDX] = (1u << 28); /* CU0 enable */
-    if (setup) setup();
+    if (setup)
+        setup();
 
     /* Reset JIT cache */
     pg_reset_jit_cache();
@@ -53,13 +54,16 @@ static int compile_and_measure(const uint32_t *insns, int insn_types,
     uint32_t *code = (uint32_t *)(psx_ram + PG_CODE_OFFSET);
     memset(code, 0, 4096);
     int total_insns = 0;
-    for (int r = 0; r < repeat; r++) {
-        for (int i = 0; i < insn_types; i++) {
-            if (total_insns >= PG_MAX_INSN - 2) break;
+    for (int r = 0; r < repeat; r++)
+    {
+        for (int i = 0; i < insn_types; i++)
+        {
+            if (total_insns >= PG_MAX_INSN - 2)
+                break;
             code[total_insns++] = insns[i];
         }
     }
-    code[total_insns]     = PSX_JR(R_RA);
+    code[total_insns] = PSX_JR(R_RA);
     code[total_insns + 1] = PSX_NOP();
 
     /* Install halt loop */
@@ -73,19 +77,23 @@ static int compile_and_measure(const uint32_t *insns, int insn_types,
     /* Compile */
     BlockEntry *be = NULL;
     uint32_t *block = dynarec_ensure_block(PG_CODE_BASE, &be);
-    if (!block || !be) return -1;
+    if (!block || !be)
+        return -1;
     return (int)be->native_count;
 }
 
 /* ---- Assertion helper: check expansion within threshold ---- */
 static void check_expansion(const char *name, int ee_words, int max_ee,
-                             PGTestCtx *ctx)
+                            PGTestCtx *ctx)
 {
     float ratio = (ee_words > 0) ? (float)ee_words / 18.0f : 0.0f; /* 18 PSX = 16 repeat + JR + NOP */
-    if (ee_words <= max_ee) {
+    if (ee_words <= max_ee)
+    {
         printf("    %-16s  %4d EE  (%4.1fx)  [max %d] OK\n",
                name, ee_words, ratio, max_ee);
-    } else {
+    }
+    else
+    {
         printf("  [FAIL] %-16s  %4d EE  (%4.1fx)  EXCEEDS max %d\n",
                name, ee_words, ratio, max_ee);
         ctx->fail_count++;
@@ -107,16 +115,16 @@ static void test_expansion_alu(void)
     check_expansion("ADDU", ee, 42, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_ADDIU(R_T1, R_T2, 42)}, 1, REPEAT, NULL);
-    check_expansion("ADDIU", ee, 42, &pg_ctx);
+    check_expansion("ADDIU", ee, 41, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_AND(R_T1, R_T2, R_T3)}, 1, REPEAT, NULL);
     check_expansion("AND", ee, 42, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_SLL(R_T1, R_T2, 5)}, 1, REPEAT, NULL);
-    check_expansion("SLL", ee, 42, &pg_ctx);
+    check_expansion("SLL", ee, 41, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_LUI(R_T1, 0x8000)}, 1, REPEAT, NULL);
-    check_expansion("LUI", ee, 42, &pg_ctx);
+    check_expansion("LUI", ee, 40, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_SLT(R_T1, R_T2, R_T3)}, 1, REPEAT, NULL);
     check_expansion("SLT", ee, 42, &pg_ctx);
@@ -134,22 +142,22 @@ static void test_expansion_muldiv(void)
     int ee;
 
     ee = compile_and_measure(&(uint32_t){PSX_MULT(R_T1, R_T2)}, 1, REPEAT, NULL);
-    check_expansion("MULT", ee, 152, &pg_ctx);
+    check_expansion("MULT", ee, 151, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_MULTU(R_T1, R_T2)}, 1, REPEAT, NULL);
-    check_expansion("MULTU", ee, 152, &pg_ctx);
+    check_expansion("MULTU", ee, 151, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_DIV(R_T1, R_T2)}, 1, REPEAT, NULL);
-    check_expansion("DIV", ee, 202, &pg_ctx);
+    check_expansion("DIV", ee, 199, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_DIVU(R_T1, R_T2)}, 1, REPEAT, NULL);
-    check_expansion("DIVU", ee, 172, &pg_ctx);
+    check_expansion("DIVU", ee, 167, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_MFHI(R_T1)}, 1, REPEAT, NULL);
-    check_expansion("MFHI", ee, 42, &pg_ctx);
+    check_expansion("MFHI", ee, 40, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_MFLO(R_T1)}, 1, REPEAT, NULL);
-    check_expansion("MFLO", ee, 42, &pg_ctx);
+    check_expansion("MFLO", ee, 40, &pg_ctx);
 
     END_TEST();
 }
@@ -164,13 +172,13 @@ static void test_expansion_loadstore(void)
     int ee;
 
     ee = compile_and_measure(&(uint32_t){PSX_LW(R_T1, 0, R_SP)}, 1, REPEAT, NULL);
-    check_expansion("LW", ee, 427, &pg_ctx);
+    check_expansion("LW", ee, 410, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_SW(R_T1, 0, R_SP)}, 1, REPEAT, NULL);
-    check_expansion("SW", ee, 487, &pg_ctx);
+    check_expansion("SW", ee, 470, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_LB(R_T1, 0, R_SP)}, 1, REPEAT, NULL);
-    check_expansion("LB", ee, 137, &pg_ctx);
+    check_expansion("LB", ee, 135, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_SB(R_T1, 0, R_SP)}, 1, REPEAT, NULL);
     check_expansion("SB", ee, 357, &pg_ctx);
@@ -188,23 +196,23 @@ static void test_expansion_gte(void)
     int ee;
 
     ee = compile_and_measure(&(uint32_t){PSX_MTC2(R_T1, GTE_VXY0)}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("MTC2", ee, 92, &pg_ctx);
+    check_expansion("MTC2", ee, 84, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_MFC2(R_T1, GTE_VXY0)}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("MFC2", ee, 92, &pg_ctx);
+    check_expansion("MFC2", ee, 85, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){GTE_CMD_RTPS(1, 1)}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("COP2 RTPS", ee, 232, &pg_ctx);
+    check_expansion("COP2 RTPS", ee, 210, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){GTE_CMD_NCLIP}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("COP2 NCLIP", ee, 202, &pg_ctx);
+    check_expansion("COP2 NCLIP", ee, 178, &pg_ctx);
 
     /* LWC2/SWC2 — coprocessor memory transfers (inline since P3 extension) */
     ee = compile_and_measure(&(uint32_t){PSX_LWC2(GTE_VXY0, 0, R_SP)}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("LWC2", ee, 437, &pg_ctx);
+    check_expansion("LWC2", ee, 420, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_SWC2(GTE_VXY0, 0, R_SP)}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("SWC2", ee, 662, &pg_ctx);
+    check_expansion("SWC2", ee, 645, &pg_ctx);
 
     END_TEST();
 }
@@ -227,7 +235,7 @@ static void test_expansion_mixed(void)
             PSX_OR(R_T6, R_T5, R_T1),
         };
         ee = compile_and_measure(alu_chain, 4, 4, NULL);
-        check_expansion("ALU chain", ee, 52, &pg_ctx);
+        check_expansion("ALU chain", ee, 51, &pg_ctx);
     }
 
     /* GTE transform (Crash-like) */
@@ -240,7 +248,7 @@ static void test_expansion_mixed(void)
             PSX_SW(R_T3, 0, R_SP),
         };
         ee = compile_and_measure(gte_xform, 5, 3, expansion_enable_cop2);
-        check_expansion("GTE xform", ee, 212, &pg_ctx);
+        check_expansion("GTE xform", ee, 197, &pg_ctx);
     }
 
     /* SW burst */
@@ -252,12 +260,11 @@ static void test_expansion_mixed(void)
             PSX_SW(R_T4, 12, R_SP),
         };
         ee = compile_and_measure(sw_burst, 4, 4, NULL);
-        check_expansion("SW burst", ee, 492, &pg_ctx);
+        check_expansion("SW burst", ee, 473, &pg_ctx);
     }
 
     END_TEST();
 }
-
 
 /* ================================================================
  *  Category runner

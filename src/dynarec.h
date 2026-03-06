@@ -29,7 +29,7 @@
 #define PATCH_SITE_MAX 8192
 
 #define SCAN_MAX_INSNS 64 /* Max instructions analyzed per block scan */
-#define DYN_SLOT_COUNT 8   /* Dynamic register slots: T0-T7 (dirty writeback to cpu.regs[]) */
+#define DYN_SLOT_COUNT 8  /* Dynamic register slots: T0-T7 (dirty writeback to cpu.regs[]) */
 
 /* ================================================================
  *  Shared types
@@ -62,7 +62,8 @@ typedef struct
 
 /* Block scan result — filled by block_scan() pass 1, consumed by emit pass 2.
  * Enables multi-pass compilation: dirty bitmask, SMRV, future regalloc. */
-typedef struct {
+typedef struct
+{
     uint64_t dce_dead_mask;       /* bit i=1 → instruction[i] is dead (backward liveness) */
     uint32_t pinned_written_mask; /* bit r=1 → pinned PSX reg r is written in this block */
     uint32_t regs_written_mask;   /* bit r=1 → PSX reg r is written (any) */
@@ -210,7 +211,7 @@ typedef struct
 {
     uint32_t psx_pc[2];  /* PSX virtual address — 2-way set associative */
     uint32_t *native[2]; /* Pointer to compiled native code (past prologue) */
-} JitHTEntry;  /* 16 bytes: psx_pc[0], psx_pc[1], native[0], native[1] */
+} JitHTEntry;            /* 16 bytes: psx_pc[0], psx_pc[1], native[0], native[1] */
 
 extern JitHTEntry jit_ht[JIT_HT_SIZE];
 extern uint32_t *jump_dispatch_trampoline_addr;
@@ -225,12 +226,14 @@ static inline void jit_ht_add(uint32_t psx_pc, uint32_t *native)
     uint32_t h = jit_ht_hash(psx_pc);
     uint32_t *entry_native = native + DYNAREC_PROLOGUE_WORDS;
     /* If already in slot 0, just update native pointer */
-    if (jit_ht[h].psx_pc[0] == psx_pc) {
+    if (jit_ht[h].psx_pc[0] == psx_pc)
+    {
         jit_ht[h].native[0] = entry_native;
         return;
     }
     /* If already in slot 1, promote to slot 0 (MRU) */
-    if (jit_ht[h].psx_pc[1] == psx_pc) {
+    if (jit_ht[h].psx_pc[1] == psx_pc)
+    {
         jit_ht[h].psx_pc[1] = jit_ht[h].psx_pc[0];
         jit_ht[h].native[1] = jit_ht[h].native[0];
         jit_ht[h].psx_pc[0] = psx_pc;
@@ -248,13 +251,16 @@ static inline void jit_ht_add(uint32_t psx_pc, uint32_t *native)
 static inline void jit_ht_remove(uint32_t psx_pc)
 {
     uint32_t h = jit_ht_hash(psx_pc);
-    if (jit_ht[h].psx_pc[0] == psx_pc) {
+    if (jit_ht[h].psx_pc[0] == psx_pc)
+    {
         /* Promote slot 1 → slot 0 */
         jit_ht[h].psx_pc[0] = jit_ht[h].psx_pc[1];
         jit_ht[h].native[0] = jit_ht[h].native[1];
         jit_ht[h].psx_pc[1] = 0xFFFFFFFF;
         jit_ht[h].native[1] = NULL;
-    } else if (jit_ht[h].psx_pc[1] == psx_pc) {
+    }
+    else if (jit_ht[h].psx_pc[1] == psx_pc)
+    {
         jit_ht[h].psx_pc[1] = 0xFFFFFFFF;
         jit_ht[h].native[1] = NULL;
     }
@@ -275,11 +281,15 @@ extern uint32_t emit_current_psx_pc;
 extern int dynarec_load_defer;
 extern int dynarec_lwx_pending;
 extern RegStatus vregs[32];
-extern uint32_t dirty_const_mask;  /* Bitmask of dirty const vregs */
+extern uint32_t dirty_const_mask; /* Bitmask of dirty const vregs */
 extern uint32_t smrv_known_ram;   /* SMRV: bit r=1 → PSX reg r is known RAM address */
 static inline int smrv_is_known_ram(int r) { return (smrv_known_ram >> r) & 1; }
-static inline void smrv_set_ram(int r) { if (r) smrv_known_ram |= (1u << r); }
-static inline void smrv_clear(int r)   { smrv_known_ram &= ~(1u << r); }
+static inline void smrv_set_ram(int r)
+{
+    if (r)
+        smrv_known_ram |= (1u << r);
+}
+static inline void smrv_clear(int r) { smrv_known_ram &= ~(1u << r); }
 
 /* ================================================================
  *  Shared state — stats / perf
@@ -472,7 +482,7 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset);
 void cold_slow_reset(void);
 void cold_slow_emit_all(void);
 void tlb_patch_emit_all(void);
-int  TLB_Backpatch(uint32_t epc);
+int TLB_Backpatch(uint32_t epc);
 extern int tlb_bp_map_count;
 
 /* ================================================================

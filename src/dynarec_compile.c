@@ -15,9 +15,9 @@ uint32_t block_cycle_count = 0;
 uint32_t emit_cycle_offset = 0;
 uint32_t emit_current_psx_pc = 0;
 uint32_t block_pinned_dirty_mask = 0;
-int block_isc_cached = 0;  /* 1 if ISC bit cached in SP+80 for current block */
-int block_has_isc_write = 0;  /* 1 if block has MTC0 to SR (can toggle ISC bit 16) */
-int block_cu2_hoisted = 0;  /* 1 if CU2 check hoisted to block prologue */
+int block_isc_cached = 0;    /* 1 if ISC bit cached in SP+80 for current block */
+int block_has_isc_write = 0; /* 1 if block has MTC0 to SR (can toggle ISC bit 16) */
+int block_cu2_hoisted = 0;   /* 1 if CU2 check hoisted to block prologue */
 int dynarec_load_defer = 0;
 int dynarec_lwx_pending = 0;
 
@@ -31,13 +31,14 @@ int dynarec_lwx_pending = 0;
 #define MAX_CONTINUATIONS 3
 #define MAX_SUPER_INSNS 200
 
-typedef struct {
-    uint32_t *branch_insn;       /* BNE instruction to patch (forward ref) */
-    uint32_t target_pc;          /* Branch target PC */
-    uint32_t cycle_count;        /* Accumulated cycles at this branch point */
-    RegStatus saved_vregs[32];   /* vreg state at branch point */
-    uint32_t saved_dirty_mask;   /* dirty_const_mask at branch point */
-    uint8_t  saved_dyn_dirty;    /* dyn_dirty_mask at branch point */
+typedef struct
+{
+    uint32_t *branch_insn;     /* BNE instruction to patch (forward ref) */
+    uint32_t target_pc;        /* Branch target PC */
+    uint32_t cycle_count;      /* Accumulated cycles at this branch point */
+    RegStatus saved_vregs[32]; /* vreg state at branch point */
+    uint32_t saved_dirty_mask; /* dirty_const_mask at branch point */
+    uint8_t saved_dyn_dirty;   /* dyn_dirty_mask at branch point */
 } DeferredTakenEntry;
 
 static DeferredTakenEntry deferred_taken[MAX_CONTINUATIONS];
@@ -53,8 +54,7 @@ static void emit_deferred_taken_all(void)
 
         /* Patch the BNE forward reference to jump here */
         int32_t off = (int32_t)(code_ptr - e->branch_insn - 1);
-        *e->branch_insn = (*e->branch_insn & 0xFFFF0000)
-                         | ((uint32_t)off & 0xFFFF);
+        *e->branch_insn = (*e->branch_insn & 0xFFFF0000) | ((uint32_t)off & 0xFFFF);
 
         /* Restore vreg state for this branch point */
         memcpy(vregs, e->saved_vregs, sizeof(vregs));
@@ -66,9 +66,8 @@ static void emit_deferred_taken_all(void)
         dyn_flush_dirty_slots(); /* D: deferred taken — dirty-only */
         emit(MK_I(0x09, REG_S2, REG_S2, (int16_t)(-(int)e->cycle_count)));
         emit_load_imm32(REG_T8, e->target_pc);
-        EMIT_SW(REG_T8, CPU_PC, REG_S0);
         emit(MK_I(0x07, REG_S2, REG_ZERO, 2)); /* BGTZ s2, +2 */
-        EMIT_NOP();
+        EMIT_SW(REG_T8, CPU_PC, REG_S0);       /* delay slot: always executes (P9) */
         EMIT_J_ABS((uint32_t)abort_trampoline_addr);
         EMIT_NOP();
         emit_direct_link(e->target_pc);
@@ -326,20 +325,27 @@ static int dce_dest_gpr(uint32_t opcode)
     if (op == 0x00)
     {
         int func = FUNC(opcode);
-        if (func >= 0x18 && func <= 0x1B) return 0; /* MULT/DIV: HI/LO only */
-        if (func == 0x08) return 0;                  /* JR */
-        if (func == 0x11 || func == 0x13) return 0;  /* MTHI/MTLO */
-        if (func == 0x0C || func == 0x0D) return 0;  /* SYSCALL/BREAK */
+        if (func >= 0x18 && func <= 0x1B)
+            return 0; /* MULT/DIV: HI/LO only */
+        if (func == 0x08)
+            return 0; /* JR */
+        if (func == 0x11 || func == 0x13)
+            return 0; /* MTHI/MTLO */
+        if (func == 0x0C || func == 0x0D)
+            return 0; /* SYSCALL/BREAK */
         return RD(opcode);
     }
-    if (op == 0x03) return 31;       /* JAL → $ra */
-    if (op == 0x01)                  /* REGIMM */
+    if (op == 0x03)
+        return 31;  /* JAL → $ra */
+    if (op == 0x01) /* REGIMM */
     {
         int rt = RT(opcode);
-        if (rt == 0x10 || rt == 0x11) return 31; /* BLTZAL/BGEZAL → $ra */
+        if (rt == 0x10 || rt == 0x11)
+            return 31; /* BLTZAL/BGEZAL → $ra */
         return 0;
     }
-    if (op >= 0x08 && op <= 0x0F) return RT(opcode); /* I-type ALU */
+    if (op >= 0x08 && op <= 0x0F)
+        return RT(opcode); /* I-type ALU */
     /* Note: loads (0x20-0x26) are intentionally NOT listed here.
      * On PSX, loads write their dest via the load delay slot mechanism:
      * the value appears 1 instruction LATE.  If we reported loads as
@@ -360,53 +366,114 @@ static uint32_t dce_read_mask(uint32_t opcode)
     {
         int func = FUNC(opcode);
         /* Shifts by sa: only read rt */
-        if (func <= 0x03) { if (rt) m |= (1u << rt); return m; }
+        if (func <= 0x03)
+        {
+            if (rt)
+                m |= (1u << rt);
+            return m;
+        }
         /* MFHI/MFLO: no GPR source */
-        if (func == 0x10 || func == 0x12) return 0;
+        if (func == 0x10 || func == 0x12)
+            return 0;
         /* SYSCALL/BREAK: no GPR source */
-        if (func == 0x0C || func == 0x0D) return 0;
+        if (func == 0x0C || func == 0x0D)
+            return 0;
         /* JR/JALR: read rs only */
-        if (func == 0x08 || func == 0x09) { if (rs) m |= (1u << rs); return m; }
+        if (func == 0x08 || func == 0x09)
+        {
+            if (rs)
+                m |= (1u << rs);
+            return m;
+        }
         /* MTHI/MTLO: read rs only */
-        if (func == 0x11 || func == 0x13) { if (rs) m |= (1u << rs); return m; }
+        if (func == 0x11 || func == 0x13)
+        {
+            if (rs)
+                m |= (1u << rs);
+            return m;
+        }
         /* Everything else (ALU, MULT/DIV, SLLV etc.): read rs and rt */
-        if (rs) m |= (1u << rs);
-        if (rt) m |= (1u << rt);
+        if (rs)
+            m |= (1u << rs);
+        if (rt)
+            m |= (1u << rt);
         return m;
     }
-    if (op == 0x02 || op == 0x03) return 0;  /* J/JAL */
-    if (op == 0x0F) return 0;                 /* LUI */
+    if (op == 0x02 || op == 0x03)
+        return 0; /* J/JAL */
+    if (op == 0x0F)
+        return 0; /* LUI */
     /* Branches: BEQ/BNE read rs+rt; BLEZ/BGTZ/REGIMM read rs */
-    if (op == 0x04 || op == 0x05) { if (rs) m |= (1u << rs); if (rt) m |= (1u << rt); return m; }
-    if (op >= 0x06 && op <= 0x07) { if (rs) m |= (1u << rs); return m; }
-    if (op == 0x01) { if (rs) m |= (1u << rs); return m; }
+    if (op == 0x04 || op == 0x05)
+    {
+        if (rs)
+            m |= (1u << rs);
+        if (rt)
+            m |= (1u << rt);
+        return m;
+    }
+    if (op >= 0x06 && op <= 0x07)
+    {
+        if (rs)
+            m |= (1u << rs);
+        return m;
+    }
+    if (op == 0x01)
+    {
+        if (rs)
+            m |= (1u << rs);
+        return m;
+    }
     /* I-type ALU: read rs */
-    if (op >= 0x08 && op <= 0x0E) { if (rs) m |= (1u << rs); return m; }
+    if (op >= 0x08 && op <= 0x0E)
+    {
+        if (rs)
+            m |= (1u << rs);
+        return m;
+    }
     /* Loads: read rs.  LWL/LWR also merge with rt */
     if (op >= 0x20 && op <= 0x26)
     {
-        if (rs) m |= (1u << rs);
-        if ((op == 0x22 || op == 0x26) && rt) m |= (1u << rt);
+        if (rs)
+            m |= (1u << rs);
+        if ((op == 0x22 || op == 0x26) && rt)
+            m |= (1u << rt);
         return m;
     }
     /* Stores: read rs (base) + rt (data) */
     if ((op >= 0x28 && op <= 0x2E) || op == 0x3A)
     {
-        if (rs) m |= (1u << rs);
-        if (rt) m |= (1u << rt);
+        if (rs)
+            m |= (1u << rs);
+        if (rt)
+            m |= (1u << rt);
         return m;
     }
     /* COP0 MTC0: read rt */
-    if (op == 0x10 && (RS(opcode) == 0x04)) { if (rt) m |= (1u << rt); return m; }
+    if (op == 0x10 && (RS(opcode) == 0x04))
+    {
+        if (rt)
+            m |= (1u << rt);
+        return m;
+    }
     /* COP2 MTC2/CTC2: read rt */
     if (op == 0x12 && !((opcode) & 0x02000000))
     {
         int cop_rs = RS(opcode);
-        if (cop_rs == 0x04 || cop_rs == 0x06) { if (rt) m |= (1u << rt); }
+        if (cop_rs == 0x04 || cop_rs == 0x06)
+        {
+            if (rt)
+                m |= (1u << rt);
+        }
         return m;
     }
     /* LWC2/SWC2: read rs */
-    if (op == 0x32 || op == 0x3A) { if (rs) m |= (1u << rs); return m; }
+    if (op == 0x32 || op == 0x3A)
+    {
+        if (rs)
+            m |= (1u << rs);
+        return m;
+    }
     return m;
 }
 
@@ -418,12 +485,16 @@ static int dce_is_pure(uint32_t opcode)
     if (op == 0x00)
     {
         int func = FUNC(opcode);
-        if (func <= 0x07) return 1;                   /* SLL-SRAV */
-        if (func == 0x10 || func == 0x12) return 1;   /* MFHI/MFLO */
-        if (func >= 0x20 && func <= 0x2B) return 1;   /* ADD-SLTU */
+        if (func <= 0x07)
+            return 1; /* SLL-SRAV */
+        if (func == 0x10 || func == 0x12)
+            return 1; /* MFHI/MFLO */
+        if (func >= 0x20 && func <= 0x2B)
+            return 1; /* ADD-SLTU */
         return 0;
     }
-    if (op >= 0x08 && op <= 0x0F) return 1;  /* ADDI-LUI */
+    if (op >= 0x08 && op <= 0x0F)
+        return 1; /* ADDI-LUI */
     return 0;
 }
 
@@ -434,48 +505,66 @@ static uint32_t scan_write_mask(uint32_t opcode)
 {
     int op = OP(opcode);
 
-    if (op == 0x00) { /* SPECIAL */
+    if (op == 0x00)
+    { /* SPECIAL */
         int func = FUNC(opcode);
-        if (func >= 0x18 && func <= 0x1B) return 0; /* MULT/DIV: HI/LO only */
-        if (func == 0x08) return 0;                  /* JR */
-        if (func == 0x11 || func == 0x13) return 0;  /* MTHI/MTLO */
-        if (func == 0x0C || func == 0x0D) return 0;  /* SYSCALL/BREAK */
+        if (func >= 0x18 && func <= 0x1B)
+            return 0; /* MULT/DIV: HI/LO only */
+        if (func == 0x08)
+            return 0; /* JR */
+        if (func == 0x11 || func == 0x13)
+            return 0; /* MTHI/MTLO */
+        if (func == 0x0C || func == 0x0D)
+            return 0; /* SYSCALL/BREAK */
         int rd = RD(opcode);
         return rd ? (1u << rd) : 0;
     }
-    if (op == 0x02) return 0;             /* J: no GPR write */
-    if (op == 0x03) return (1u << 31);    /* JAL: writes $ra */
-    if (op == 0x01) {                     /* REGIMM */
+    if (op == 0x02)
+        return 0; /* J: no GPR write */
+    if (op == 0x03)
+        return (1u << 31); /* JAL: writes $ra */
+    if (op == 0x01)
+    { /* REGIMM */
         int rt = RT(opcode);
-        if (rt == 0x10 || rt == 0x11) return (1u << 31); /* BLTZAL/BGEZAL → $ra */
+        if (rt == 0x10 || rt == 0x11)
+            return (1u << 31); /* BLTZAL/BGEZAL → $ra */
         return 0;
     }
-    if (op >= 0x04 && op <= 0x07) return 0; /* Branches: no GPR write */
+    if (op >= 0x04 && op <= 0x07)
+        return 0; /* Branches: no GPR write */
     /* I-type ALU: write rt */
-    if (op >= 0x08 && op <= 0x0F) {
+    if (op >= 0x08 && op <= 0x0F)
+    {
         int rt = RT(opcode);
         return rt ? (1u << rt) : 0;
     }
     /* Loads: write rt */
-    if (op >= 0x20 && op <= 0x26) {
+    if (op >= 0x20 && op <= 0x26)
+    {
         int rt = RT(opcode);
         return rt ? (1u << rt) : 0;
     }
     /* Stores: no GPR write */
-    if (op >= 0x28 && op <= 0x2E) return 0;
+    if (op >= 0x28 && op <= 0x2E)
+        return 0;
     /* COP0: MFC0 writes rt */
-    if (op == 0x10) {
-        if (RS(opcode) == 0x00) {
+    if (op == 0x10)
+    {
+        if (RS(opcode) == 0x00)
+        {
             int rt = RT(opcode);
             return rt ? (1u << rt) : 0;
         }
         return 0;
     }
     /* COP2: MFC2/CFC2 write rt */
-    if (op == 0x12) {
-        if (!(opcode & 0x02000000)) {
+    if (op == 0x12)
+    {
+        if (!(opcode & 0x02000000))
+        {
             int rs = RS(opcode);
-            if (rs == 0x00 || rs == 0x02) {
+            if (rs == 0x00 || rs == 0x02)
+            {
                 int rt = RT(opcode);
                 return rt ? (1u << rt) : 0;
             }
@@ -501,7 +590,8 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
     for (int i = 0; i < max_insns && i < SCAN_MAX_INSNS; i++)
     {
         count = i + 1;
-        if (in_ds) break;
+        if (in_ds)
+            break;
         int op = OP(code[i]);
         int func = (op == 0) ? FUNC(code[i]) : 0;
         if (op == 0x02 || op == 0x03 ||
@@ -529,9 +619,10 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
         written |= wmask;
         read |= rmask;
         /* Detect MTC0 to SR: opcode 0x10 (COP0), rs=0x04 (MTC0), rd=12 (SR) */
-        if (OP(code[i]) == 0x10 && RS(code[i]) == 0x04 && RD(code[i]) == 12) {
+        if (OP(code[i]) == 0x10 && RS(code[i]) == 0x04 && RD(code[i]) == 12)
+        {
             found_mtc0_sr = 1;
-            found_isc_write = 1;  /* MTC0 to SR can toggle ISC bit 16 */
+            found_isc_write = 1; /* MTC0 to SR can toggle ISC bit 16 */
         }
         /* Also detect RFE (COP0 rs=0x10, func=0x10) — modifies SR bits 5:0
          * but does NOT touch ISC bit 16 */
@@ -540,8 +631,10 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
         /* Detect COP2 (0x12), LWC2 (0x32), SWC2 (0x3A) for CU2 hoisting */
         {
             int op_i = OP(code[i]);
-            if (op_i == 0x12 || op_i == 0x32 || op_i == 0x3A) {
-                if (!found_cop2) {
+            if (op_i == 0x12 || op_i == 0x32 || op_i == 0x3A)
+            {
+                if (!found_cop2)
+                {
                     found_cop2 = 1;
                     first_cop2_pc_offset = i;
                 }
@@ -549,7 +642,8 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
         }
         /* Count unique per-instruction register accesses (read or write) */
         uint32_t amask = rmask | wmask;
-        while (amask) {
+        while (amask)
+        {
             int r = __builtin_ctz(amask);
             amask &= amask - 1;
             if (out->reg_access_count[r] < 255)
@@ -566,7 +660,8 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
     /* Compute pinned_written_mask: which pinned regs are written */
     uint32_t pinned_set = 0;
     for (int r = 0; r < 32; r++)
-        if (psx_pinned_reg[r]) pinned_set |= (1u << r);
+        if (psx_pinned_reg[r])
+            pinned_set |= (1u << r);
     out->pinned_written_mask = written & pinned_set;
 
     /* Phase 3: backward liveness analysis (DCE) */
@@ -664,11 +759,10 @@ void emit_branch_epilogue(uint32_t target_pc)
 
     /* Update cpu.pc IMMEDIATELY, before any potential abort check */
     emit_load_imm32(REG_T8, target_pc);
-    EMIT_SW(REG_T8, CPU_PC, REG_S0);
 
     /* If remaining cycles <= 0, abort to C scheduler */
     emit(MK_I(0x07, REG_S2, REG_ZERO, 2)); /* BGTZ s2, +2 */
-    EMIT_NOP();                            /* Delay slot */
+    EMIT_SW(REG_T8, CPU_PC, REG_S0);       /* delay slot: always executes (P9) */
     EMIT_J_ABS((uint32_t)abort_trampoline_addr);
     EMIT_NOP(); /* Delay slot */
 
@@ -754,13 +848,16 @@ uint32_t *compile_block(uint32_t psx_pc)
      * and extracting the bit each time (5 words).  Saves 2 words per store.
      * NOTE: offset 80 chosen to avoid conflict with the lite trampoline which
      * saves T0-T7 at offsets 0-24,76. */
-    if (!scan.has_mtc0_sr) {
+    if (!scan.has_mtc0_sr)
+    {
         block_isc_cached = 1;
-        EMIT_LW(REG_AT, CPU_COP0(12), REG_S0);              /* at = SR           */
-        emit(MK_R(0, 0, REG_AT, REG_AT, 16, 0x02));         /* srl at, at, 16    */
-        emit(MK_I(0x0C, REG_AT, REG_AT, 1));                /* andi at, at, 1    */
-        EMIT_SW(REG_AT, 80, REG_SP);                         /* sw at, 80(sp)     */
-    } else {
+        EMIT_LW(REG_AT, CPU_COP0(12), REG_S0);      /* at = SR           */
+        emit(MK_R(0, 0, REG_AT, REG_AT, 16, 0x02)); /* srl at, at, 16    */
+        emit(MK_I(0x0C, REG_AT, REG_AT, 1));        /* andi at, at, 1    */
+        EMIT_SW(REG_AT, 80, REG_SP);                /* sw at, 80(sp)     */
+    }
+    else
+    {
         block_isc_cached = 0;
     }
     block_has_isc_write = scan.has_isc_write;
@@ -770,19 +867,20 @@ uint32_t *compile_block(uint32_t psx_pc)
      * call the CU exception for the first COP2 instruction and abort.
      * Per-instruction CU2 checks (~10 words each) are then skipped.
      * With 16 COP2 insns per block: ~160 words saved, ~15 words added. */
-    if (scan.has_cop2 && !scan.has_mtc0_sr) {
+    if (scan.has_cop2 && !scan.has_mtc0_sr)
+    {
         block_cu2_hoisted = 1;
-        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);     /* t8 = SR       */
-        emit(MK_R(0, 0, REG_T8, REG_T8, 30, 0x02));         /* srl t8, 30    */
-        emit(MK_I(0x0C, REG_T8, REG_T8, 1));                /* andi t8, 1    */
+        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0); /* t8 = SR       */
+        emit(MK_R(0, 0, REG_T8, REG_T8, 30, 0x02));     /* srl t8, 30    */
+        emit(MK_I(0x0C, REG_T8, REG_T8, 1));            /* andi t8, 1    */
         uint32_t *skip_cu2 = code_ptr;
-        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));              /* bne t8,$0,skip (CU2 enabled) */
+        emit(MK_I(0x05, REG_T8, REG_ZERO, 0)); /* bne t8,$0,skip (CU2 enabled) */
         EMIT_NOP();
         /* Cold path: CU2 disabled → trigger exception + abort */
         {
             uint32_t cu2_exc_pc = psx_pc + scan.first_cop2_pc * 4;
-            emit_load_imm32(REG_A0, cu2_exc_pc);             /* a0 = first COP2 PC */
-            emit_load_imm32(REG_A1, 2);                      /* a1 = cop_num=2     */
+            emit_load_imm32(REG_A0, cu2_exc_pc); /* a0 = first COP2 PC */
+            emit_load_imm32(REG_A1, 2);          /* a1 = cop_num=2     */
             uint8_t saved_dirty = dyn_dirty_mask;
             uint32_t saved_smrv = smrv_known_ram;
             emit_call_c((uint32_t)Helper_CU_Exception);
@@ -793,8 +891,10 @@ uint32_t *compile_block(uint32_t psx_pc)
         EMIT_NOP();
         /* Patch BNE to skip past cold path */
         *skip_cu2 = (*skip_cu2 & 0xFFFF0000) |
-                     ((uint32_t)(code_ptr - skip_cu2 - 1) & 0xFFFF);
-    } else {
+                    ((uint32_t)(code_ptr - skip_cu2 - 1) & 0xFFFF);
+    }
+    else
+    {
         block_cu2_hoisted = 0;
     }
 
@@ -924,7 +1024,8 @@ uint32_t *compile_block(uint32_t psx_pc)
                 {
                     /* Dead instruction — clear vreg tracking without emitting flush code */
                     int dce_d = dce_dest_gpr(opcode);
-                    if (dce_d) {
+                    if (dce_d)
+                    {
                         vregs[dce_d].is_const = 0;
                         vregs[dce_d].is_dirty = 0;
                         dirty_const_mask &= ~(1u << dce_d);
@@ -1333,7 +1434,8 @@ uint32_t *compile_block(uint32_t psx_pc)
                 {
                     /* Dead instruction — clear vreg tracking without emitting flush code */
                     int dce_d = dce_dest_gpr(opcode);
-                    if (dce_d) {
+                    if (dce_d)
+                    {
                         vregs[dce_d].is_const = 0;
                         vregs[dce_d].is_dirty = 0;
                         dirty_const_mask &= ~(1u << dce_d);

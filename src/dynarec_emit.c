@@ -18,10 +18,10 @@
  *   Free:                        FP ($s8)
  */
 const int psx_pinned_reg[32] = {
-    [28] = REG_S6,  /* PSX $gp → native $s6 (callee-saved) */
-    [29] = REG_S4,  /* PSX $sp → native $s4 (callee-saved) */
-    [30] = REG_S7,  /* PSX $fp → native $s7 (callee-saved) */
-    [31] = REG_S5,  /* PSX $ra → native $s5 (callee-saved) */
+    [28] = REG_S6, /* PSX $gp → native $s6 (callee-saved) */
+    [29] = REG_S4, /* PSX $sp → native $s4 (callee-saved) */
+    [30] = REG_S7, /* PSX $fp → native $s7 (callee-saved) */
+    [31] = REG_S5, /* PSX $ra → native $s5 (callee-saved) */
 };
 
 RegStatus vregs[32];
@@ -61,8 +61,7 @@ void reg_cache_invalidate(void)
  *  from cpu.regs[] and clears the dirty mask.
  * ================================================================ */
 static const int dyn_slot_ee[DYN_SLOT_COUNT] = {
-    REG_T0, REG_T1, REG_T2, REG_T3, REG_T4, REG_T5, REG_T6, REG_T7
-};
+    REG_T0, REG_T1, REG_T2, REG_T3, REG_T4, REG_T5, REG_T6, REG_T7};
 int dyn_slot_psx[DYN_SLOT_COUNT];
 int dyn_slots_active = 0;
 uint8_t dyn_dirty_mask = 0;
@@ -71,7 +70,8 @@ uint8_t dyn_dirty_mask = 0;
 static inline int dyn_slot_find(int r)
 {
     for (int i = 0; i < DYN_SLOT_COUNT; i++)
-        if (dyn_slot_psx[i] == r) return i;
+        if (dyn_slot_psx[i] == r)
+            return i;
     return -1;
 }
 
@@ -90,20 +90,29 @@ void dyn_assign_slots(BlockScanResult *scan)
         int best = -1, best_count = 1; /* require >= 2 accesses */
         for (int r = 1; r < 32; r++)
         {
-            if (psx_pinned_reg[r]) continue;
-            if (scan->reg_access_count[r] <= best_count) continue;
+            if (psx_pinned_reg[r])
+                continue;
+            if (scan->reg_access_count[r] <= best_count)
+                continue;
             /* Check not already assigned */
             int already = 0;
             for (int s = 0; s < slot; s++)
-                if (dyn_slot_psx[s] == r) { already = 1; break; }
-            if (already) continue;
+                if (dyn_slot_psx[s] == r)
+                {
+                    already = 1;
+                    break;
+                }
+            if (already)
+                continue;
             best = r;
             best_count = scan->reg_access_count[r];
         }
-        if (best < 0) break;
+        if (best < 0)
+            break;
         dyn_slot_psx[slot++] = best;
     }
-    if (slot > 0) dyn_slots_active = 1;
+    if (slot > 0)
+        dyn_slots_active = 1;
 }
 
 /* Emit LW instructions to load assigned dynamic slots from cpu.regs[].
@@ -119,7 +128,8 @@ void dyn_load_slots(void)
  * Called after full C calls that may modify cpu.regs[]. */
 void dyn_reload_slots(void)
 {
-    if (!dyn_slots_active) return;
+    if (!dyn_slots_active)
+        return;
     dyn_dirty_mask = 0;
     for (int i = 0; i < DYN_SLOT_COUNT; i++)
         if (dyn_slot_psx[i] >= 0)
@@ -132,8 +142,10 @@ void dyn_reload_slots(void)
  * DIRTY-ONLY mode. */
 void dyn_flush_dirty_slots(void)
 {
-    if (!dyn_slots_active || dyn_dirty_mask == 0) return;
-    for (int i = 0; i < DYN_SLOT_COUNT; i++) {
+    if (!dyn_slots_active || dyn_dirty_mask == 0)
+        return;
+    for (int i = 0; i < DYN_SLOT_COUNT; i++)
+    {
         if ((dyn_dirty_mask & (1u << i)) && dyn_slot_psx[i] >= 0)
             EMIT_SW(dyn_slot_ee[i], CPU_REG(dyn_slot_psx[i]), REG_S0);
     }
@@ -143,8 +155,10 @@ void dyn_flush_dirty_slots(void)
 /* Always flush ALL assigned slots regardless of dirty mask */
 void dyn_flush_all_slots(void)
 {
-    if (!dyn_slots_active) return;
-    for (int i = 0; i < DYN_SLOT_COUNT; i++) {
+    if (!dyn_slots_active)
+        return;
+    for (int i = 0; i < DYN_SLOT_COUNT; i++)
+    {
         if (dyn_slot_psx[i] >= 0)
             EMIT_SW(dyn_slot_ee[i], CPU_REG(dyn_slot_psx[i]), REG_S0);
     }
@@ -166,13 +180,19 @@ uint32_t dyn_mismatch_count = 0;
 
 void dyn_flush_verify_slots(void)
 {
-    if (!dyn_slots_active) return;
-    for (int i = 0; i < DYN_SLOT_COUNT; i++) {
-        if (dyn_slot_psx[i] < 0) continue;
-        if (dyn_dirty_mask & (1u << i)) {
+    if (!dyn_slots_active)
+        return;
+    for (int i = 0; i < DYN_SLOT_COUNT; i++)
+    {
+        if (dyn_slot_psx[i] < 0)
+            continue;
+        if (dyn_dirty_mask & (1u << i))
+        {
             /* Dirty: normal flush */
             EMIT_SW(dyn_slot_ee[i], CPU_REG(dyn_slot_psx[i]), REG_S0);
-        } else {
+        }
+        else
+        {
             /* Non-dirty: verify slot == cpu.regs[], fix + count if not */
             EMIT_LW(REG_AT, CPU_REG(dyn_slot_psx[i]), REG_S0);
             uint32_t *beq = code_ptr;
@@ -201,7 +221,8 @@ void dyn_flush_verify_slots(void)
  * Used by overflow cold paths (ADD/SUB/ADDI) to save rd before clobbering. */
 void dyn_flush_one_slot(int r)
 {
-    if (!dyn_slots_active || r <= 0) return;
+    if (!dyn_slots_active || r <= 0)
+        return;
     int si = dyn_slot_find(r);
     if (si >= 0 && (dyn_dirty_mask & (1u << si)))
         EMIT_SW(dyn_slot_ee[si], CPU_REG(r), REG_S0);
@@ -211,7 +232,8 @@ void dyn_flush_one_slot(int r)
  * Used by overflow cold paths to restore rd after the ALU op clobbered it. */
 void dyn_reload_one_slot(int r)
 {
-    if (!dyn_slots_active || r <= 0) return;
+    if (!dyn_slots_active || r <= 0)
+        return;
     int si = dyn_slot_find(r);
     if (si >= 0)
         EMIT_LW(dyn_slot_ee[si], CPU_REG(r), REG_S0);
@@ -241,16 +263,22 @@ void emit_load_psx_reg(int hwreg, int r)
             EMIT_MOVE(psx_pinned_reg[r], hwreg);
         else if (!psx_pinned_reg[r])
         {
-            if (dyn_slots_active) {
+            if (dyn_slots_active)
+            {
                 int si = dyn_slot_find(r);
-                if (si >= 0) {
+                if (si >= 0)
+                {
                     if (dyn_slot_ee[si] != hwreg)
                         EMIT_MOVE(dyn_slot_ee[si], hwreg);
                     dyn_dirty_mask |= (1u << si);
-                } else {
+                }
+                else
+                {
                     EMIT_SW(hwreg, CPU_REG(r), REG_S0);
                 }
-            } else {
+            }
+            else
+            {
                 EMIT_SW(hwreg, CPU_REG(r), REG_S0);
             }
         }
@@ -265,27 +293,37 @@ void emit_load_psx_reg(int hwreg, int r)
     else
     {
         /* Check dynamic slot first */
-        if (dyn_slots_active) {
+        if (dyn_slots_active)
+        {
             int si = dyn_slot_find(r);
-            if (si >= 0) {
+            if (si >= 0)
+            {
                 if (hwreg != dyn_slot_ee[si])
                     EMIT_MOVE(hwreg, dyn_slot_ee[si]);
-                if (hwreg == REG_T8) t8_cached_psx_reg = -1;
-                else if (hwreg == REG_T9) t9_cached_psx_reg = -1;
+                if (hwreg == REG_T8)
+                    t8_cached_psx_reg = -1;
+                else if (hwreg == REG_T9)
+                    t9_cached_psx_reg = -1;
                 return;
             }
         }
         /* Non-pinned, non-slot, non-dirty-const: use scratch cache */
-        if (hwreg == REG_T8 && t8_cached_psx_reg == r) return;
-        if (hwreg == REG_T9 && t9_cached_psx_reg == r) return;
+        if (hwreg == REG_T8 && t8_cached_psx_reg == r)
+            return;
+        if (hwreg == REG_T9 && t9_cached_psx_reg == r)
+            return;
         EMIT_LW(hwreg, CPU_REG(r), REG_S0);
-        if (hwreg == REG_T8) t8_cached_psx_reg = r;
-        else if (hwreg == REG_T9) t9_cached_psx_reg = r;
+        if (hwreg == REG_T8)
+            t8_cached_psx_reg = r;
+        else if (hwreg == REG_T9)
+            t9_cached_psx_reg = r;
         return;
     }
     /* Non-cacheable paths (r=0, dirty const, pinned): invalidate scratch */
-    if (hwreg == REG_T8) t8_cached_psx_reg = -1;
-    else if (hwreg == REG_T9) t9_cached_psx_reg = -1;
+    if (hwreg == REG_T8)
+        t8_cached_psx_reg = -1;
+    else if (hwreg == REG_T9)
+        t9_cached_psx_reg = -1;
 }
 
 int emit_use_reg(int r, int scratch)
@@ -297,15 +335,21 @@ int emit_use_reg(int r, int scratch)
         /* Lazy const: materialize into the canonical location */
         int dst;
         int si = -1;
-        if (psx_pinned_reg[r]) {
+        if (psx_pinned_reg[r])
+        {
             dst = psx_pinned_reg[r];
-        } else if (dyn_slots_active && (si = dyn_slot_find(r)) >= 0) {
+        }
+        else if (dyn_slots_active && (si = dyn_slot_find(r)) >= 0)
+        {
             dst = dyn_slot_ee[si];
-        } else {
+        }
+        else
+        {
             dst = scratch;
         }
         emit_load_imm32(dst, vregs[r].value);
-        if (!psx_pinned_reg[r]) {
+        if (!psx_pinned_reg[r])
+        {
             if (si >= 0)
                 dyn_dirty_mask |= (1u << si);
             else
@@ -314,24 +358,31 @@ int emit_use_reg(int r, int scratch)
         vregs[r].is_dirty = 0;
         dirty_const_mask &= ~(1u << r);
         /* Const materialized into scratch: invalidate cached entry */
-        if (dst == REG_T8) t8_cached_psx_reg = -1;
-        else if (dst == REG_T9) t9_cached_psx_reg = -1;
+        if (dst == REG_T8)
+            t8_cached_psx_reg = -1;
+        else if (dst == REG_T9)
+            t9_cached_psx_reg = -1;
         return dst;
     }
     if (psx_pinned_reg[r])
         return psx_pinned_reg[r];
     /* Check dynamic slot */
-    if (dyn_slots_active) {
+    if (dyn_slots_active)
+    {
         int si = dyn_slot_find(r);
         if (si >= 0)
             return dyn_slot_ee[si];
     }
     /* Non-pinned: check scratch register cache */
-    if (scratch == REG_T8 && t8_cached_psx_reg == r) return REG_T8;
-    if (scratch == REG_T9 && t9_cached_psx_reg == r) return REG_T9;
+    if (scratch == REG_T8 && t8_cached_psx_reg == r)
+        return REG_T8;
+    if (scratch == REG_T9 && t9_cached_psx_reg == r)
+        return REG_T9;
     EMIT_LW(scratch, CPU_REG(r), REG_S0);
-    if (scratch == REG_T8) t8_cached_psx_reg = r;
-    else if (scratch == REG_T9) t9_cached_psx_reg = r;
+    if (scratch == REG_T8)
+        t8_cached_psx_reg = r;
+    else if (scratch == REG_T9)
+        t9_cached_psx_reg = r;
     return scratch;
 }
 
@@ -341,7 +392,8 @@ int emit_dst_reg(int r, int scratch)
         return REG_T8; /* Junk register if writing to $0 (T8 is scratch, not a dyn slot) */
     if (psx_pinned_reg[r])
         return psx_pinned_reg[r];
-    if (dyn_slots_active) {
+    if (dyn_slots_active)
+    {
         int si = dyn_slot_find(r);
         if (si >= 0)
             return dyn_slot_ee[si];
@@ -361,26 +413,35 @@ void emit_store_psx_reg(int r, int hwreg)
         return;
     }
     /* Dynamic slot: dirty writeback (update slot reg, defer SW) */
-    if (dyn_slots_active) {
+    if (dyn_slots_active)
+    {
         int si = dyn_slot_find(r);
-        if (si >= 0) {
+        if (si >= 0)
+        {
             if (dyn_slot_ee[si] != hwreg)
                 EMIT_MOVE(dyn_slot_ee[si], hwreg);
             dyn_dirty_mask |= (1u << si);
             /* Invalidate scratch cache if it held this PSX reg */
-            if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
-            if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
+            if (t8_cached_psx_reg == r)
+                t8_cached_psx_reg = -1;
+            if (t9_cached_psx_reg == r)
+                t9_cached_psx_reg = -1;
             return;
         }
     }
     EMIT_SW(hwreg, CPU_REG(r), REG_S0);
     /* Update cache: hwreg now holds cpu.regs[r] */
-    if (hwreg == REG_T8) {
+    if (hwreg == REG_T8)
+    {
         t8_cached_psx_reg = r;
-        if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
-    } else if (hwreg == REG_T9) {
+        if (t9_cached_psx_reg == r)
+            t9_cached_psx_reg = -1;
+    }
+    else if (hwreg == REG_T9)
+    {
         t9_cached_psx_reg = r;
-        if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
+        if (t8_cached_psx_reg == r)
+            t8_cached_psx_reg = -1;
     }
 }
 
@@ -389,25 +450,34 @@ void emit_sync_reg(int r, int host_reg)
     if (r == 0 || psx_pinned_reg[r])
         return;
     /* Dynamic slot: dirty writeback (update slot reg, defer SW) */
-    if (dyn_slots_active) {
+    if (dyn_slots_active)
+    {
         int si = dyn_slot_find(r);
-        if (si >= 0) {
+        if (si >= 0)
+        {
             if (dyn_slot_ee[si] != host_reg)
                 EMIT_MOVE(dyn_slot_ee[si], host_reg);
             dyn_dirty_mask |= (1u << si);
-            if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
-            if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
+            if (t8_cached_psx_reg == r)
+                t8_cached_psx_reg = -1;
+            if (t9_cached_psx_reg == r)
+                t9_cached_psx_reg = -1;
             return;
         }
     }
     EMIT_SW(host_reg, CPU_REG(r), REG_S0);
     /* Update cache: host_reg now holds cpu.regs[r] */
-    if (host_reg == REG_T8) {
+    if (host_reg == REG_T8)
+    {
         t8_cached_psx_reg = r;
-        if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
-    } else if (host_reg == REG_T9) {
+        if (t9_cached_psx_reg == r)
+            t9_cached_psx_reg = -1;
+    }
+    else if (host_reg == REG_T9)
+    {
         t9_cached_psx_reg = r;
-        if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
+        if (t8_cached_psx_reg == r)
+            t8_cached_psx_reg = -1;
     }
 }
 
@@ -423,7 +493,8 @@ void flush_dirty_consts(void)
         return;
     uint32_t mask = dirty_const_mask;
     dirty_const_mask = 0;
-    while (mask) {
+    while (mask)
+    {
         int r = __builtin_ctz(mask);
         mask &= mask - 1;
         if (vregs[r].is_const && vregs[r].is_dirty)
@@ -437,22 +508,25 @@ void flush_dirty_consts(void)
                 int si = dyn_slot_find(r);
                 emit_load_imm32(dyn_slot_ee[si], vregs[r].value);
                 dyn_dirty_mask |= (1u << si);
-                if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
-                if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
+                if (t8_cached_psx_reg == r)
+                    t8_cached_psx_reg = -1;
+                if (t9_cached_psx_reg == r)
+                    t9_cached_psx_reg = -1;
             }
             else
             {
                 emit_load_imm32(REG_AT, vregs[r].value);
                 EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
                 /* cpu.regs[r] changed; invalidate stale cache entry */
-                if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
-                if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
+                if (t8_cached_psx_reg == r)
+                    t8_cached_psx_reg = -1;
+                if (t9_cached_psx_reg == r)
+                    t9_cached_psx_reg = -1;
             }
             vregs[r].is_dirty = 0;
         }
     }
 }
-
 
 /* Flush pinned PSX registers to cpu struct before JAL to C helpers.
  * This ensures cpu.regs[] is consistent for C code and exception handlers. */
@@ -480,10 +554,14 @@ void emit_reload_pinned(void)
  * pinned_written_mask to skip flushing regs that were never written. */
 void emit_flush_pinned_selective(uint32_t mask)
 {
-    if (mask & (1u << 28)) EMIT_SW(REG_S6, CPU_REG(28), REG_S0); /* PSX $gp */
-    if (mask & (1u << 29)) EMIT_SW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
-    if (mask & (1u << 30)) EMIT_SW(REG_S7, CPU_REG(30), REG_S0); /* PSX $fp */
-    if (mask & (1u << 31)) EMIT_SW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
+    if (mask & (1u << 28))
+        EMIT_SW(REG_S6, CPU_REG(28), REG_S0); /* PSX $gp */
+    if (mask & (1u << 29))
+        EMIT_SW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
+    if (mask & (1u << 30))
+        EMIT_SW(REG_S7, CPU_REG(30), REG_S0); /* PSX $fp */
+    if (mask & (1u << 31))
+        EMIT_SW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
 }
 
 /* Emit a JAL to a C helper function with pinned register sync.
@@ -496,10 +574,9 @@ void emit_call_c(uint32_t func_addr)
 {
     flush_dirty_consts();
     dyn_flush_dirty_slots(); /* A: dirty-only — safe with reload */
-    EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
     emit_load_imm32(REG_T8, func_addr);
     EMIT_JAL_ABS((uint32_t)call_c_trampoline_addr);
-    EMIT_NOP();
+    EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0); /* delay slot (P9) */
     dyn_reload_slots();
     reg_cache_invalidate();
     smrv_known_ram = (1u << 29);
@@ -515,10 +592,9 @@ void emit_call_c_lite(uint32_t func_addr)
 {
     flush_dirty_consts();
     dyn_flush_dirty_slots(); /* B: dirty-only — safe; T0-T7 preserved by lite tramp */
-    EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
     emit_load_imm32(REG_T8, func_addr);
     EMIT_JAL_ABS((uint32_t)call_c_trampoline_lite_addr);
-    EMIT_NOP();
+    EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0); /* delay slot (P9) */
     /* T0-T7 (dynamic slots) preserved by lite trampoline save/restore.
      * Pinned regs (S4-S7) preserved by C ABI. */
     reg_cache_invalidate();
@@ -547,7 +623,7 @@ void emit_abort_check(uint32_t cycles)
     /* Use AT instead of T0 to avoid clobbering dynamic slot 0 */
     EMIT_LW(REG_AT, CPU_BLOCK_ABORTED, REG_S0); /* at = cpu.block_aborted */
     uint32_t *beq_insn = code_ptr;
-    emit(MK_I(0x04, REG_AT, REG_ZERO, 0));      /* BEQ at, zero, +? (patched) */
+    emit(MK_I(0x04, REG_AT, REG_ZERO, 0)); /* BEQ at, zero, +? (patched) */
     EMIT_NOP();
 
     /* Abort path: flush dirty dyn slots so cpu.regs[] is consistent.
@@ -560,9 +636,8 @@ void emit_abort_check(uint32_t cycles)
     /* Inside abort path: subtract only the cycles consumed up to this
      * instruction, not the full block total.  For deferred cold/TLB paths
      * this is the per-instruction cycle_offset stored at emit time. */
-    EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)cycles);
     EMIT_J_ABS((uint32_t)abort_trampoline_addr);
-    EMIT_NOP();
+    EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)cycles); /* delay slot (P9) */
 
     /* Patch BEQ to skip entire abort path */
     int32_t skip_off = (int32_t)(code_ptr - beq_insn - 2);
@@ -640,16 +715,20 @@ void mark_vreg_var(int r)
             int si = dyn_slot_find(r);
             emit_load_imm32(dyn_slot_ee[si], vregs[r].value);
             dyn_dirty_mask |= (1u << si);
-            if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
-            if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
+            if (t8_cached_psx_reg == r)
+                t8_cached_psx_reg = -1;
+            if (t9_cached_psx_reg == r)
+                t9_cached_psx_reg = -1;
         }
         else
         {
             emit_load_imm32(REG_AT, vregs[r].value);
             EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
             /* cpu.regs[r] changed; invalidate stale cache entry */
-            if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
-            if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
+            if (t8_cached_psx_reg == r)
+                t8_cached_psx_reg = -1;
+            if (t9_cached_psx_reg == r)
+                t9_cached_psx_reg = -1;
         }
     }
     vregs[r].is_const = 0;
@@ -693,7 +772,8 @@ void reset_vregs(void)
 void emit_cpu_field_to_psx_reg(int field_offset, int r)
 {
     mark_vreg_var(r);
-    if (r == 0) return;
+    if (r == 0)
+        return;
     if (psx_pinned_reg[r])
     {
         EMIT_LW(psx_pinned_reg[r], field_offset, REG_S0);
@@ -709,15 +789,18 @@ void emit_cpu_field_to_psx_reg(int field_offset, int r)
         EMIT_LW(REG_AT, field_offset, REG_S0);
         EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
         /* cpu.regs[r] changed via AT; invalidate stale scratch entries */
-        if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
-        if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
+        if (t8_cached_psx_reg == r)
+            t8_cached_psx_reg = -1;
+        if (t9_cached_psx_reg == r)
+            t9_cached_psx_reg = -1;
     }
 }
 
 /* Store an immediate value into a PSX register.  Uses AT for non-pinned. */
 void emit_materialize_psx_imm(int r, uint32_t value)
 {
-    if (r == 0) return;
+    if (r == 0)
+        return;
     if (psx_pinned_reg[r])
     {
         emit_load_imm32(psx_pinned_reg[r], value);
@@ -733,8 +816,10 @@ void emit_materialize_psx_imm(int r, uint32_t value)
         emit_load_imm32(REG_AT, value);
         EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
         /* cpu.regs[r] changed via AT; invalidate stale scratch entries */
-        if (t8_cached_psx_reg == r) t8_cached_psx_reg = -1;
-        if (t9_cached_psx_reg == r) t9_cached_psx_reg = -1;
+        if (t8_cached_psx_reg == r)
+            t8_cached_psx_reg = -1;
+        if (t9_cached_psx_reg == r)
+            t9_cached_psx_reg = -1;
     }
 }
 
