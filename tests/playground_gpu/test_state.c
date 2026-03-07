@@ -166,6 +166,7 @@ static void test_texflush_vram_dirty(void)
 
     /* Dirty the texture region */
     vram_gen_counter++;
+    Tex_Cache_DirtyRegion(0, 0, 64, 256); /* mark tex page blocks */
 
     /* Second draw — page must re-upload, TEXFLUSH required */
     emit_textured_quad(0, 0, 0, 256);
@@ -199,6 +200,7 @@ static void test_texflush_rect_miss(void)
 
     /* Dirty VRAM so prim_tex_cache misses */
     vram_gen_counter++;
+    Tex_Cache_DirtyRegion(0, 0, 64, 256); /* mark tex page blocks */
 
     /* Second rect — cache miss due to dirty, must TEXFLUSH */
     emit_textured_rect(0, 256);
@@ -329,6 +331,7 @@ static void test_rect_to_quad_dirty(void)
 
     /* Dirty VRAM */
     vram_gen_counter++;
+    Tex_Cache_DirtyRegion(0, 0, 64, 256); /* mark tex page blocks */
 
     /* Textured quad — cache miss — must TEXFLUSH */
     emit_textured_quad(0, 0, 0, 256);
@@ -697,6 +700,127 @@ static void test_e1_multiple_before_draw(void)
 }
 
 /* ================================================================
+ *  G2: Region-based tex cache — FillRect to unrelated VRAM should
+ *      NOT invalidate prim_tex_cache.
+ *
+ *  Key observable: prim_tex_cache miss → need_texflush=1 → TEXFLUSH
+ *  emitted.  Cache hit → need_texflush=0 → no TEXFLUSH.
+ *
+ *  Dirty tracking granularity: 64hw × 16 scanlines per block.
+ *  Texture page (4BPP): 64hw wide.
+ * ================================================================ */
+
+/* FillRect helper: GP0(02) */
+static void emit_fillrect(int x, int y, int w, int h, uint32_t color)
+{
+    EMIT_GP0(0x02000000 | (color & 0xFFFFFF));
+    EMIT_GP0((uint32_t)(x & 0xFFFF) | ((uint32_t)(y & 0xFFFF) << 16));
+    EMIT_GP0((uint32_t)(w & 0xFFFF) | ((uint32_t)(h & 0xFFFF) << 16));
+}
+
+/* G2a: FillRect to non-overlapping VRAM → prim_tex_cache should HIT
+ *
+ * Texture at page_tx=2 (hw 128-191, column 2), CLUT at (0,480, col 0 row 30).
+ * FillRect at (0,0,16,16) → column 0, row 0.  No overlap with tex or CLUT.
+ *
+ * PRE-G2: MISS → 2nd draw emits TEXFLUSH (FAIL)
+ * POST-G2: HIT → no TEXFLUSH on 2nd draw (PASS)
+ */
+static void test_g2a_fillrect_no_overlap(void)
+{
+    BEGIN_GPU_TEST("g2a_no_ovlap");
+
+    Tex_Cache_Init();
+    setup_texture_data(2, 0, 0, 480, 0); /* page_tx=2, clut at (0,480), 4BPP */
+    vram_gen_counter++;
+    Tex_Cache_DirtyRegion(128, 0, 64, 256); /* mark tex page dirty */
+    Tex_Cache_DirtyRegion(0, 480, 16, 1);   /* mark CLUT dirty */
+
+    /* 1st draw: populate prim_tex_cache (MISS) */
+    emit_textured_quad(2, 0, 0, 480);
+    gp_gif_scan();
+    EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH); /* 1st draw → always MISS */
+    gp_gif_reset_counter();
+
+    /* FillRect: column 0, row 0 — NOT overlapping tex (col 2) or CLUT (row 30) */
+    emit_fillrect(0, 0, 16, 16, 0x000000);
+    gp_gif_reset_counter();
+
+    /* 2nd draw: same texture params → should be cache HIT after G2 */
+    emit_textured_quad(2, 0, 0, 480);
+    gp_gif_scan();
+    EXPECT_NO_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH); /* G2: HIT → no TEXFLUSH */
+
+    END_GPU_TEST();
+}
+
+/* G2b: FillRect overlapping texture page → must MISS (correctness guard)
+ *
+ * Texture at page_tx=2 (hw 128-191, column 2).
+ * FillRect at (128,0,64,16) → column 2, row 0. Overlaps texture page!
+ */
+static void test_g2b_fillrect_tex_overlap(void)
+{
+    BEGIN_GPU_TEST("g2b_tex_ovlap");
+
+    Tex_Cache_Init();
+    setup_texture_data(2, 0, 0, 480, 0);
+    vram_gen_counter++;
+    Tex_Cache_DirtyRegion(128, 0, 64, 256);
+    Tex_Cache_DirtyRegion(0, 480, 16, 1);
+
+    /* 1st draw: populate cache */
+    emit_textured_quad(2, 0, 0, 480);
+    gp_gif_scan();
+    EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
+    gp_gif_reset_counter();
+
+    /* FillRect: column 2, row 0 — OVERLAPS texture page */
+    emit_fillrect(128, 0, 64, 16, 0xFF0000);
+    gp_gif_reset_counter();
+
+    /* 2nd draw: cache MISS (region gen bumped) → TEXFLUSH */
+    emit_textured_quad(2, 0, 0, 480);
+    gp_gif_scan();
+    EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH); /* must MISS */
+
+    END_GPU_TEST();
+}
+
+/* G2c: FillRect overlapping CLUT area → must MISS (correctness guard)
+ *
+ * Texture at page_tx=2, CLUT at (0,480) → column 0, row 30.
+ * FillRect at (0,480,16,16) → column 0, row 30. Overlaps CLUT!
+ */
+static void test_g2c_fillrect_clut_overlap(void)
+{
+    BEGIN_GPU_TEST("g2c_clut_ovlp");
+
+    Tex_Cache_Init();
+    setup_texture_data(2, 0, 0, 480, 0);
+    vram_gen_counter++;
+    Tex_Cache_DirtyRegion(128, 0, 64, 256);
+    Tex_Cache_DirtyRegion(0, 480, 16, 1);
+
+    /* 1st draw: populate cache */
+    emit_textured_quad(2, 0, 0, 480);
+    gp_gif_scan();
+    EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
+    gp_gif_reset_counter();
+
+    /* FillRect: column 0, row 30 — OVERLAPS CLUT */
+    emit_fillrect(0, 480, 16, 16, 0x00FF00);
+    gp_gif_reset_counter();
+
+    /* 2nd draw: cache MISS (CLUT region gen bumped) → TEXFLUSH */
+    emit_textured_quad(2, 0, 0, 480);
+    gp_gif_scan();
+    EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH); /* must MISS */
+
+    END_GPU_TEST();
+}
+
+/* ================================================================
  *  Runner
  * ================================================================ */
 void gp_run_state_tests(void)
@@ -728,4 +852,9 @@ void gp_run_state_tests(void)
     test_e1_dither_deferred();      /* G5c */
     test_e1_alpha_deferred();       /* G5d */
     test_e1_multiple_before_draw(); /* G5e */
+
+    printf("\n--- G2: Region-based Tex Cache Tests ---\n");
+    test_g2a_fillrect_no_overlap();     /* G2a — FillRect far → HIT */
+    test_g2b_fillrect_tex_overlap();    /* G2b — FillRect on texpage → MISS */
+    test_g2c_fillrect_clut_overlap();   /* G2c — FillRect on CLUT → MISS */
 }

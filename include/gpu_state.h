@@ -306,6 +306,8 @@ int Decode_TexPage_Cached(int tex_format,
 void Tex_Cache_DumpStats(void);
 void Tex_Cache_ResetStats(void);
 void Tex_Cache_DirtyRegion(int x, int y, int w, int h);
+uint32_t Tex_Cache_GetCombinedGen(int tex_format, int tex_page_x, int tex_page_y,
+                                  int clut_x, int clut_y);
 
 /* gpu_primitives.c — GP0 command translation to GS */
 int Translate_GP0_to_GS(uint32_t *psx_cmd);

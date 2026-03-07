@@ -88,7 +88,8 @@ static inline int prim_tex_cache_lookup(int tex_format, int tex_page_x, int tex_
         prim_tex_cache.tex_page_y == tex_page_y &&
         prim_tex_cache.clut_x == clut_x &&
         prim_tex_cache.clut_y == clut_y &&
-        prim_tex_cache.vram_gen == vram_gen_counter)
+        prim_tex_cache.vram_gen == Tex_Cache_GetCombinedGen(
+            tex_format, tex_page_x, tex_page_y, clut_x, clut_y))
         return 1;
     return 0;
 }
@@ -109,7 +110,8 @@ static inline int prim_tex_decode(int tex_format, int tex_page_x, int tex_page_y
     prim_tex_cache.tex_page_y = tex_page_y;
     prim_tex_cache.clut_x = clut_x;
     prim_tex_cache.clut_y = clut_y;
-    prim_tex_cache.vram_gen = vram_gen_counter;
+    prim_tex_cache.vram_gen = Tex_Cache_GetCombinedGen(
+        tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
     prim_tex_cache.hw_clut = (result == 2 || result == 3) ? 1 : 0;
     prim_tex_cache.csm = (result == 3) ? 1 : 0; /* 0=CSM1, 1=CSM2 */
     

@@ -110,6 +110,13 @@ static inline uint32_t get_tex_combined_gen(int tex_format,
     return tex_gen;
 }
 
+/* Public wrapper for prim_tex_cache (gpu_primitives.c) */
+uint32_t Tex_Cache_GetCombinedGen(int tex_format, int tex_page_x, int tex_page_y,
+                                  int clut_x, int clut_y)
+{
+    return get_tex_combined_gen(tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  *  VRAM 1:1 Direct-Mapped Texture Pages + CLUT Round-Robin
  *
