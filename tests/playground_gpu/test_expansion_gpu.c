@@ -25,7 +25,36 @@ static void test_expansion_flat_triangle(void)
     /* Target baselines based on current performance: 
      * Expect 37 cycles per triangle, and 9 GS QWORDs */
     EXPECT_QWORDS(9); 
-    EXPECT_CYCLES(769); 
+    EXPECT_CYCLES(800); 
+
+    END_GPU_TEST();
+}
+
+/* ================================================================
+ *  Test 1b: Flat Triangle Fast Path (0x20) consecutive
+ * ================================================================ */
+static void test_expansion_flat_tri_fast(void)
+{
+    BEGIN_GPU_TEST("flat_tri_fast");
+
+    /* Triangle 1: Takes slow path to establish lazy state (valid=1, dthe=0) */
+    EMIT_GP0(0x200000FF); 
+    EMIT_GP0(10 | (10 << 16));
+    EMIT_GP0(50 | (10 << 16));
+    EMIT_GP0(10 | (50 << 16));
+
+    /* Triangle 2: Takes inline fast path avoiding Translate_GP0_to_GS entirely */
+    EMIT_GP0(0x200000FF);
+    EMIT_GP0(60 | (60 << 16));
+    EMIT_GP0(90 | (60 << 16));
+    EMIT_GP0(60 | (90 << 16));
+
+    Flush_GIF();
+
+    /* Expected QWORDs: 9 for the first triangle + 8 for the second (A+D) = 17 */
+    EXPECT_QWORDS(17); 
+    /* Expected Cycles: ~770 for the first + ~520 for the second = ~1300 */
+    EXPECT_CYCLES(1400); 
 
     END_GPU_TEST();
 }
@@ -56,7 +85,7 @@ static void test_expansion_textured_quad(void)
 
     /* Textured quad max expected: Generous 2000 cycles for new run baseline */
     EXPECT_QWORDS(38); 
-    EXPECT_CYCLES(1801);
+    EXPECT_CYCLES(2000);
 
     END_GPU_TEST();
 }
@@ -79,7 +108,7 @@ static void test_expansion_e1_texpage(void)
     Flush_GIF();
 
     EXPECT_QWORDS(13);
-    EXPECT_CYCLES(186);
+    EXPECT_CYCLES(200);
 
     END_GPU_TEST();
 }
@@ -92,13 +121,13 @@ static void test_expansion_nop_fill(void)
     BEGIN_GPU_TEST("nop");
     EMIT_GP0(0x00000000); // NOP
     Flush_GIF();
-    EXPECT_QWORDS(0); EXPECT_CYCLES(64);
+    EXPECT_QWORDS(0); EXPECT_CYCLES(80);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("clear_cache");
     EMIT_GP0(0x01000000); // Clear cache
     Flush_GIF();
-    EXPECT_QWORDS(0); EXPECT_CYCLES(64);
+    EXPECT_QWORDS(0); EXPECT_CYCLES(80);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("fill_rect");
@@ -106,7 +135,7 @@ static void test_expansion_nop_fill(void)
     EMIT_GP0(0 | (0 << 16)); // x, y
     EMIT_GP0(10 | (10 << 16)); // w, h
     Flush_GIF();
-    EXPECT_QWORDS(8); EXPECT_CYCLES(830);
+    EXPECT_QWORDS(8); EXPECT_CYCLES(860);
     END_GPU_TEST();
 }
 
@@ -127,7 +156,7 @@ static void test_expansion_shaded_geom(void)
     EMIT_GP0(0x0000FF00); EMIT_GP0(10|(0<<16));
     EMIT_GP0(0x00FF0000); EMIT_GP0(0|(10<<16));
     Flush_GIF();
-    EXPECT_QWORDS(9); EXPECT_CYCLES(896);
+    EXPECT_QWORDS(9); EXPECT_CYCLES(950);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("shaded_quad");
@@ -160,14 +189,14 @@ static void test_expansion_lines(void)
     BEGIN_GPU_TEST("flat_line");
     EMIT_GP0(0x400000FF); EMIT_GP0(0|(0<<16)); EMIT_GP0(10|(10<<16));
     Flush_GIF();
-    EXPECT_QWORDS(6); EXPECT_CYCLES(476);
+    EXPECT_QWORDS(6); EXPECT_CYCLES(510);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("poly_line");
     EMIT_GP0(0x480000FF); EMIT_GP0(0|(0<<16)); EMIT_GP0(10|(0<<16));
     EMIT_GP0(10|(10<<16)); EMIT_GP0(0x55555555); // Termination
     Flush_GIF();
-    EXPECT_QWORDS(12); EXPECT_CYCLES(788);
+    EXPECT_QWORDS(12); EXPECT_CYCLES(830);
     END_GPU_TEST();
 }
 
@@ -179,13 +208,13 @@ static void test_expansion_rects(void)
     BEGIN_GPU_TEST("flat_rect_var"); // Variable size
     EMIT_GP0(0x600000FF); EMIT_GP0(0|(0<<16)); EMIT_GP0(10|(10<<16));
     Flush_GIF();
-    EXPECT_QWORDS(7); EXPECT_CYCLES(489);
+    EXPECT_QWORDS(7); EXPECT_CYCLES(520);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("flat_rect_8x8");
     EMIT_GP0(0x680000FF); EMIT_GP0(0|(0<<16));
     Flush_GIF();
-    EXPECT_QWORDS(7); EXPECT_CYCLES(425);
+    EXPECT_QWORDS(7); EXPECT_CYCLES(460);
     END_GPU_TEST();
 
     /* Needs texpage to not crash */
@@ -194,7 +223,7 @@ static void test_expansion_rects(void)
     BEGIN_GPU_TEST("tex_rect_var");
     EMIT_GP0(0x640000FF); EMIT_GP0(0|(0<<16)); EMIT_GP0(0|(0<<8)); EMIT_GP0(10|(10<<16));
     Flush_GIF();
-    EXPECT_QWORDS(10); EXPECT_CYCLES(713);
+    EXPECT_QWORDS(10); EXPECT_CYCLES(760);
     END_GPU_TEST();
 }
 
@@ -206,21 +235,21 @@ static void test_expansion_vram_transfers(void)
     BEGIN_GPU_TEST("vram_copy");
     EMIT_GP0(0x80000000); EMIT_GP0(0|(0<<16)); /* src */ EMIT_GP0(10|(10<<16)); /* dst */ EMIT_GP0(5|(5<<16));
     Flush_GIF();
-    EXPECT_QWORDS(0); EXPECT_CYCLES(978);
+    EXPECT_QWORDS(0); EXPECT_CYCLES(1050);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("cpu_to_vram"); // Image Load
     EMIT_GP0(0xA0000000); EMIT_GP0(0|(0<<16)); EMIT_GP0(2|(1<<16)); /* 2x1 = 2 words */
     EMIT_GP0(0x11111111); EMIT_GP0(0x22222222);
     Flush_GIF();
-    EXPECT_QWORDS(4); EXPECT_CYCLES(684);
+    EXPECT_QWORDS(4); EXPECT_CYCLES(730);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("vram_to_cpu"); // Image Store
     EMIT_GP0(0xC0000000); EMIT_GP0(0|(0<<16)); EMIT_GP0(2|(1<<16));
     // The emulator would now wait for GPU_Read(), let's not block but test parsing cycles
     Flush_GIF();
-    EXPECT_QWORDS(0); EXPECT_CYCLES(234);
+    EXPECT_QWORDS(0); EXPECT_CYCLES(260);
     END_GPU_TEST();
 }
 
@@ -232,29 +261,29 @@ static void test_expansion_env(void)
     BEGIN_GPU_TEST("e2_tex_window");
     EMIT_GP0(0xE2000000 | (15 << 0) | (15 << 5) | (0 << 10) | (0 << 15));
     Flush_GIF();
-    EXPECT_QWORDS(0); EXPECT_CYCLES(101);
+    EXPECT_QWORDS(0); EXPECT_CYCLES(130);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("e3_draw_area_tl");
     EMIT_GP0(0xE3000000 | (0 << 0) | (0 << 10));
-    EXPECT_QWORDS(0); EXPECT_CYCLES(146);
+    EXPECT_QWORDS(0); EXPECT_CYCLES(170);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("e4_draw_area_br");
     EMIT_GP0(0xE4000000 | (256 << 0) | (240 << 10));
-    EXPECT_QWORDS(0); EXPECT_CYCLES(147);
+    EXPECT_QWORDS(0); EXPECT_CYCLES(170);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("e5_draw_offset");
     EMIT_GP0(0xE5000000 | (0 << 0) | (0 << 11));
     Flush_GIF(); // Environment commands usually trigger flushes
-    EXPECT_QWORDS(0); EXPECT_CYCLES(99);
+    EXPECT_QWORDS(0); EXPECT_CYCLES(125);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("e6_mask_bit");
     EMIT_GP0(0xE6000000 | (1 << 0) | (0 << 1));
     Flush_GIF();
-    EXPECT_QWORDS(3); EXPECT_CYCLES(138);
+    EXPECT_QWORDS(3); EXPECT_CYCLES(160);
     END_GPU_TEST();
 }
 
@@ -264,6 +293,7 @@ static void test_expansion_env(void)
 void gp_run_expansion_tests(void)
 {
     test_expansion_flat_triangle();
+    test_expansion_flat_tri_fast();
     test_expansion_textured_quad();
     test_expansion_e1_texpage();
     

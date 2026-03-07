@@ -388,7 +388,55 @@ void GPU_WriteGP0(uint32_t data)
             }
             else
             {
-                Translate_GP0_to_GS(gpu_cmd_buffer);
+                /* Fast path for common untextured flat polygons */
+                uint32_t cmd_byte = gpu_cmd_buffer[0] >> 24;
+                if ((cmd_byte == 0x20 || cmd_byte == 0x28) && gs_state.valid && gs_state.dthe == 0)
+                {
+                    int is_quad = (cmd_byte == 0x28);
+                    uint32_t c = gpu_cmd_buffer[0] & 0xFFFFFF;
+
+                    /* Flat Triangle: 4 words, Flat Quad: 5 words */
+                    int num_verts = is_quad ? 4 : 3;
+                    uint64_t prim = is_quad ? 4 : 3; // 4=TRISTRIP, 3=TRIANGLE
+
+                    Push_GIF_Tag(GIF_TAG_LO(1 + num_verts * 2, 1, 0, 0, 0, 1), GIF_REG_AD);
+                    Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim), GS_REG_PRIM);
+
+                    uint64_t rgbaq = GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000);
+
+                    for (int v = 0; v < num_verts; v++)
+                    {
+                        int16_t px = (int16_t)((int32_t)((gpu_cmd_buffer[v+1] & 0xFFFF) << 21) >> 21);
+                        int16_t py = (int16_t)((int32_t)((gpu_cmd_buffer[v+1] >> 16) << 21) >> 21);
+                        Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
+                        Push_GIF_Data(GS_SET_XYZ(((int32_t)px + draw_offset_x + 2048) << 4, ((int32_t)py + draw_offset_y + 2048) << 4, 0), GS_REG_XYZ2);
+                    }
+
+                    /* Coordinate decoding for pixel area estimation */
+                    int16_t x0 = (int16_t)((int32_t)((gpu_cmd_buffer[1] & 0xFFFF) << 21) >> 21);
+                    int16_t y0 = (int16_t)((int32_t)((gpu_cmd_buffer[1] >> 16) << 21) >> 21);
+                    int16_t x1 = (int16_t)((int32_t)((gpu_cmd_buffer[2] & 0xFFFF) << 21) >> 21);
+                    int16_t y1 = (int16_t)((int32_t)((gpu_cmd_buffer[2] >> 16) << 21) >> 21);
+                    int16_t x2 = (int16_t)((int32_t)((gpu_cmd_buffer[3] & 0xFFFF) << 21) >> 21);
+                    int16_t y2 = (int16_t)((int32_t)((gpu_cmd_buffer[3] >> 16) << 21) >> 21);
+                    int32_t a = (int32_t)x0 * ((int32_t)y1 - y2) + (int32_t)x1 * ((int32_t)y2 - y0) + (int32_t)x2 * ((int32_t)y0 - y1);
+                    if (a < 0) a = -a;
+                    uint32_t area = (uint32_t)(a >> 1);
+
+                    if (is_quad)
+                    {
+                        int16_t x3 = (int16_t)((int32_t)((gpu_cmd_buffer[4] & 0xFFFF) << 21) >> 21);
+                        int16_t y3 = (int16_t)((int32_t)((gpu_cmd_buffer[4] >> 16) << 21) >> 21);
+                        int32_t a2 = (int32_t)x1 * ((int32_t)y3 - y2) + (int32_t)x3 * ((int32_t)y2 - y1) + (int32_t)x2 * ((int32_t)y1 - y3);
+                        if (a2 < 0) a2 = -a2;
+                        area += (uint32_t)(a2 >> 1);
+                    }
+                    gpu_estimated_pixels += area;
+                }
+                else
+                {
+                    Translate_GP0_to_GS(gpu_cmd_buffer);
+                }
                 // Flush_GIF(); <-- Already removed
 
                 if ((cmd & 0xE0) == 0x40 && (cmd & 0x08))

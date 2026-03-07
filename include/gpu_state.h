@@ -252,6 +252,19 @@ static inline uint64_t GS_PACK_PRIM_FROM_INT(uint64_t v)
                        ((v) >> 9) & 0x1, ((v) >> 10) & 0x1);
 }
 
+/* ── GS State Tracking ───────────────────────────────────────────── */
+typedef struct
+{
+    uint64_t tex0;  /* Last TEX0_1 written */
+    uint64_t test;  /* Last TEST_1 written */
+    uint64_t alpha; /* Last ALPHA_1 written */
+    uint64_t clamp; /* Last CLAMP_1 written */
+    int dthe;       /* Last DTHE written (0 or 1) */
+    int valid;      /* 0 = unknown, 1 = tracked values are current */
+} gs_state_t;
+
+extern gs_state_t gs_state;
+
 /* gpu_vram.c — VRAM transfer operations */
 void Start_VRAM_Transfer(int x, int y, int w, int h);
 void Upload_Shadow_VRAM_Region(int x, int y, int w, int h);

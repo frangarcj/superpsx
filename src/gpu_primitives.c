@@ -23,15 +23,7 @@ uint64_t gpu_estimated_pixels = 0;
  *  Invalidation: gs_state_dirty = 1 on any external state change
  *  (E1/E6 handlers, GPU reset, VRAM upload).
  * ═══════════════════════════════════════════════════════════════════ */
-static struct
-{
-    uint64_t tex0;  /* Last TEX0_1 written */
-    uint64_t test;  /* Last TEST_1 written */
-    uint64_t alpha; /* Last ALPHA_1 written */
-    uint64_t clamp; /* Last CLAMP_1 written */
-    int dthe;       /* Last DTHE written (0 or 1) */
-    int valid;      /* 0 = unknown, 1 = tracked values are current */
-} gs_state = {0, 0, 0, 0, -1, 0};
+gs_state_t gs_state = {0, 0, 0, 0, -1, 0};
 
 /* Primitive-level Decode_TexPage_Cached result cache.
  * Eliminates ~80% of redundant texture cache lookups for consecutive
@@ -402,7 +394,11 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             }
             else
             {
-                int tris[2][3] = {{0, 1, 2}, {1, 3, 2}};
+                int verts_order[4] = {0, 1, 2, 3};
+                uint64_t quad_prim_reg = 4; // TRIANGLE_STRIP
+                if (is_shaded) quad_prim_reg |= (1 << 3);
+                if (is_textured) { quad_prim_reg |= (1 << 4); quad_prim_reg |= (1 << 8); }
+                if (cmd & 0x02) quad_prim_reg |= (1 << 6);
 
                 int is_semi_trans = (cmd & 0x02) != 0;
                 // PSX dithering applies to shaded and textured-blending (not raw) polygons
@@ -514,85 +510,79 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 int emit_clamp = (is_textured && poly_hw_clut && (!gs_state.valid || gs_state.clamp != want_clamp));
                 int state_qws = emit_dthe + emit_alpha + emit_tex0 + (emit_tex0 && need_texflush) + emit_test + emit_clamp;
 
-                for (int t = 0; t < 2; t++)
+                int ndata = is_textured ? 13 : 9; /* PRIM + 4×(UV+RGBAQ+XYZ) or 4×(RGBAQ+XYZ) */
+                ndata += state_qws;
+                Push_GIF_Tag(GIF_TAG_LO(ndata, 1, 0, 0, 0, 1), GIF_REG_AD);
+
+                if (emit_dthe)
+                    Push_GIF_Data((uint64_t)want_dthe, GS_REG_DTHE);
+                if (emit_alpha)
+                    Push_GIF_Data(want_alpha, GS_REG_ALPHA_1);
+                if (emit_clamp)
+                    Push_GIF_Data(want_clamp, GS_REG_CLAMP_1);
+                if (emit_tex0)
                 {
-                    int ndata = is_textured ? 10 : 7; /* PRIM + 3×(UV+RGBAQ+XYZ) or 3×(RGBAQ+XYZ) */
-                    if (t == 0)
-                        ndata += state_qws;
-                    Push_GIF_Tag(GIF_TAG_LO(ndata, (t == 1) ? 1 : 0, 0, 0, 0, 1), GIF_REG_AD);
-
-                    if (t == 0)
-                    {
-                        if (emit_dthe)
-                            Push_GIF_Data((uint64_t)want_dthe, GS_REG_DTHE);
-                        if (emit_alpha)
-                            Push_GIF_Data(want_alpha, GS_REG_ALPHA_1);
-                        if (emit_clamp)
-                            Push_GIF_Data(want_clamp, GS_REG_CLAMP_1);
-                        if (emit_tex0)
-                        {
-                            Push_GIF_Data(want_tex0, GS_REG_TEX0);
-                            if (need_texflush)
-                                Push_GIF_Data(0, GS_REG_TEXFLUSH);
-                        }
-                        if (emit_test)
-                            Push_GIF_Data(want_test, GS_REG_TEST_1);
-                        /* Update lazy tracking */
-                        if (!gs_state.valid)
-                        {
-                            /* Transitioning from unknown: sentinel for unemitted regs
-                             * so stale values can't accidentally match future prims */
-                            if (!is_textured)
-                            {
-                                gs_state.tex0 = ~0ULL;
-                                gs_state.test = ~0ULL;
-                                gs_state.clamp = ~0ULL;
-                            }
-                            if (!is_semi_trans)
-                                gs_state.alpha = ~0ULL;
-                        }
-                        gs_state.dthe = want_dthe;
-                        if (is_semi_trans)
-                            gs_state.alpha = want_alpha;
-                        if (is_textured)
-                        {
-                            gs_state.tex0 = want_tex0;
-                            gs_state.test = want_test;
-                            if (poly_hw_clut)
-                                gs_state.clamp = want_clamp;
-                        }
-                        gs_state.valid = 1;
-                    }
-
-                    Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
-
-                    for (int v = 0; v < 3; v++)
-                    {
-                        int i = tris[t][v];
-                        if (is_textured)
-                        {
-                            uint32_t u, v_coord;
-                            if (poly_clut_decoded)
-                            {
-                                u = (verts[i].uv & 0xFF) + poly_uv_off_u;
-                                v_coord = ((verts[i].uv >> 8) & 0xFF) + poly_uv_off_v;
-                            }
-                            else
-                            {
-                                u = Apply_Tex_Window_U(verts[i].uv & 0xFF) + poly_tex_page_x;
-                                v_coord = Apply_Tex_Window_V((verts[i].uv >> 8) & 0xFF) + poly_tex_page_y;
-                            }
-                            Push_GIF_Data(GS_SET_XYZ(u << 4, v_coord << 4, 0), GS_REG_UV);
-                        }
-                        uint32_t c = verts[i].color;
-                        Push_GIF_Data(GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000), GS_REG_RGBAQ);
-
-                        int32_t gx = ((int32_t)verts[i].x + draw_offset_x + 2048) << 4;
-                        int32_t gy = ((int32_t)verts[i].y + draw_offset_y + 2048) << 4;
-                        Push_GIF_Data(GS_SET_XYZ(gx, gy, 0), GS_REG_XYZ2);
-                    }
-                    /* No state restore — lazy tracking handles next primitive */
+                    Push_GIF_Data(want_tex0, GS_REG_TEX0);
+                    if (need_texflush)
+                        Push_GIF_Data(0, GS_REG_TEXFLUSH);
                 }
+                if (emit_test)
+                    Push_GIF_Data(want_test, GS_REG_TEST_1);
+
+                /* Update lazy tracking */
+                if (!gs_state.valid)
+                {
+                    /* Transitioning from unknown: sentinel for unemitted regs
+                     * so stale values can't accidentally match future prims */
+                    if (!is_textured)
+                    {
+                        gs_state.tex0 = ~0ULL;
+                        gs_state.test = ~0ULL;
+                        gs_state.clamp = ~0ULL;
+                    }
+                    if (!is_semi_trans)
+                        gs_state.alpha = ~0ULL;
+                }
+                gs_state.dthe = want_dthe;
+                if (is_semi_trans)
+                    gs_state.alpha = want_alpha;
+                if (is_textured)
+                {
+                    gs_state.tex0 = want_tex0;
+                    gs_state.test = want_test;
+                    if (poly_hw_clut)
+                        gs_state.clamp = want_clamp;
+                }
+                gs_state.valid = 1;
+
+                Push_GIF_Data(GS_PACK_PRIM_FROM_INT(quad_prim_reg), GS_REG_PRIM);
+
+                for (int v = 0; v < 4; v++)
+                {
+                    int i = verts_order[v];
+                    if (is_textured)
+                    {
+                        uint32_t u, v_coord;
+                        if (poly_clut_decoded)
+                        {
+                            u = (verts[i].uv & 0xFF) + poly_uv_off_u;
+                            v_coord = ((verts[i].uv >> 8) & 0xFF) + poly_uv_off_v;
+                        }
+                        else
+                        {
+                            u = Apply_Tex_Window_U(verts[i].uv & 0xFF) + poly_tex_page_x;
+                            v_coord = Apply_Tex_Window_V((verts[i].uv >> 8) & 0xFF) + poly_tex_page_y;
+                        }
+                        Push_GIF_Data(GS_SET_XYZ(u << 4, v_coord << 4, 0), GS_REG_UV);
+                    }
+                    uint32_t c = verts[i].color;
+                    Push_GIF_Data(GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000), GS_REG_RGBAQ);
+
+                    int32_t gx = ((int32_t)verts[i].x + draw_offset_x + 2048) << 4;
+                    int32_t gy = ((int32_t)verts[i].y + draw_offset_y + 2048) << 4;
+                    Push_GIF_Data(GS_SET_XYZ(gx, gy, 0), GS_REG_XYZ2);
+                }
+                /* No state restore — lazy tracking handles next primitive */
 #ifdef TEX_DEBUG_OVERLAY
                 if (is_textured)
                 {
