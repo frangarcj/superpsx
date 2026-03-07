@@ -292,6 +292,77 @@ static void emit_interpolate_color(int sf)
     EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);
 }
 
+/* ---- P18: Shared VU0 matrix loading for ×3 commands ----
+ * When vu0_preloaded[mx] != 0, a ×3 caller has already loaded the matrix
+ * into VF registers starting at that base.  emit_inline_mvmva skips the
+ * C call + LQC2 and uses the preloaded VF registers directly.
+ * Index: 0=RT, 1=Light, 2=Color. */
+static int vu0_preloaded[3] = {0, 0, 0};
+
+/* Emit C call to refresh matrix cache + load into VF[vf_base..vf_base+3].
+ * After call: vu0_jit_cache contains the matrix, VF regs loaded, T8 clobbered.
+ * Emits 12 words. */
+static void emit_vu0_load_matrix(int mx, int cv, int vf_base)
+{
+    uint32_t mx_cv = (uint32_t)(mx | (cv << 2));
+    EMIT_MOVE(REG_A0, REG_S0);
+    EMIT_ORI(REG_A1, REG_ZERO, mx_cv);
+    emit_call_c_lite((uint32_t)(uintptr_t)vu0_prepare_mvmva);
+    emit_load_imm32(REG_T8, (uint32_t)(uintptr_t)&vu0_jit_cache);
+    EMIT_LQC2(vf_base,     0,  REG_T8);   /* col1   */
+    EMIT_LQC2(vf_base + 1, 16, REG_T8);   /* col2   */
+    EMIT_LQC2(vf_base + 2, 32, REG_T8);   /* col3   */
+    EMIT_LQC2(vf_base + 3, 48, REG_T8);   /* trans  */
+}
+
+/* Emit VU0 vertex multiply using pre-loaded matrix in VF[vf_col1..vf_col1+3].
+ * If t8_valid=0, loads T8 = &vu0_jit_cache (2 extra words).
+ * VF5 = vertex, VF6 = result.
+ * Output: V0=MAC1, V1=MAC2, A0=MAC3 stored + IR1-3 saturated + FLAG=0.
+ * Clobbers: T8, T9, AT, V0, V1, A0, $f0-$f2. */
+static void emit_vu0_vertex_multiply(int v, int lm, int vf_col1, int t8_valid)
+{
+    if (!t8_valid)
+        emit_load_imm32(REG_T8, (uint32_t)(uintptr_t)&vu0_jit_cache);
+
+    /* Vertex int16 → FPU float → scratch → LQC2 VF5. */
+    if (v < 3) {
+        int base = v * 2;
+        EMIT_LH(REG_V0, CPU_CP2_DATA(base) + 0, REG_S0);
+        EMIT_LH(REG_V1, CPU_CP2_DATA(base) + 2, REG_S0);
+        EMIT_LH(REG_A0, CPU_CP2_DATA(base + 1), REG_S0);
+    } else {
+        EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);
+        EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);
+        EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);
+    }
+    EMIT_MTC1(REG_V0, 0);          EMIT_CVT_S_W(0, 0);
+    EMIT_MTC1(REG_V1, 1);          EMIT_CVT_S_W(1, 1);
+    EMIT_MTC1(REG_A0, 2);          EMIT_CVT_S_W(2, 2);
+    EMIT_SWC1(0, 64, REG_T8);
+    EMIT_SWC1(1, 68, REG_T8);
+    EMIT_SWC1(2, 72, REG_T8);
+    EMIT_LQC2(5, 64, REG_T8);
+
+    /* VU0 matrix × vector + translation → VF6. */
+    EMIT_VMULAX_XYZ(vf_col1, 5);
+    EMIT_VMADDAY_XYZ(vf_col1 + 1, 5);
+    EMIT_VMADDZ_XYZ(6, vf_col1 + 2, 5);
+    EMIT_VADD_XYZ(6, 6, vf_col1 + 3);
+
+    /* Store result → scratch → FPU extract → GPR. */
+    EMIT_SQC2(6, 64, REG_T8);
+    EMIT_LWC1(0, 64, REG_T8);   EMIT_CVT_W_S(0, 0);  EMIT_MFC1(REG_V0, 0);
+    EMIT_LWC1(1, 68, REG_T8);   EMIT_CVT_W_S(1, 1);  EMIT_MFC1(REG_V1, 1);
+    EMIT_LWC1(2, 72, REG_T8);   EMIT_CVT_W_S(2, 2);  EMIT_MFC1(REG_A0, 2);
+
+    /* Store MAC1-3 + IR saturation + FLAG=0. */
+    EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);
+    EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);
+    EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);
+    emit_ir_sat_store(lm);
+}
+
 /* Emit inline MVMVA: MAC = Matrix × Vector + Translation, then store MAC+IR.
  * mx: 0=RT, 1=Light(L), 2=Color(LC)
  * v:  0=V0, 1=V1, 2=V2, 3=IR1-3
@@ -313,60 +384,19 @@ static void emit_inline_mvmva(int mx, int v, int cv, int sf, int lm)
     /* VU0 fast path: FPU int↔float conversion + VU0 matrix multiply.
      * Only for sf=1 (matrix pre-scaled by 1/4096 in the cache).
      * Results: V0=MAC1, V1=MAC2, A0=MAC3 → cp2_data[25-27], IR1-3, FLAG=0.
-     * VF1-4 = matrix columns+trans, VF5 = vertex, VF6 = result.
-     * Uses: $f0-$f2 (FPU scratch), T8 (base addr), A3 (unused after C call). */
+     * Uses: $f0-$f2 (FPU scratch), T8 (base addr). */
     if (sf) {
-        /* Step 1: Call C to refresh matrix cache (dirty check + copy). */
-        uint32_t mx_cv = (uint32_t)(mx | (cv << 2));
-        EMIT_MOVE(REG_A0, REG_S0);
-        EMIT_ORI(REG_A1, REG_ZERO, mx_cv);
-        emit_call_c_lite((uint32_t)(uintptr_t)vu0_prepare_mvmva);
-
-        /* Step 2: Load base address of vu0_jit_cache. T8 kept for the rest. */
-        emit_load_imm32(REG_T8, (uint32_t)(uintptr_t)&vu0_jit_cache);
-
-        /* Step 3: Load matrix columns + translation into VF1-VF4. */
-        EMIT_LQC2(1,  0, REG_T8);   /* VF1 = col1    (offset  0) */
-        EMIT_LQC2(2, 16, REG_T8);   /* VF2 = col2    (offset 16) */
-        EMIT_LQC2(3, 32, REG_T8);   /* VF3 = col3    (offset 32) */
-        EMIT_LQC2(4, 48, REG_T8);   /* VF4 = trans   (offset 48) */
-
-        /* Step 4: Load vertex int16 → FPU float → scratch → LQC2 VF5. */
-        if (v < 3) {
-            int base = v * 2;
-            EMIT_LH(REG_V0, CPU_CP2_DATA(base) + 0, REG_S0);  /* VX */
-            EMIT_LH(REG_V1, CPU_CP2_DATA(base) + 2, REG_S0);  /* VY */
-            EMIT_LH(REG_A0, CPU_CP2_DATA(base + 1), REG_S0);  /* VZ */
+        int vf_base = (mx < 3) ? vu0_preloaded[mx] : 0;
+        if (vf_base) {
+            /* P18: matrix already in VF[vf_base..vf_base+3], skip prepare.
+             * T8 was clobbered since matrix load → reload needed. */
+            emit_vu0_vertex_multiply(v, lm, vf_base, 0);
         } else {
-            EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);
-            EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);
-            EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);
+            /* Standalone call: load matrix + compute.
+             * T8 still valid from emit_vu0_load_matrix → skip reload. */
+            emit_vu0_load_matrix(mx, cv, 1);
+            emit_vu0_vertex_multiply(v, lm, 1, 1);
         }
-        EMIT_MTC1(REG_V0, 0);          EMIT_CVT_S_W(0, 0);
-        EMIT_MTC1(REG_V1, 1);          EMIT_CVT_S_W(1, 1);
-        EMIT_MTC1(REG_A0, 2);          EMIT_CVT_S_W(2, 2);
-        EMIT_SWC1(0, 64, REG_T8);   /* scratch[0] = float(VX) */
-        EMIT_SWC1(1, 68, REG_T8);   /* scratch[1] = float(VY) */
-        EMIT_SWC1(2, 72, REG_T8);   /* scratch[2] = float(VZ) */
-        EMIT_LQC2(5, 64, REG_T8);   /* VF5 = vertex (xyz; w=don't care) */
-
-        /* Step 5: VU0 matrix × vector + translation → VF6. */
-        EMIT_VMULAX_XYZ(1, 5);      /* ACC.xyz = VF1.xyz × VF5.x */
-        EMIT_VMADDAY_XYZ(2, 5);     /* ACC.xyz += VF2.xyz × VF5.y */
-        EMIT_VMADDZ_XYZ(6, 3, 5);   /* VF6.xyz = ACC + VF3.xyz × VF5.z */
-        EMIT_VADD_XYZ(6, 6, 4);     /* VF6.xyz += VF4 (translation) */
-
-        /* Step 6: Store result → scratch → FPU extract → GPR. */
-        EMIT_SQC2(6, 64, REG_T8);   /* scratch = VF6 */
-        EMIT_LWC1(0, 64, REG_T8);   EMIT_CVT_W_S(0, 0);  EMIT_MFC1(REG_V0, 0);
-        EMIT_LWC1(1, 68, REG_T8);   EMIT_CVT_W_S(1, 1);  EMIT_MFC1(REG_V1, 1);
-        EMIT_LWC1(2, 72, REG_T8);   EMIT_CVT_W_S(2, 2);  EMIT_MFC1(REG_A0, 2);
-
-        /* Step 7: Store MAC1-3 + IR saturation + FLAG=0. */
-        EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);
-        EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);
-        EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);
-        emit_ir_sat_store(lm);
         return;
     }
     /* --- Integer fallback (sf=0 — rare, e.g. standalone MVMVA) --- */
@@ -1903,9 +1933,18 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             case 0x16: /* NCDT */
                 if (gte_use_vu0) {
+                    /* P18: preload L(VF1-4) + LC(VF7-10) once. */
+                    if (gte_sf) {
+                        emit_vu0_load_matrix(1, 3, 1);
+                        emit_vu0_load_matrix(2, 1, 7);
+                        vu0_preloaded[1] = 1;
+                        vu0_preloaded[2] = 7;
+                    }
                     emit_ncds_core(0, gte_sf, gte_lm);
                     emit_ncds_core(1, gte_sf, gte_lm);
                     emit_ncds_core(2, gte_sf, gte_lm);
+                    vu0_preloaded[1] = 0;
+                    vu0_preloaded[2] = 0;
                 } else {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
@@ -1952,9 +1991,18 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             case 0x20: /* NCT */
                 if (gte_use_vu0) {
+                    /* P18: preload L(VF1-4) + LC(VF7-10) once. */
+                    if (gte_sf) {
+                        emit_vu0_load_matrix(1, 3, 1);
+                        emit_vu0_load_matrix(2, 1, 7);
+                        vu0_preloaded[1] = 1;
+                        vu0_preloaded[2] = 7;
+                    }
                     emit_ncs_core(0, gte_sf, gte_lm);
                     emit_ncs_core(1, gte_sf, gte_lm);
                     emit_ncs_core(2, gte_sf, gte_lm);
+                    vu0_preloaded[1] = 0;
+                    vu0_preloaded[2] = 0;
                 } else {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
@@ -2205,9 +2253,15 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             case 0x30: /* RTPT */
                 if (gte_use_vu0) {
+                    /* P18: load RT+TR matrix once, reuse for all 3 vertices. */
+                    if (gte_sf) {
+                        emit_vu0_load_matrix(0, 0, 1);
+                        vu0_preloaded[0] = 1;
+                    }
                     emit_rtps_core(0, gte_sf, gte_lm, 0);
                     emit_rtps_core(1, gte_sf, gte_lm, 0);
                     emit_rtps_core(2, gte_sf, gte_lm, 1);
+                    vu0_preloaded[0] = 0;
                 } else {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
@@ -2487,9 +2541,18 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             case 0x3F: /* NCCT */
                 if (gte_use_vu0) {
+                    /* P18: preload L(VF1-4) + LC(VF7-10) once. */
+                    if (gte_sf) {
+                        emit_vu0_load_matrix(1, 3, 1);
+                        emit_vu0_load_matrix(2, 1, 7);
+                        vu0_preloaded[1] = 1;
+                        vu0_preloaded[2] = 7;
+                    }
                     emit_nccs_core(0, gte_sf, gte_lm);
                     emit_nccs_core(1, gte_sf, gte_lm);
                     emit_nccs_core(2, gte_sf, gte_lm);
+                    vu0_preloaded[1] = 0;
+                    vu0_preloaded[2] = 0;
                 } else {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);

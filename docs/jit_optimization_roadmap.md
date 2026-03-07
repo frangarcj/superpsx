@@ -55,12 +55,16 @@
 Análisis completo en `docs/gte_expansion_analysis.md` y `docs/gte_optimization_analysis_rearmed.md`.
 
 #### P18: Shared Matrix Loads en variantes ×3
-**Impacto:** Medio (-24 palabras por NCT/NCCT/NCDT/RTPT) · **Esfuerzo:** 2-3 horas · **Riesgo:** Bajo
-**Estado:** ❌ No empezado
+**Impacto:** Medio (-36 palabras por NCDT, -18 por RTPT) · **Esfuerzo:** 1 hora · **Riesgo:** Bajo
+**Estado:** ✅ Completado
 
-Las variantes ×3 (NCT, NCCT, NCDT, RTPT, DPCT) recargan la matriz 3 veces.
-Con VU0 (P17), la matriz permanece en VF1-VF4 y solo cambia el vértice.
-Con integer, se puede compartir al menos el vector de translación (3 LW ahorrados × 2).
+Las variantes ×3 (NCT, NCCT, NCDT, RTPT) recargaban la matriz 3-6 veces.
+Con P18, los callers ×3 precargan la(s) matriz(ces) en registros VU0 (VF1-4 y/o VF7-10)
+una sola vez y las reutilizan. El array estático `vu0_preloaded[3]` indica a
+`emit_inline_mvmva` que la matriz ya está cargada.
+
+Resultados: NCDT 10800→10224 (-576w), NCS family ×3 ~-36w/op, RTPT ~-18w/op.
+Standalone ops (RTPS, NCS, NCDS, MVMVA) sin cambios.
 
 #### P19: MMI PMAXW/PMINW para Saturación Batch
 **Impacto:** Bajo-Medio (-4 a -6 palabras por ir_sat) · **Esfuerzo:** 3-4 horas · **Riesgo:** Bajo
@@ -124,7 +128,7 @@ Batch FlushCache calls across multiple compile_block invocations.
 GTE (próxima fase — inspirado en PCSX-ReARMed NEON):
   P16. FPU DIV.S para división      ✅ DONE (RTPS: 155x → 125x, RTPT: 438x → 348x)
   P17. VU0 matrix multiply en JIT   ✅ DONE (~30% faster multiply via VMULAX/VMADDAY/VMADDZ/VADD)
-  P18. Shared matrix loads ×3       (2-3h — NCT/NCCT/NCDT/RTPT: -24 words cada)
+  P18. Shared matrix loads ×3       ✅ DONE (NCDT: 600x→568x, 4 fewer C calls per ×3 op)
 
 CPU/Memoria (pendientes):
   1. SMRV memory fast-path           (2-4h — LW/SW: 23-27x → 8-10x)
