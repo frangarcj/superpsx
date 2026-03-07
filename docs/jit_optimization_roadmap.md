@@ -44,6 +44,7 @@
 | P14 | RTPS/RTPT with C-call div | ✅ | Matrix multiply inline + emit_call_c_lite for UNR division |
 | P15 | RTPS/RTPT fully inline | ✅ | Branchless CLZ16 + Newton-Raphson + 64-bit multiply. **Zero C-calls** |
 | P16 | FPU DIV.S for RTPS/RTPT | ✅ | Replaces 52-word UNR (CLZ16+Newton+table) with 18-word FPU path. RTPS 155.6x→125.3x |
+| P17 | VU0 matrix multiply in JIT | ✅ | VMULAX/VMADDAY/VMADDZ/VADD via VU0JITCache. ~30% faster multiply, C call for refresh |
 
 ---
 
@@ -52,16 +53,6 @@
 ### GTE — Próxima fase (inspirado en PCSX-ReARMed NEON)
 
 Análisis completo en `docs/gte_expansion_analysis.md` y `docs/gte_optimization_analysis_rearmed.md`.
-
-#### P17: VU0 Matrix Multiply en JIT
-**Impacto:** Alto (-22 palabras por mvmva, cascada a todos los ops con matriz) · **Esfuerzo:** 4-6 horas · **Riesgo:** Medio
-**Estado:** ❌ No empezado
-
-Emitir VMULAX/VMADDAY/VMADDZ/VADD directamente desde el JIT en vez del MULT/MADD chain.
-Requiere: macros de emisión VU0 (LQC2/SQC2/VMULAX.xyz etc.), escritura de vertex float
-desde GPR→FPU→memoria→VF, y dirty-check de matrices. La infraestructura VU0 ya existe
-en gte.c (vu0_refresh_rt_matrix, vu0_lt_*, vu0_lc_*) y solo hay que emitir las cargas.
-Overhead de conversión int↔float reduce el ahorro neto a ~9 palabras por mvmva.
 
 #### P18: Shared Matrix Loads en variantes ×3
 **Impacto:** Medio (-24 palabras por NCT/NCCT/NCDT/RTPT) · **Esfuerzo:** 2-3 horas · **Riesgo:** Bajo
@@ -132,7 +123,7 @@ Batch FlushCache calls across multiple compile_block invocations.
 ```
 GTE (próxima fase — inspirado en PCSX-ReARMed NEON):
   P16. FPU DIV.S para división      ✅ DONE (RTPS: 155x → 125x, RTPT: 438x → 348x)
-  P17. VU0 matrix multiply en JIT   (4-6h — MVMVA/NCS/NCCS/NCDS: -22 words cada)
+  P17. VU0 matrix multiply en JIT   ✅ DONE (~30% faster multiply via VMULAX/VMADDAY/VMADDZ/VADD)
   P18. Shared matrix loads ×3       (2-3h — NCT/NCCT/NCDT/RTPT: -24 words cada)
 
 CPU/Memoria (pendientes):

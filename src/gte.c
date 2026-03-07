@@ -1767,6 +1767,57 @@ static void gte_mvmva_vu0(R3000CPU *cpu, int lm, int mx, int v, int cv)
     D(d_IR3) = (uint32_t)saturate_ir(mac3, 3, lm);
 }
 
+/* VU0 JIT cache — contiguous float layout for LQC2 base+offset from JIT */
+VU0JITCache vu0_jit_cache __attribute__((aligned(16)));
+
+/* Called from JIT via emit_call_c_lite: refresh and copy matrix+trans to
+ * vu0_jit_cache for LQC2 access. mx_cv = mx | (cv << 2). */
+void vu0_prepare_mvmva(R3000CPU *cpu, uint32_t mx_cv)
+{
+    int mx = mx_cv & 3, cv = mx_cv >> 2;
+
+    /* Refresh and select matrix columns */
+    float *col1, *col2, *col3;
+    switch (mx) {
+    case 0:
+        if (vu0_rt_is_dirty(cpu)) vu0_refresh_rt_matrix(cpu);
+        col1 = vu0_rt_col1; col2 = vu0_rt_col2; col3 = vu0_rt_col3;
+        break;
+    case 1:
+        if (vu0_lt_is_dirty(cpu)) vu0_refresh_lt_matrix(cpu);
+        col1 = vu0_lt_col1; col2 = vu0_lt_col2; col3 = vu0_lt_col3;
+        break;
+    default:
+        if (vu0_lc_is_dirty(cpu)) vu0_refresh_lc_matrix(cpu);
+        col1 = vu0_lc_col1; col2 = vu0_lc_col2; col3 = vu0_lc_col3;
+        break;
+    }
+
+    /* Refresh and select translation vector */
+    float *trans;
+    switch (cv) {
+    case 0:
+        if (mx != 0 && vu0_rt_is_dirty(cpu)) vu0_refresh_rt_matrix(cpu);
+        trans = vu0_rt_trans;
+        break;
+    case 1:
+        if (vu0_bk_is_dirty(cpu)) vu0_refresh_bk_trans(cpu);
+        trans = vu0_bk_trans;
+        break;
+    default:
+        trans = vu0_zero_trans;
+        break;
+    }
+
+    /* Copy to contiguous JIT cache for LQC2 access */
+    for (int i = 0; i < 4; i++) {
+        vu0_jit_cache.col1[i] = col1[i];
+        vu0_jit_cache.col2[i] = col2[i];
+        vu0_jit_cache.col3[i] = col3[i];
+        vu0_jit_cache.trans[i] = trans[i];
+    }
+}
+
 #endif /* _EE */
 
 /* ================================================================

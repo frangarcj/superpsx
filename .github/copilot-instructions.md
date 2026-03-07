@@ -177,6 +177,7 @@ Completed optimizations (P1-P15):
 - P14: RTPS/RTPT inline with C-call division (emit_call_c_lite for UNR)
 - P15: RTPS/RTPT fully inline — branchless CLZ16 + Newton-Raphson + 64-bit multiply. Zero C-calls.
 - P16: FPU DIV.S for RTPS/RTPT perspective division — replaces 52-word UNR (CLZ16+Newton+table) with 18-word FPU path.
+- P17: VU0 matrix multiply in JIT — emit_inline_mvmva uses VMULAX/VMADDAY/VMADDZ/VADD via VU0JITCache. ~30% faster multiply, same code size. C call for matrix refresh.
 
 Current expansion baselines (110/110 playground tests):
 - ALU: ADDU 40 (2.2x), ADDIU 39 (2.2x), SLL 39 (2.2x), LUI 38 (2.1x)
@@ -184,12 +185,11 @@ Current expansion baselines (110/110 playground tests):
 - Memory: LW 133 (7.4x), SW 395 (21.9x), LB 133 (7.4x), SB 355 (19.7x)
 - GTE: MTC2 82 (4.6x), MFC2 83 (4.6x), LWC2 144 (8.0x), SWC2 422 (23.4x)
 - GTE commands: RTPS 2256 (125.3x), NCLIP 288 (16.0x), MVMVA 1008 (56.0x)
-- GTE lighting: NCS 2304 (128.0x), NCDS 3488 (193.8x), NCDT 10368 (576.0x)
-- Mixed: GTE xform 569 (31.6x), SW burst 401 (22.3x)
+- GTE lighting: NCS 2448 (136.0x), NCDS 3632 (201.8x), NCDT 10800 (600.0x)
+- Mixed: GTE xform 571 (31.7x), SW burst 401 (22.3x)
 
-Next optimization targets (P17-P19):
-- P17: VU0 matrix multiply in JIT (-22 words per mvmva)
-- P18: Shared matrix loads in ×3 variants
+Next optimization targets (P18-P19):
+- P18: Shared matrix loads in ×3 variants (amortize VU0 matrix load across 3 vertices)
 - P19: MMI PMAXW/PMINW for batch saturation
 
 ## File Management

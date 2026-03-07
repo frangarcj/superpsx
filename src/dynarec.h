@@ -396,6 +396,28 @@ static inline void emit(uint32_t inst)
 #define EMIT_DIV_S(fd, fs, ft) emit(MK_R(0x11, 0x10, (ft), (fs), (fd), 0x03))
 #define EMIT_MUL_S(fd, fs, ft) emit(MK_R(0x11, 0x10, (ft), (fs), (fd), 0x02))
 #define EMIT_ADD_S(fd, fs, ft) emit(MK_R(0x11, 0x10, (ft), (fs), (fd), 0x00))
+#define EMIT_LWC1(ft, off, base) emit(MK_I(0x31, (base), (ft), (off)))
+#define EMIT_SWC1(ft, off, base) emit(MK_I(0x39, (base), (ft), (off)))
+
+/* COP2 / VU0 macro mode emitters —— matrix multiply in JIT.
+ * LQC2/SQC2: load/store 128-bit quadword (16-byte aligned).
+ * VU0 compute: COP2 upper instructions (opcode=0x12, CO bit=1). */
+#define EMIT_LQC2(vft, off, base) emit(MK_I(0x36, (base), (vft), (off)))
+#define EMIT_SQC2(vft, off, base) emit(MK_I(0x3E, (base), (vft), (off)))
+
+/* VU0 upper instruction builder: (0x12<<26)|(1<<25)|(dest<<21)|(ft<<16)|(fs<<11)|(fd<<6)|func */
+#define MK_COP2(dest, ft, fs, fd, func) \
+    ((0x12u << 26) | (1u << 25) | ((uint32_t)(dest) << 21) | \
+     ((uint32_t)(ft) << 16) | ((uint32_t)(fs) << 11) | \
+     ((uint32_t)(fd) << 6) | (uint32_t)(func))
+#define VU_DEST_XYZ 0xE  /* dest mask: x|y|z (bits 24|23|22) */
+
+/* VU0 matrix×vector sequence: VMULAX.xyz→VMADDAY.xyz→VMADDZ.xyz→VADD.xyz
+ * ACC variants use fd as sub-opcode: 6=VMULA, 2=VMADDA. func=0x3C|bc. */
+#define EMIT_VMULAX_XYZ(fs, ft) emit(MK_COP2(VU_DEST_XYZ, (ft), (fs), 6, 0x3C))
+#define EMIT_VMADDAY_XYZ(fs, ft) emit(MK_COP2(VU_DEST_XYZ, (ft), (fs), 2, 0x3D))
+#define EMIT_VMADDZ_XYZ(fd, fs, ft) emit(MK_COP2(VU_DEST_XYZ, (ft), (fs), (fd), 0x0A))
+#define EMIT_VADD_XYZ(fd, fs, ft) emit(MK_COP2(VU_DEST_XYZ, (ft), (fs), (fd), 0x28))
 
 /* ================================================================
  *  Function prototypes — dynarec_emit.c

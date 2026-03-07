@@ -122,6 +122,20 @@ void GTE_VBlankUpdate(void);
 extern int gte_flag_read_count;
 extern int gte_use_vu0;
 
+/* VU0 JIT cache: contiguous layout so LQC2 can use base+offset.
+ * Populated by vu0_prepare_mvmva() before each VU0 matrix multiply.
+ * All arrays are 16-byte aligned for LQC2/SQC2 compatibility. */
+typedef struct {
+    float col1[4];    /* offset  0: matrix column 1 (pre-scaled 1/4096 for sf=1) */
+    float col2[4];    /* offset 16: matrix column 2 */
+    float col3[4];    /* offset 32: matrix column 3 */
+    float trans[4];   /* offset 48: translation vector */
+    float scratch[4]; /* offset 64: scratch for vertex/result LQC2/SQC2 */
+} VU0JITCache __attribute__((aligned(16)));
+
+extern VU0JITCache vu0_jit_cache;
+void vu0_prepare_mvmva(R3000CPU *cpu, uint32_t mx_cv);
+
 /* GTE inline command wrappers (skip GTE_Execute dispatcher) */
 void GTE_Inline_RTPS(R3000CPU *cpu, int sf, int lm);
 void GTE_RTPS_Project(R3000CPU *cpu, int last); /* division + screen proj for JIT inline */
