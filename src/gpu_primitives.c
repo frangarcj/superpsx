@@ -2,12 +2,12 @@
  * gpu_primitives.c — PSX GP0 primitive → PS2 GS translation
  *
  * Translates PSX polygons, rectangles / sprites, fill-rects and lines
- * into GS GIF packets using A+D mode.  The cursor-based interface
- * allows the DMA chain walker to batch many primitives into a single
- * GIF buffer before flushing.
+ * into GS GIF packets.  Vertex data uses REGLIST mode (FLG=1) for
+ * 2× density (2 reg values per QW).  State registers use A+D mode.
  */
 #include "gpu_state.h"
 #include "profiler.h"
+#include <gif_tags.h>
 
 /* ── GPU pixel cost accumulator for cycle-accurate rendering delay ── */
 uint64_t gpu_estimated_pixels = 0;
@@ -564,9 +564,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                     (!gs_state.valid || gs_state.texclut != want_texclut));
                 int state_qws = emit_dthe + emit_alpha + emit_tex0 + (emit_tex0 && need_texflush) + emit_test + emit_clamp + emit_texclut;
 
-                int ndata = is_textured ? 13 : 9; /* PRIM + 4×(UV+RGBAQ+XYZ) or 4×(RGBAQ+XYZ) */
-                ndata += state_qws;
-                Push_GIF_Tag(GIF_TAG_LO(ndata, 1, 0, 0, 0, 1), GIF_REG_AD);
+                /* G4: State+PRIM in A+D (EOP=0), vertices in REGLIST (2 regs/QW) */
+                Push_GIF_Tag(GIF_TAG_LO(state_qws + 1, 0, 0, 0, 0, 1), GIF_REG_AD);
 
                 if (emit_dthe)
                     Push_GIF_Data((uint64_t)want_dthe, GS_REG_DTHE);
@@ -584,12 +583,11 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 }
                 if (emit_test)
                     Push_GIF_Data(want_test, GS_REG_TEST_1);
+                Push_GIF_Data(GS_PACK_PRIM_FROM_INT(quad_prim_reg), GS_REG_PRIM);
 
                 /* Update lazy tracking */
                 if (!gs_state.valid)
                 {
-                    /* Transitioning from unknown: sentinel for unemitted regs
-                     * so stale values can't accidentally match future prims */
                     if (!is_textured)
                     {
                         gs_state.tex0 = ~0ULL;
@@ -615,32 +613,42 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 }
                 gs_state.valid = 1;
 
-                Push_GIF_Data(GS_PACK_PRIM_FROM_INT(quad_prim_reg), GS_REG_PRIM);
-
-                for (int v = 0; v < 4; v++)
+                /* REGLIST vertex packet: FLG=1, no PRE */
                 {
-                    int i = verts_order[v];
-                    if (is_textured)
-                    {
-                        uint32_t u, v_coord;
-                        if (poly_clut_decoded)
-                        {
-                            u = (verts[i].uv & 0xFF) + poly_uv_off_u;
-                            v_coord = ((verts[i].uv >> 8) & 0xFF) + poly_uv_off_v;
-                        }
-                        else
-                        {
-                            u = Apply_Tex_Window_U(verts[i].uv & 0xFF) + poly_tex_page_x;
-                            v_coord = Apply_Tex_Window_V((verts[i].uv >> 8) & 0xFF) + poly_tex_page_y;
-                        }
-                        Push_GIF_Data(GS_SET_XYZ(u << 4, v_coord << 4, 0), GS_REG_UV);
-                    }
-                    uint32_t c = verts[i].color;
-                    Push_GIF_Data(GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000), GS_REG_RGBAQ);
+                    int nreg = is_textured ? 3 : 2;
+                    uint64_t regs = is_textured
+                        ? ((uint64_t)GIF_REG_UV | ((uint64_t)GIF_REG_RGBAQ << 4) | ((uint64_t)GIF_REG_XYZ2 << 8))
+                        : ((uint64_t)GIF_REG_RGBAQ | ((uint64_t)GIF_REG_XYZ2 << 4));
+                    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 1, nreg), regs);
 
-                    int32_t gx = ((int32_t)verts[i].x + draw_offset_x + 2048) << 4;
-                    int32_t gy = ((int32_t)verts[i].y + draw_offset_y + 2048) << 4;
-                    Push_GIF_Data(GS_SET_XYZ(gx, gy, 0), GS_REG_XYZ2);
+                    uint64_t vdata[12]; /* max 4 × 3 */
+                    int vc = 0;
+                    for (int v = 0; v < 4; v++)
+                    {
+                        int i = verts_order[v];
+                        if (is_textured)
+                        {
+                            uint32_t u, v_coord;
+                            if (poly_clut_decoded)
+                            {
+                                u = (verts[i].uv & 0xFF) + poly_uv_off_u;
+                                v_coord = ((verts[i].uv >> 8) & 0xFF) + poly_uv_off_v;
+                            }
+                            else
+                            {
+                                u = Apply_Tex_Window_U(verts[i].uv & 0xFF) + poly_tex_page_x;
+                                v_coord = Apply_Tex_Window_V((verts[i].uv >> 8) & 0xFF) + poly_tex_page_y;
+                            }
+                            vdata[vc++] = GS_SET_XYZ(u << 4, v_coord << 4, 0);
+                        }
+                        uint32_t c = verts[i].color;
+                        vdata[vc++] = GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000);
+                        int32_t gx = ((int32_t)verts[i].x + draw_offset_x + 2048) << 4;
+                        int32_t gy = ((int32_t)verts[i].y + draw_offset_y + 2048) << 4;
+                        vdata[vc++] = GS_SET_XYZ(gx, gy, 0);
+                    }
+                    for (int i = 0; i < vc; i += 2)
+                        Push_GIF_Data(vdata[i], (i + 1 < vc) ? vdata[i + 1] : 0);
                 }
                 /* No state restore — lazy tracking handles next primitive */
 #ifdef TEX_DEBUG_OVERLAY
@@ -777,9 +785,10 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             int e_texclut = (is_textured && tri_hw_clut && tri_csm &&
                              (!gs_state.valid || gs_state.texclut != tw_texclut));
 
-            int ndata = is_textured ? 10 : 7;
-            ndata += e_dthe + e_alpha + e_tex0 + (e_tex0 && tw_texflush) + e_test + e_clamp + e_texclut;
-            Push_GIF_Tag(GIF_TAG_LO(ndata, 1, 0, 0, 0, 1), GIF_REG_AD);
+            int state_qws = e_dthe + e_alpha + e_tex0 + (e_tex0 && tw_texflush) + e_test + e_clamp + e_texclut;
+
+            /* G4: State+PRIM in A+D (EOP=0), vertices in REGLIST */
+            Push_GIF_Tag(GIF_TAG_LO(state_qws + 1, 0, 0, 0, 0, 1), GIF_REG_AD);
 
             if (e_dthe)
                 Push_GIF_Data((uint64_t)tw_dthe, GS_REG_DTHE);
@@ -797,11 +806,11 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             }
             if (e_test)
                 Push_GIF_Data(tw_test, GS_REG_TEST_1);
+            Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
 
             /* Update lazy tracking */
             if (!gs_state.valid)
             {
-                /* Transitioning from unknown: sentinel for unemitted regs */
                 if (!is_textured)
                 {
                     gs_state.tex0 = ~0ULL;
@@ -827,31 +836,41 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             }
             gs_state.valid = 1;
 
-            Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
-
-            for (int i = 0; i < 3; i++)
+            /* REGLIST vertex packet: FLG=1, no PRE */
             {
-                if (is_textured)
-                {
-                    uint32_t u, v_coord;
-                    if (tri_clut_decoded)
-                    {
-                        u = (verts[i].uv & 0xFF) + tri_uv_off_u;
-                        v_coord = ((verts[i].uv >> 8) & 0xFF) + tri_uv_off_v;
-                    }
-                    else
-                    {
-                        u = Apply_Tex_Window_U(verts[i].uv & 0xFF) + poly_tex_page_x;
-                        v_coord = Apply_Tex_Window_V((verts[i].uv >> 8) & 0xFF) + poly_tex_page_y;
-                    }
-                    Push_GIF_Data(GS_SET_XYZ(u << 4, v_coord << 4, 0), GS_REG_UV);
-                }
-                uint32_t c = verts[i].color;
-                Push_GIF_Data(GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000), GS_REG_RGBAQ);
+                int nreg = is_textured ? 3 : 2;
+                uint64_t regs = is_textured
+                    ? ((uint64_t)GIF_REG_UV | ((uint64_t)GIF_REG_RGBAQ << 4) | ((uint64_t)GIF_REG_XYZ2 << 8))
+                    : ((uint64_t)GIF_REG_RGBAQ | ((uint64_t)GIF_REG_XYZ2 << 4));
+                Push_GIF_Tag(GIF_TAG_LO(3, 1, 0, 0, 1, nreg), regs);
 
-                int32_t gx = ((int32_t)verts[i].x + draw_offset_x + 2048) << 4;
-                int32_t gy = ((int32_t)verts[i].y + draw_offset_y + 2048) << 4;
-                        Push_GIF_Data(GS_SET_XYZ(gx, gy, 0), GS_REG_XYZ2);
+                uint64_t vdata[9]; /* max 3 × 3 */
+                int vc = 0;
+                for (int i = 0; i < 3; i++)
+                {
+                    if (is_textured)
+                    {
+                        uint32_t u, v_coord;
+                        if (tri_clut_decoded)
+                        {
+                            u = (verts[i].uv & 0xFF) + tri_uv_off_u;
+                            v_coord = ((verts[i].uv >> 8) & 0xFF) + tri_uv_off_v;
+                        }
+                        else
+                        {
+                            u = Apply_Tex_Window_U(verts[i].uv & 0xFF) + poly_tex_page_x;
+                            v_coord = Apply_Tex_Window_V((verts[i].uv >> 8) & 0xFF) + poly_tex_page_y;
+                        }
+                        vdata[vc++] = GS_SET_XYZ(u << 4, v_coord << 4, 0);
+                    }
+                    uint32_t c = verts[i].color;
+                    vdata[vc++] = GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000);
+                    int32_t gx = ((int32_t)verts[i].x + draw_offset_x + 2048) << 4;
+                    int32_t gy = ((int32_t)verts[i].y + draw_offset_y + 2048) << 4;
+                    vdata[vc++] = GS_SET_XYZ(gx, gy, 0);
+                }
+                for (int i = 0; i < vc; i += 2)
+                    Push_GIF_Data(vdata[i], (i + 1 < vc) ? vdata[i + 1] : 0);
             }
             /* No state restore — lazy tracking handles next primitive */
 #ifdef TEX_DEBUG_OVERLAY
@@ -1058,15 +1077,10 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                  * REGION_REPEAT from a previous HW CLUT prim would corrupt them */
                 int need_reset_clamp = (!gs_state.valid || gs_state.clamp != 0);
 
-                int nregs_tri = 15; // DTHE + TEST + PRIM + 4×3 vertices (no restore needed)
-                if (is_semi_trans)
-                    nregs_tri += 1;
-                if (is_raw_texture)
-                    nregs_tri += 2; // TEX0 + TEXFLUSH only (no restore)
-                if (need_reset_clamp)
-                    nregs_tri += 1;
+                /* G4: State+PRIM in A+D (EOP=0), vertices in REGLIST */
+                int state_qws_flip = 3 + (is_semi_trans ? 1 : 0) + (need_reset_clamp ? 1 : 0) + (is_raw_texture ? 2 : 0); /* DTHE + TEST + PRIM always */
 
-                Push_GIF_Tag(GIF_TAG_LO(nregs_tri, 1, 0, 0, 0, 1), GIF_REG_AD);
+                Push_GIF_Tag(GIF_TAG_LO(state_qws_flip, 0, 0, 0, 0, 1), GIF_REG_AD);
                 Push_GIF_Data(GS_SET_DTHE(0), GS_REG_DTHE); // DTHE = 0
 
                 if (is_semi_trans)
@@ -1085,7 +1099,6 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     uint64_t test_at = (uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST();
                     Push_GIF_Data(test_at, GS_REG_TEST_1);
                 }
-
                 Push_GIF_Data(GS_PACK_PRIM_FROM_INT(tri_prim), GS_REG_PRIM);
 
                 // STQ float UV normalized by texture size (1024x512)
@@ -1104,22 +1117,30 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
 
                 uint64_t rgbaq_q = GS_SET_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, q_bits);
 
-                // TL, TR, BL, BR
-                Push_GIF_Data(GS_SET_ST(s_l_bits, t_t_bits), GS_REG_ST);
-                Push_GIF_Data(rgbaq_q, GS_REG_RGBAQ);
-                Push_GIF_Data(GS_SET_XYZ(sgx0, sgy0, 0), GS_REG_XYZ2);
-
-                Push_GIF_Data(GS_SET_ST(s_r_bits, t_t_bits), GS_REG_ST);
-                Push_GIF_Data(rgbaq_q, GS_REG_RGBAQ);
-                Push_GIF_Data(GS_SET_XYZ(sgx1, sgy0, 0), GS_REG_XYZ2);
-
-                Push_GIF_Data(GS_SET_ST(s_l_bits, t_b_bits), GS_REG_ST);
-                Push_GIF_Data(rgbaq_q, GS_REG_RGBAQ);
-                Push_GIF_Data(GS_SET_XYZ(sgx0, sgy1, 0), GS_REG_XYZ2);
-
-                Push_GIF_Data(GS_SET_ST(s_r_bits, t_b_bits), GS_REG_ST);
-                Push_GIF_Data(rgbaq_q, GS_REG_RGBAQ);
-                Push_GIF_Data(GS_SET_XYZ(sgx1, sgy1, 0), GS_REG_XYZ2);
+                /* REGLIST vertex packet: FLG=1, no PRE, NLOOP=4 (ST,RGBAQ,XYZ2) */
+                {
+                    uint64_t regs = (uint64_t)GIF_REG_ST | ((uint64_t)GIF_REG_RGBAQ << 4) | ((uint64_t)GIF_REG_XYZ2 << 8);
+                    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 1, 3), regs);
+                    uint64_t vdata[12];
+                    /* TL */
+                    vdata[0] = GS_SET_ST(s_l_bits, t_t_bits);
+                    vdata[1] = rgbaq_q;
+                    vdata[2] = GS_SET_XYZ(sgx0, sgy0, 0);
+                    /* TR */
+                    vdata[3] = GS_SET_ST(s_r_bits, t_t_bits);
+                    vdata[4] = rgbaq_q;
+                    vdata[5] = GS_SET_XYZ(sgx1, sgy0, 0);
+                    /* BL */
+                    vdata[6] = GS_SET_ST(s_l_bits, t_b_bits);
+                    vdata[7] = rgbaq_q;
+                    vdata[8] = GS_SET_XYZ(sgx0, sgy1, 0);
+                    /* BR */
+                    vdata[9] = GS_SET_ST(s_r_bits, t_b_bits);
+                    vdata[10] = rgbaq_q;
+                    vdata[11] = GS_SET_XYZ(sgx1, sgy1, 0);
+                    for (int i = 0; i < 12; i += 2)
+                        Push_GIF_Data(vdata[i], vdata[i + 1]);
+                }
 
                 /* Update lazy state — no restore needed */
                 gs_state.dthe = 0;
@@ -1230,9 +1251,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                       (!gs_state.valid || gs_state.texclut != want_texclut_r));
                 int state_qws_r = emit_dthe_r + emit_alpha_r + emit_tex0_r + (emit_tex0_r && need_texflush_r) + emit_test_r + emit_clamp_r + emit_texclut_r;
 
-                int nregs = 1 + 6 + state_qws_r; /* PRIM + 2×(UV+RGBAQ+XYZ) + state */
-
-                Push_GIF_Tag(GIF_TAG_LO(nregs, 1, 0, 0, 0, 1), GIF_REG_AD);
+                /* G4: State+PRIM in A+D, vertices in REGLIST */
+                Push_GIF_Tag(GIF_TAG_LO(state_qws_r + 1, 0, 0, 0, 0, 1), GIF_REG_AD);
 
                 if (emit_dthe_r)
                     Push_GIF_Data(0, GS_REG_DTHE);
@@ -1250,6 +1270,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 }
                 if (emit_test_r)
                     Push_GIF_Data(want_test_r, GS_REG_TEST_1);
+                Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
 
                 /* Update lazy tracking */
                 if (!gs_state.valid)
@@ -1276,17 +1297,20 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 gs_state.test = want_test_r;
                 gs_state.valid = 1;
 
-                Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
-
-                // SPRITE: TL vertex + BR vertex
-                /* UV/RGBAQ/XYZ2 already emitted below using GS_REG_* names */
-
-                Push_GIF_Data(GS_SET_XYZ(u0_gs << 4, v0_gs << 4, 0), GS_REG_UV);
-                Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
-                Push_GIF_Data(GS_SET_XYZ(sgx0, sgy0, 0), GS_REG_XYZ2);
-                Push_GIF_Data(GS_SET_XYZ(u1_gs << 4, v1_gs << 4, 0), GS_REG_UV);
-                Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
-                Push_GIF_Data(GS_SET_XYZ(sgx1, sgy1, 0), GS_REG_XYZ2);
+                /* REGLIST vertex packet: FLG=1, no PRE, NLOOP=2 */
+                {
+                    uint64_t regs = (uint64_t)GIF_REG_UV | ((uint64_t)GIF_REG_RGBAQ << 4) | ((uint64_t)GIF_REG_XYZ2 << 8);
+                    Push_GIF_Tag(GIF_TAG_LO(2, 1, 0, 0, 1, 3), regs);
+                    uint64_t vdata[6];
+                    vdata[0] = GS_SET_XYZ(u0_gs << 4, v0_gs << 4, 0);
+                    vdata[1] = rgbaq;
+                    vdata[2] = GS_SET_XYZ(sgx0, sgy0, 0);
+                    vdata[3] = GS_SET_XYZ(u1_gs << 4, v1_gs << 4, 0);
+                    vdata[4] = rgbaq;
+                    vdata[5] = GS_SET_XYZ(sgx1, sgy1, 0);
+                    for (int i = 0; i < 6; i += 2)
+                        Push_GIF_Data(vdata[i], vdata[i + 1]);
+                }
                 /* No state restore — lazy tracking handles next primitive */
 #ifdef TEX_DEBUG_OVERLAY
                 emit_debug_box(x, y, x + w, y + h,
@@ -1313,14 +1337,15 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             int emit_dthe_f = (!gs_state.valid || gs_state.dthe != want_dthe_f);
             int emit_alpha_f = (is_semi_trans && (!gs_state.valid || gs_state.alpha != want_alpha_f));
 
-            int nregs = 1 + 4 + emit_dthe_f + emit_alpha_f; /* PRIM + 2×(RGBAQ+XYZ) + state */
-
-            Push_GIF_Tag(GIF_TAG_LO(nregs, 1, 0, 0, 0, 1), GIF_REG_AD);
+            /* G4: State+PRIM in A+D, vertices in REGLIST */
+            int state_qws_f = emit_dthe_f + emit_alpha_f;
+            Push_GIF_Tag(GIF_TAG_LO(state_qws_f + 1, 0, 0, 0, 0, 1), GIF_REG_AD);
 
             if (emit_dthe_f)
                 Push_GIF_Data(0, GS_REG_DTHE);
             if (emit_alpha_f)
                 Push_GIF_Data(want_alpha_f, GS_REG_ALPHA_1);
+            Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
 
             /* Update lazy tracking */
             gs_state.dthe = want_dthe_f;
@@ -1336,13 +1361,13 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             }
             gs_state.valid = 1;
 
-            Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
-
-            Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
-            Push_GIF_Data(GS_SET_XYZ(gx0, gy0, 0), GS_REG_XYZ2);
-
-            Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
-            Push_GIF_Data(GS_SET_XYZ(gx1, gy1, 0), GS_REG_XYZ2);
+            /* REGLIST vertex packet: FLG=1, no PRE, NLOOP=2 */
+            {
+                uint64_t regs = (uint64_t)GIF_REG_RGBAQ | ((uint64_t)GIF_REG_XYZ2 << 4);
+                Push_GIF_Tag(GIF_TAG_LO(2, 1, 0, 0, 1, 2), regs);
+                Push_GIF_Data(rgbaq, GS_SET_XYZ(gx0, gy0, 0));
+                Push_GIF_Data(rgbaq, GS_SET_XYZ(gx1, gy1, 0));
+            }
             /* No state restore — lazy tracking handles next primitive */
         }
         return idx;

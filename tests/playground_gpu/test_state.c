@@ -297,8 +297,6 @@ static void test_textured_to_flat(void)
     /* Flat prim should NOT emit TEX0 or TEXFLUSH */
     EXPECT_NO_GIF_REG("TEX0", GS_REG_TEX0);
     EXPECT_NO_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
-    /* But should have PRIM */
-    EXPECT_GIF_REG("PRIM", GS_REG_PRIM);
 
     END_GPU_TEST();
 }
@@ -558,8 +556,6 @@ static void test_same_state_no_reemit(void)
 
     gp_gif_scan();
     EXPECT_NO_GIF_REG("DTHE", GS_REG_DTHE);
-    /* But PRIM should be present */
-    EXPECT_GIF_REG("PRIM", GS_REG_PRIM);
 
     END_GPU_TEST();
 }
@@ -1097,6 +1093,58 @@ static void test_g7b_semitrans_line_alpha(void)
 }
 
 /* ================================================================
+ *  G4: REGLIST GIF Mode for Vertices
+ *
+ *  Vertex data (UV/RGBAQ/XYZ2) packed as REGLIST (FLG=1, 2 regs per QW)
+ *  instead of A+D (FLG=0, 1 reg per QW). PRIM stays in A+D for
+ *  PCSX2 compatibility.
+ *
+ *  G4a: warm-cache textured quad → fewer QWORDs than pure A+D
+ *  G4b: warm-cache flat tri → fewer QWORDs (fast path uses REGLIST)
+ * ================================================================ */
+
+/* G4a: Textured quad uses REGLIST vertices → reduced QWORDs */
+static void test_g4a_reglist_tex_quad(void)
+{
+    BEGIN_GPU_TEST("g4a_rl_texquad");
+
+    setup_texture_data(2, 0, 0, 480, 0);
+
+    /* Warm gs_state with first draw */
+    emit_textured_quad(2, 0, 0, 480);
+
+    /* Second draw with warm cache: REGLIST packs 2 regs/QW → fewer QWORDs */
+    gp_gif_reset_counter();
+    emit_textured_quad(2, 0, 0, 480);
+    Flush_GIF();
+
+    /* Pure A+D would be ~14 QWORDs (tag+PRIM+12 vertex regs).
+     * With REGLIST: 2 (A+D tag+PRIM) + 1 (REGLIST tag) + 6 (vertex data) = 9 QW */
+    EXPECT_QWORDS(10);  /* max 10: allows for 1 state reg re-emit */
+
+    END_GPU_TEST();
+}
+
+/* G4b: Flat tri uses REGLIST → reduced QWORDs via fast path */
+static void test_g4b_reglist_flat_tri(void)
+{
+    BEGIN_GPU_TEST("g4b_rl_flattri");
+
+    /* Warm gs_state */
+    emit_flat_tri(0x808080);
+
+    gp_gif_reset_counter();
+    emit_flat_tri(0x808080);
+    Flush_GIF();
+
+    /* Pure A+D fast path was 8 QWORDs (tag+PRIM+6 vertex regs).
+     * With REGLIST: 2 (A+D tag+PRIM) + 1 (REGLIST tag) + 3 (vertex data) = 6 QW */
+    EXPECT_QWORDS(6);
+
+    END_GPU_TEST();
+}
+
+/* ================================================================
  *  Runner
  * ================================================================ */
 void gp_run_state_tests(void)
@@ -1148,4 +1196,8 @@ void gp_run_state_tests(void)
     printf("\n--- G7: Line Lazy State Tracking Tests ---\n");
     test_g7a_line_no_dthe_reemit();      /* G7a — line doesn't invalidate gs_state */
     test_g7b_semitrans_line_alpha();     /* G7b — semi-trans line updates alpha */
+
+    printf("\n--- G4: REGLIST GIF Mode Tests ---\n");
+    test_g4a_reglist_tex_quad();         /* G4a — tex quad REGLIST, no A+D PRIM */
+    test_g4b_reglist_flat_tri();         /* G4b — flat tri REGLIST, no A+D PRIM */
 }

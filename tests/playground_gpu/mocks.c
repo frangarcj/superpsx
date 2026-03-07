@@ -139,8 +139,13 @@ static void gif_scan_range(gif_qword_t *start, gif_qword_t *end)
         } else if (flg == 2) {
             /* IMAGE mode: raw pixel data, skip NLOOP quadwords */
             p += nloop;
+        } else if (flg == 1) {
+            /* REGLIST (FLG=1): 2 register values per QW */
+            int total_regs = nloop * nreg;
+            int skip = (total_regs + 1) / 2; /* ceil(total_regs / 2) */
+            p += skip;
         } else {
-            /* PACKED (FLG=0) or REGLIST (FLG=1): skip NLOOP * NREG qwords */
+            /* PACKED (FLG=0, NREG>1): skip NLOOP * NREG qwords */
             int skip = nloop * nreg;
             p += skip;
         }

@@ -6,6 +6,7 @@
  * environment registers (E1-E6), and GP1 display/status commands.
  */
 #include "gpu_state.h"
+#include <gif_tags.h>
 
 /* ── Command size lookup ─────────────────────────────────────────── */
 
@@ -432,7 +433,7 @@ void GPU_WriteGP0(uint32_t data)
             }
             else
             {
-                /* Fast path for common untextured flat polygons */
+                /* Fast path for common untextured flat polygons — REGLIST */
                 uint32_t cmd_byte = gpu_cmd_buffer[0] >> 24;
                 if ((cmd_byte == 0x20 || cmd_byte == 0x28) && gs_state.valid && gs_state.dthe == 0)
                 {
@@ -443,8 +444,12 @@ void GPU_WriteGP0(uint32_t data)
                     int num_verts = is_quad ? 4 : 3;
                     uint64_t prim = is_quad ? 4 : 3; // 4=TRISTRIP, 3=TRIANGLE
 
-                    Push_GIF_Tag(GIF_TAG_LO(1 + num_verts * 2, 1, 0, 0, 0, 1), GIF_REG_AD);
+                    /* G4: PRIM in A+D (EOP=0), vertices in REGLIST */
+                    Push_GIF_Tag(GIF_TAG_LO(1, 0, 0, 0, 0, 1), GIF_REG_AD);
                     Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim), GS_REG_PRIM);
+
+                    uint64_t regs = (uint64_t)GIF_REG_RGBAQ | ((uint64_t)GIF_REG_XYZ2 << 4);
+                    Push_GIF_Tag(GIF_TAG_LO(num_verts, 1, 0, 0, 1, 2), regs);
 
                     uint64_t rgbaq = GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000);
 
@@ -452,8 +457,7 @@ void GPU_WriteGP0(uint32_t data)
                     {
                         int16_t px = (int16_t)((int32_t)((gpu_cmd_buffer[v+1] & 0xFFFF) << 21) >> 21);
                         int16_t py = (int16_t)((int32_t)((gpu_cmd_buffer[v+1] >> 16) << 21) >> 21);
-                        Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
-                        Push_GIF_Data(GS_SET_XYZ(((int32_t)px + draw_offset_x + 2048) << 4, ((int32_t)py + draw_offset_y + 2048) << 4, 0), GS_REG_XYZ2);
+                        Push_GIF_Data(rgbaq, GS_SET_XYZ(((int32_t)px + draw_offset_x + 2048) << 4, ((int32_t)py + draw_offset_y + 2048) << 4, 0));
                     }
 
                     /* Coordinate decoding for pixel area estimation */
