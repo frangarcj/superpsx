@@ -821,6 +821,89 @@ static void test_g2c_fillrect_clut_overlap(void)
 }
 
 /* ================================================================
+ *  G3: Multi-entry prim_tex_cache (1→4 entries)
+ *
+ *  With a single-entry cache, alternating A→B→A causes 3 misses.
+ *  With 4 entries, A stays cached when B fills the next slot,
+ *  so the return-to-A is a HIT.
+ *
+ *  Observable: TEXFLUSH on 3rd draw (A→B→A) should be absent.
+ * ================================================================ */
+
+/* G3a: A→B→A pattern — 3rd draw should HIT (A still in multi-entry cache)
+ *
+ * Tex A = page 0, CLUT at (0, 480)
+ * Tex B = page 0, CLUT at (16, 480)  — different CLUT → different cache key
+ */
+static void test_g3a_aba_pattern(void)
+{
+    BEGIN_GPU_TEST("g3a_aba");
+
+    Tex_Cache_Init();
+    setup_texture_data(0, 0, 0, 480, 0);  /* Tex page 0, CLUT A at (0,480) */
+    /* Write second CLUT B at (16,480) */
+    if (psx_vram_shadow) {
+        for (int i = 0; i < 16; i++)
+            psx_vram_shadow[480 * 1024 + 16 + i] = (uint16_t)(0x2000 + i);
+    }
+    vram_gen_counter++;
+    Tex_Cache_DirtyRegion(0, 0, 64, 256);  /* tex page */
+    Tex_Cache_DirtyRegion(0, 480, 32, 1);  /* both CLUTs */
+
+    /* Draw A (miss) */
+    emit_textured_quad(0, 0, 0, 480);
+    gp_gif_scan();
+    EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
+    gp_gif_reset_counter();
+
+    /* Draw B (miss — different CLUT) */
+    emit_textured_quad(0, 0, 16, 480);
+    gp_gif_scan();
+    EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
+    gp_gif_reset_counter();
+
+    /* Draw A again — with multi-entry cache: HIT → no TEXFLUSH */
+    emit_textured_quad(0, 0, 0, 480);
+    gp_gif_scan();
+    EXPECT_NO_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
+
+    END_GPU_TEST();
+}
+
+/* G3b: A→B→C→D→E pattern — 5 different textures, 4-entry cache.
+ *       5th draw evicts oldest. Return to A = MISS.
+ */
+static void test_g3b_eviction(void)
+{
+    BEGIN_GPU_TEST("g3b_evict");
+
+    Tex_Cache_Init();
+    setup_texture_data(0, 0, 0, 480, 0);
+    /* Write 5 different CLUTs at y=480, x=0,16,32,48,64 */
+    if (psx_vram_shadow) {
+        for (int k = 0; k < 5; k++)
+            for (int i = 0; i < 16; i++)
+                psx_vram_shadow[480 * 1024 + k * 16 + i] = (uint16_t)(0x1000 + k * 0x100 + i);
+    }
+    vram_gen_counter++;
+    Tex_Cache_DirtyRegion(0, 0, 64, 256);
+    Tex_Cache_DirtyRegion(0, 480, 80, 1);
+
+    /* Draw A through E (5 misses) */
+    for (int k = 0; k < 5; k++) {
+        emit_textured_quad(0, 0, k * 16, 480);
+        gp_gif_reset_counter();
+    }
+
+    /* Return to A — should be evicted from 4-entry cache → MISS */
+    emit_textured_quad(0, 0, 0, 480);
+    gp_gif_scan();
+    EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH); /* MISS: A was evicted */
+
+    END_GPU_TEST();
+}
+
+/* ================================================================
  *  Runner
  * ================================================================ */
 void gp_run_state_tests(void)
@@ -857,4 +940,8 @@ void gp_run_state_tests(void)
     test_g2a_fillrect_no_overlap();     /* G2a — FillRect far → HIT */
     test_g2b_fillrect_tex_overlap();    /* G2b — FillRect on texpage → MISS */
     test_g2c_fillrect_clut_overlap();   /* G2c — FillRect on CLUT → MISS */
+
+    printf("\n--- G3: Multi-entry Tex Cache Tests ---\n");
+    test_g3a_aba_pattern();              /* G3a — A→B→A HIT */
+    test_g3b_eviction();                 /* G3b — 5 textures, A evicted */
 }

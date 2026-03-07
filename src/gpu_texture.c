@@ -183,14 +183,13 @@ static inline int alloc_clut_cbp(void)
     clut_robin_idx = (clut_robin_idx + 1) % CLUT_ROBIN_SLOTS;
 
     /* Invalidate CLUT content cache entries whose CBP slot is being
-     * reused.  Also ALWAYS invalidate prim_tex_cache because it may
-     * reference this CBP even if the content cache entry was evicted
-     * by a hash collision (the prim cache doesn't track CBP validity). */
+     * reused.  Also invalidate prim_tex_cache entries that reference
+     * this CBP — they hold stale hw_cbp after the round-robin wraps. */
     for (int i = 0; i < CLUT_CONTENT_CACHE_SIZE; i++) {
         if (clut_content_cache[i].valid && clut_content_cache[i].cbp == cbp)
             clut_content_cache[i].valid = 0;
     }
-    Prim_InvalidateTexCache();
+    Prim_InvalidateTexCache_CBP(cbp);
 
     return cbp;
 }
@@ -696,7 +695,8 @@ int Decode_TexPage_Cached(int tex_format,
         page_gen[page_id] = current_page_gen;
         page_format[page_id] = tex_format;
         tex_stats.page_uploads++;
-        Prim_InvalidateTexCache();
+        /* No prim_tex_cache invalidation needed: the per-region gen check
+         * (G2) ensures any entry referencing a dirty page will MISS. */
     }
     else
     {

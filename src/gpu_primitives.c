@@ -27,7 +27,9 @@ gs_state_t gs_state = {0, 0, 0, 0, -1, 0};
 
 /* Primitive-level Decode_TexPage_Cached result cache.
  * Eliminates ~80% of redundant texture cache lookups for consecutive
- * same-texture primitives (582K → ~100K calls). */
+ * same-texture primitives (582K → ~100K calls).
+ * 4-entry FIFO: handles A→B→A alternation without thrashing. */
+#define PRIM_TEX_CACHE_SIZE 4
 static struct
 {
     int valid;
@@ -43,7 +45,10 @@ static struct
     int csm;    /* 0=CSM1, 1=CSM2 (matches GS TEX0.CSM bit directly) */
     int hw_tbp0;
     int hw_cbp;
-} prim_tex_cache = {0};
+} prim_tex_cache[PRIM_TEX_CACHE_SIZE] = {{0}};
+static int prim_tex_cache_next = 0;  /* FIFO write index */
+static int prim_tex_cache_last = -1; /* last-hit index for fast repeated access */
+#define PTCACHE prim_tex_cache[prim_tex_cache_last]  /* shorthand for current entry */
 
 /* Invalidate GS state tracking (called on E1, E6, GPU reset, etc.) */
 void Prim_InvalidateGSState(void)
@@ -74,27 +79,58 @@ static inline uint64_t Compute_TexWin_Clamp(void)
 /* Invalidate primitive texture cache (called on VRAM writes) */
 void Prim_InvalidateTexCache(void)
 {
-    prim_tex_cache.valid = 0;
+    for (int i = 0; i < PRIM_TEX_CACHE_SIZE; i++)
+        prim_tex_cache[i].valid = 0;
+    prim_tex_cache_next = 0;
+    prim_tex_cache_last = -1;
+}
+
+/* Targeted invalidation: only entries referencing a specific CBP slot */
+void Prim_InvalidateTexCache_CBP(int cbp)
+{
+    for (int i = 0; i < PRIM_TEX_CACHE_SIZE; i++)
+        if (prim_tex_cache[i].valid && prim_tex_cache[i].hw_cbp == cbp)
+            prim_tex_cache[i].valid = 0;
 }
 
 /* Try to reuse cached Decode_TexPage_Cached result.
- * Returns 1 if hit (result stored in prim_tex_cache), 0 if miss. */
+ * Returns 1 if hit (result stored in prim_tex_cache[prim_tex_cache_last]),
+ * 0 if miss. */
 static inline int prim_tex_cache_lookup(int tex_format, int tex_page_x, int tex_page_y,
                                         int clut_x, int clut_y)
 {
-    if (prim_tex_cache.valid &&
-        prim_tex_cache.tex_format == tex_format &&
-        prim_tex_cache.tex_page_x == tex_page_x &&
-        prim_tex_cache.tex_page_y == tex_page_y &&
-        prim_tex_cache.clut_x == clut_x &&
-        prim_tex_cache.clut_y == clut_y &&
-        prim_tex_cache.vram_gen == Tex_Cache_GetCombinedGen(
-            tex_format, tex_page_x, tex_page_y, clut_x, clut_y))
-        return 1;
+    /* Fast path: check last-hit entry first */
+    if (prim_tex_cache_last >= 0) {
+        typeof(prim_tex_cache[0]) *e = &prim_tex_cache[prim_tex_cache_last];
+        if (e->valid &&
+            e->tex_format == tex_format &&
+            e->tex_page_x == tex_page_x &&
+            e->tex_page_y == tex_page_y &&
+            e->clut_x == clut_x &&
+            e->clut_y == clut_y &&
+            e->vram_gen == Tex_Cache_GetCombinedGen(
+                tex_format, tex_page_x, tex_page_y, clut_x, clut_y))
+            return 1;
+    }
+    /* Search all entries */
+    uint32_t gen = Tex_Cache_GetCombinedGen(tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
+    for (int i = 0; i < PRIM_TEX_CACHE_SIZE; i++) {
+        typeof(prim_tex_cache[0]) *e = &prim_tex_cache[i];
+        if (e->valid &&
+            e->tex_format == tex_format &&
+            e->tex_page_x == tex_page_x &&
+            e->tex_page_y == tex_page_y &&
+            e->clut_x == clut_x &&
+            e->clut_y == clut_y &&
+            e->vram_gen == gen) {
+            prim_tex_cache_last = i;
+            return 1;
+        }
+    }
     return 0;
 }
 
-/* Call Decode_TexPage_Cached and store result in cache. */
+/* Call Decode_TexPage_Cached and store result in cache (FIFO slot). */
 static inline int prim_tex_decode(int tex_format, int tex_page_x, int tex_page_y,
                                   int clut_x, int clut_y,
                                   int *out_x, int *out_y)
@@ -103,27 +139,31 @@ static inline int prim_tex_decode(int tex_format, int tex_page_x, int tex_page_y
     int result = Decode_TexPage_Cached(tex_format, tex_page_x, tex_page_y,
                                        clut_x, clut_y, out_x, out_y);
     PROF_POP(PROF_GPU_TEXCACHE);
-    prim_tex_cache.result = result;
-    prim_tex_cache.valid = 1;
-    prim_tex_cache.tex_format = tex_format;
-    prim_tex_cache.tex_page_x = tex_page_x;
-    prim_tex_cache.tex_page_y = tex_page_y;
-    prim_tex_cache.clut_x = clut_x;
-    prim_tex_cache.clut_y = clut_y;
-    prim_tex_cache.vram_gen = Tex_Cache_GetCombinedGen(
+    int idx = prim_tex_cache_next;
+    prim_tex_cache_next = (prim_tex_cache_next + 1) % PRIM_TEX_CACHE_SIZE;
+    prim_tex_cache_last = idx;
+    typeof(prim_tex_cache[0]) *e = &prim_tex_cache[idx];
+    e->result = result;
+    e->valid = 1;
+    e->tex_format = tex_format;
+    e->tex_page_x = tex_page_x;
+    e->tex_page_y = tex_page_y;
+    e->clut_x = clut_x;
+    e->clut_y = clut_y;
+    e->vram_gen = Tex_Cache_GetCombinedGen(
         tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
-    prim_tex_cache.hw_clut = (result == 2 || result == 3) ? 1 : 0;
-    prim_tex_cache.csm = (result == 3) ? 1 : 0; /* 0=CSM1, 1=CSM2 */
+    e->hw_clut = (result == 2 || result == 3) ? 1 : 0;
+    e->csm = (result == 3) ? 1 : 0; /* 0=CSM1, 1=CSM2 */
     
-    if (prim_tex_cache.hw_clut)
+    if (e->hw_clut)
     {
-        prim_tex_cache.hw_tbp0 = *out_x;
-        prim_tex_cache.hw_cbp = *out_y;
+        e->hw_tbp0 = *out_x;
+        e->hw_cbp = *out_y;
     }
     else
     {
-        prim_tex_cache.hw_tbp0 = 0;
-        prim_tex_cache.hw_cbp = 0;
+        e->hw_tbp0 = 0;
+        e->hw_cbp = 0;
     }
     return result;
 }
@@ -431,10 +471,10 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                                           clut_x, clut_y);
                     if (tex_cache_hit)
                     {
-                        result = prim_tex_cache.result;
-                        poly_uv_off_u = prim_tex_cache.hw_tbp0;
-                        poly_uv_off_v = prim_tex_cache.hw_cbp;
-                        poly_csm = prim_tex_cache.csm;
+                        result = PTCACHE.result;
+                        poly_uv_off_u = PTCACHE.hw_tbp0;
+                        poly_uv_off_v = PTCACHE.hw_cbp;
+                        poly_csm = PTCACHE.csm;
                     }
                     else
                     {
@@ -443,7 +483,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                                  poly_tex_page_x, poly_tex_page_y,
                                                  clut_x, clut_y,
                                                  &out_x, &out_y);
-                        poly_csm = prim_tex_cache.csm; /* consistent: read from cache */
+                        poly_csm = PTCACHE.csm; /* consistent: read from cache */
                         poly_uv_off_u = out_x;
                         poly_uv_off_v = out_y;
                     }
@@ -484,7 +524,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                  * non-zero→opaque (TA0/TA1=0x80) regardless of STP.
                                  * CBA=0 (PSX VRAM base), CPSM=16S (match storage).
                                  * CLD=2: load CLUT via TEXCLUT register (required for CSM2). */
-                                want_tex0 = GS_SET_TEX0(prim_tex_cache.hw_tbp0, 4, psm, 8, 8,
+                                want_tex0 = GS_SET_TEX0(PTCACHE.hw_tbp0, 4, psm, 8, 8,
                                                          1/*TCC*/, (is_raw_tex ? 1 : 0),
                                                          0/*CBA*/, GS_PSM_16S, 1/*CSM2*/, 0, 2/*CLD*/);
                                 want_texclut = GS_SET_TEXCLUT(PSX_VRAM_FBW,
@@ -493,9 +533,9 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                 /* CSM1: uploaded CLUT at CBP.
                                  * CLD=1: always reload (avoids stale palette when
                                  * round-robin CBP wraps to match GS CBP0). */
-                                want_tex0 = GS_SET_TEX0(prim_tex_cache.hw_tbp0, 4, psm, 8, 8,
+                                want_tex0 = GS_SET_TEX0(PTCACHE.hw_tbp0, 4, psm, 8, 8,
                                                          1/*TCC*/, (is_raw_tex ? 1 : 0),
-                                                         prim_tex_cache.hw_cbp, GS_PSM_16,
+                                                         PTCACHE.hw_cbp, GS_PSM_16,
                                                          0/*CSM1*/, 0, 1/*CLD*/);
                             }
                             /* GS CLAMP_1 handles PSX texture window via REGION_REPEAT */
@@ -650,10 +690,10 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                                       clut_x, clut_y);
                 if (tri_cache_hit)
                 {
-                    result = prim_tex_cache.result;
-                    tri_uv_off_u = prim_tex_cache.hw_tbp0;
-                    tri_uv_off_v = prim_tex_cache.hw_cbp;
-                    tri_csm = prim_tex_cache.csm;
+                    result = PTCACHE.result;
+                    tri_uv_off_u = PTCACHE.hw_tbp0;
+                    tri_uv_off_v = PTCACHE.hw_cbp;
+                    tri_csm = PTCACHE.csm;
                 }
                 else
                 {
@@ -662,7 +702,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                              poly_tex_page_x, poly_tex_page_y,
                                              clut_x, clut_y,
                                              &out_x, &out_y);
-                    tri_csm = prim_tex_cache.csm; /* consistent: read from cache */
+                    tri_csm = PTCACHE.csm; /* consistent: read from cache */
                     tri_uv_off_u = out_x;
                     tri_uv_off_v = out_y;
                 }
@@ -670,8 +710,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 {
                     tri_clut_decoded = 1;
                     tri_hw_clut = 1;
-                    tri_hw_tbp0 = prim_tex_cache.hw_tbp0;
-                    tri_hw_cbp = prim_tex_cache.hw_cbp;
+                    tri_hw_tbp0 = PTCACHE.hw_tbp0;
+                    tri_hw_cbp = PTCACHE.hw_cbp;
                     tri_uv_off_u = 0;
                     tri_uv_off_v = 0;
                 }
@@ -927,10 +967,10 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                           tex_page_x, tex_page_y,
                                           clut_x, clut_y))
                 {
-                    result = prim_tex_cache.result;
-                    cache_slot_x = prim_tex_cache.hw_tbp0;
-                    cache_slot_y = prim_tex_cache.hw_cbp;
-                    rect_csm = prim_tex_cache.csm;
+                    result = PTCACHE.result;
+                    cache_slot_x = PTCACHE.hw_tbp0;
+                    cache_slot_y = PTCACHE.hw_cbp;
+                    rect_csm = PTCACHE.csm;
                     rect_tex_cache_hit = 1;
                 }
                 else
@@ -939,14 +979,14 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                              tex_page_x, tex_page_y,
                                              clut_x, clut_y,
                                              &cache_slot_x, &cache_slot_y);
-                    rect_csm = prim_tex_cache.csm; /* consistent: read from cache */
+                    rect_csm = PTCACHE.csm; /* consistent: read from cache */
                 }
                 if (result == 2 || result == 3)
                 {
                     clut_decoded = 1;
                     rect_hw_clut = 1;
-                    rect_hw_tbp0 = prim_tex_cache.hw_tbp0;
-                    rect_hw_cbp = prim_tex_cache.hw_cbp;
+                    rect_hw_tbp0 = PTCACHE.hw_tbp0;
+                    rect_hw_cbp = PTCACHE.hw_cbp;
                     cache_slot_x = 0;
                     cache_slot_y = 0;
                 }

@@ -316,6 +316,7 @@ void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
                           int is_shaded, int is_semi_trans);
 void Prim_InvalidateGSState(void);
 void Prim_InvalidateTexCache(void);
+void Prim_InvalidateTexCache_CBP(int cbp);
 
 /* gpu_commands.c — GP0/GP1 command processing */
 int GPU_GetCommandSize(uint32_t cmd);
