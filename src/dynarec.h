@@ -386,6 +386,17 @@ static inline void emit(uint32_t inst)
 #define EMIT_MTLO1(rs) emit(MK_R(0x1C, (rs), 0, 0, 0, 0x13))
 #define EMIT_MTHI1(rs) emit(MK_R(0x1C, (rs), 0, 0, 0, 0x11))
 
+/* COP1 FPU emitters (single-precision float) — used for GTE inline division.
+ * COP1 R-type layout: 0x11 | fmt(rs) | ft(rt) | fs(rd) | fd(sa) | func
+ * Note: R5900 FPU only supports single-precision. CVT.W.S truncates toward zero. */
+#define EMIT_MTC1(rt, fs) emit(MK_R(0x11, 0x04, (rt), (fs), 0, 0))
+#define EMIT_MFC1(rt, fs) emit(MK_R(0x11, 0x00, (rt), (fs), 0, 0))
+#define EMIT_CVT_S_W(fd, fs) emit(MK_R(0x11, 0x14, 0, (fs), (fd), 0x20))
+#define EMIT_CVT_W_S(fd, fs) emit(MK_R(0x11, 0x10, 0, (fs), (fd), 0x24))
+#define EMIT_DIV_S(fd, fs, ft) emit(MK_R(0x11, 0x10, (ft), (fs), (fd), 0x03))
+#define EMIT_MUL_S(fd, fs, ft) emit(MK_R(0x11, 0x10, (ft), (fs), (fd), 0x02))
+#define EMIT_ADD_S(fd, fs, ft) emit(MK_R(0x11, 0x10, (ft), (fs), (fd), 0x00))
+
 /* ================================================================
  *  Function prototypes — dynarec_emit.c
  * ================================================================ */

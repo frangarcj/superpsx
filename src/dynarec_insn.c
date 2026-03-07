@@ -536,73 +536,28 @@ static void emit_rtps_core(int v, int sf, int lm, int last)
     EMIT_SLL(REG_T9, REG_T8, 1);                        /* T9 = sz3 * 2 */
     emit(MK_R(0, REG_V0, REG_T9, REG_V1, 0, 0x2B));    /* SLTU V1, H, sz3*2 */
 
-    /* CLZ16: normalize T8 (d) so bit 15 is set, count leading zeros in A1 */
-    /* Guard: if d==0, set d=1 to avoid garbage table index (result discarded via MOVZ) */
-    EMIT_ORI(REG_AT, REG_ZERO, 1);
-    EMIT_MOVZ(REG_T8, REG_AT, REG_T8);                  /* if d==0, d=1 */
-    EMIT_ORI(REG_A1, REG_ZERO, 0);                      /* z = 0 */
-    /* Step 1: d < 0x100 → z+=8, d<<=8 */
-    emit(MK_I(0x0B, REG_T8, REG_AT, 0x100));            /* SLTIU AT, T8, 0x100 */
-    EMIT_SLL(REG_T9, REG_AT, 3);                        /* T9 = 0 or 8 */
-    EMIT_ADDU(REG_A1, REG_A1, REG_T9);
-    emit(MK_R(0, REG_T9, REG_T8, REG_T8, 0, 0x04));    /* SLLV T8, T8, T9 */
-    /* Step 2: d < 0x1000 → z+=4, d<<=4 */
-    emit(MK_I(0x0B, REG_T8, REG_AT, 0x1000));           /* SLTIU AT, T8, 0x1000 */
-    EMIT_SLL(REG_T9, REG_AT, 2);
-    EMIT_ADDU(REG_A1, REG_A1, REG_T9);
-    emit(MK_R(0, REG_T9, REG_T8, REG_T8, 0, 0x04));    /* SLLV T8, T8, T9 */
-    /* Step 3: d < 0x4000 → z+=2, d<<=2 */
-    emit(MK_I(0x0B, REG_T8, REG_AT, 0x4000));           /* SLTIU AT, T8, 0x4000 */
-    EMIT_SLL(REG_T9, REG_AT, 1);
-    EMIT_ADDU(REG_A1, REG_A1, REG_T9);
-    emit(MK_R(0, REG_T9, REG_T8, REG_T8, 0, 0x04));    /* SLLV T8, T8, T9 */
-    /* Step 4: bit 15 not set → z+=1, d<<=1 */
-    emit(MK_R(0, 0, REG_T8, REG_AT, 15, 0x02));        /* SRL AT, T8, 15 */
-    emit(MK_I(0x0E, REG_AT, REG_AT, 1));                /* XORI AT, AT, 1 */
-    EMIT_ADDU(REG_A1, REG_A1, REG_AT);
-    emit(MK_R(0, REG_AT, REG_T8, REG_T8, 0, 0x04));    /* SLLV T8, T8, AT */
-
-    /* n = h << z */
-    emit(MK_R(0, REG_A1, REG_V0, REG_A0, 0, 0x04));    /* SLLV A0, V0, A1 */
-
-    /* Table lookup: u_val = unr_table[(d-0x7FC0)>>7] + 0x101 */
-    EMIT_ADDIU(REG_T9, REG_T8, -0x7FC0);                /* T9 = d - 0x7FC0 */
-    emit(MK_R(0, 0, REG_T9, REG_T9, 7, 0x02));         /* SRL T9, T9, 7 */
-    emit_load_imm32(REG_A3, (uint32_t)(uintptr_t)gte_unr_table);
-    EMIT_ADDU(REG_T9, REG_T9, REG_A3);                  /* T9 = &table[index] */
-    EMIT_LBU(REG_A2, 0, REG_T9);                        /* A2 = table[index] */
-    EMIT_ADDIU(REG_A2, REG_A2, 0x101);                  /* A2 = u_val */
-
-    /* Newton step 1: du = (0x2000080 - d*u_val) >> 8 */
-    emit(MK_R(0, REG_T8, REG_A2, 0, 0, 0x19));         /* MULTU T8, A2 */
-    emit_load_imm32(REG_T9, 0x2000080);                 /* T9 = 0x2000080 */
-    EMIT_MFLO(REG_T8);                                  /* T8 = d * u_val */
-    EMIT_SUBU(REG_T8, REG_T9, REG_T8);                  /* T8 = 0x2000080 - product */
-    emit(MK_R(0, 0, REG_T8, REG_T8, 8, 0x02));         /* SRL T8, T8, 8 */
-
-    /* Newton step 2: du = (0x80 + du*u_val) >> 8 */
-    emit(MK_R(0, REG_T8, REG_A2, 0, 0, 0x19));         /* MULTU T8, A2 */
-    EMIT_MFLO(REG_T8);                                  /* T8 = du * u_val */
-    EMIT_ADDIU(REG_T8, REG_T8, 0x80);                   /* T8 += 0x80 */
-    emit(MK_R(0, 0, REG_T8, REG_T8, 8, 0x02));         /* SRL T8, T8, 8 */
-
-    /* Final: result = (n * du + 0x8000) >> 16, clamp to 0x1FFFF */
-    emit(MK_R(0, REG_A0, REG_T8, 0, 0, 0x19));         /* MULTU A0, T8 */
-    EMIT_MFHI(REG_A1);                                  /* A1 = upper 32 */
-    EMIT_MFLO(REG_A0);                                  /* A0 = lower 32 */
-    EMIT_ORI(REG_T9, REG_ZERO, 0x8000);                 /* T9 = 0x8000 */
-    EMIT_ADDU(REG_A0, REG_A0, REG_T9);                  /* A0 += 0x8000 */
-    emit(MK_R(0, REG_A0, REG_T9, REG_AT, 0, 0x2B));    /* SLTU AT, A0, 0x8000 (carry) */
-    EMIT_ADDU(REG_A1, REG_A1, REG_AT);                  /* A1 += carry */
-    emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02));        /* SRL A0, A0, 16 */
-    EMIT_SLL(REG_T9, REG_A1, 16);                       /* T9 = upper << 16 */
-    EMIT_OR(REG_A0, REG_A0, REG_T9);                    /* A0 = final result */
+    /* FPU DIV.S: compute (H * 65536.0f) / SZ3 → A0
+     * Uses EE COP1 single-precision float (29-cycle DIV.S latency).
+     * Replaces 52-word CLZ16+Newton+table UNR path with 18 words. */
+    EMIT_MTC1(REG_T8, 0);                               /* $f0 = SZ3 (int bits) */
+    EMIT_CVT_S_W(0, 0);                                 /* $f0 = float(SZ3) */
+    EMIT_MTC1(REG_V0, 1);                               /* $f1 = H (int bits) */
+    EMIT_CVT_S_W(1, 1);                                 /* $f1 = float(H) */
+    EMIT_LUI(REG_AT, 0x4780);                           /* AT = 0x47800000 = 65536.0f */
+    EMIT_MTC1(REG_AT, 2);                               /* $f2 = 65536.0f */
+    EMIT_MUL_S(1, 1, 2);                                /* $f1 = H * 65536.0 */
+    EMIT_DIV_S(1, 1, 0);                                /* $f1 = (H*65536) / SZ3 */
+    EMIT_LUI(REG_AT, 0x3F00);                           /* AT = 0x3F000000 = 0.5f */
+    EMIT_MTC1(REG_AT, 3);                               /* $f3 = 0.5f */
+    EMIT_ADD_S(1, 1, 3);                                /* $f1 += 0.5 (round nearest) */
+    EMIT_CVT_W_S(1, 1);                                 /* $f1 = int(trunc toward 0) */
+    EMIT_MFC1(REG_A0, 1);                               /* A0 = division result */
     /* Clamp to 0x1FFFF */
     emit_load_imm32(REG_T8, 0x1FFFF);                   /* T8 = 0x1FFFF */
-    emit(MK_R(0, REG_T8, REG_A0, REG_AT, 0, 0x2B));    /* SLTU AT, 0x1FFFF, result */
-    EMIT_MOVN(REG_A0, REG_T8, REG_AT);                  /* if exceeded, clamp */
+    emit(MK_R(0, REG_T8, REG_A0, REG_AT, 0, 0x2B));    /* SLTU AT, 0x1FFFF, A0 */
+    EMIT_MOVN(REG_A0, REG_T8, REG_AT);                  /* if exceeded: clamp */
     /* Handle h >= sz3*2: force 0x1FFFF (V1=0 means h>=sz3*2) */
-    EMIT_MOVZ(REG_A0, REG_T8, REG_V1);                  /* if !cond: A0 = 0x1FFFF */
+    EMIT_MOVZ(REG_A0, REG_T8, REG_V1);                  /* A0 = 0x1FFFF if !V1 */
 
     /* Step 4: Screen projection (32-bit).
      * SX = (div_result * IR1 + OFX) >> 16

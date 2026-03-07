@@ -53,13 +53,13 @@ make -C build run GAMEARGS=isos/CrashBandicoot/CrashBandicoot.cue
 
 ## JIT Playground
 
-A separate ELF (`jit_playground.elf`) for testing the dynarec in isolation with a mini-DSL. 82 micro-tests split across 7 category files, plus an expansion ratio report.
+A separate ELF (`jit_playground.elf`) for testing the dynarec in isolation with a mini-DSL. 110 micro-tests split across 8 category files, plus an expansion ratio report.
 
 ```bash
 # Build playground (EXCLUDE_FROM_ALL — not built by default)
 cmake --build build --target jit_playground.elf 2>&1 | tail -5
 
-# Run playground (expect: 82/82 passed) — 20s is enough
+# Run playground (expect: 110/110 passed) — 20s is enough
 perl -e 'alarm 20; exec @ARGV' make -C build run-playground \
   > ./build/playground_out.txt 2>&1; \
 pkill -f pcsx2 2>/dev/null; \
@@ -89,7 +89,7 @@ grep -E "Results|FAIL" ./build/playground_out.txt
 Before committing ANY change to the dynarec or emulation core:
 
 1. Build must succeed with zero warnings (except known ones in tlb_handler.c when TLB disabled)
-2. **JIT Playground: 82/82 passed** (for dynarec changes)
+2. **JIT Playground: 110/110 passed** (for dynarec changes)
 3. GTE: 1150 passed, 0 failed
 4. CPU: Result 00000101
 5. Timer test: must complete without hangs
@@ -159,9 +159,10 @@ Trampolines at fixed offsets in `code_buffer[]`:
 ## Current Roadmap
 
 See `docs/jit_optimization_roadmap.md` for the master roadmap.
-See `docs/expansion_optimization_proposals.md` for expansion ratio data and reduction proposals.
+See `docs/gte_expansion_analysis.md` for GTE expansion data and next steps.
+See `docs/gte_optimization_analysis_rearmed.md` for PCSX-ReARMed comparison analysis.
 
-Completed optimizations (P1-P10):
+Completed optimizations (P1-P15):
 - P1: CU2 hoist to prologue (COP2 24x → ~10x)
 - P3/P3ext: Inline MTC2/MFC2/LWC2/SWC2 data transfers (24x → ~5x)
 - P4: Branchless DIV/DIVU (15x → ~11x)
@@ -170,15 +171,26 @@ Completed optimizations (P1-P10):
 - P7: SWC2 cold slow path via cold_slow_push() API
 - P9: Fill delay slots in trampolines and cold stubs
 - P10: Shared cold abort check stub (SW 24x → 22x)
+- P11: 11 simple GTE ops fully inline (NCLIP, AVSZ3/4, SQR, OP, GPF, GPL, DPCS, INTPL, DCPL, DPCT)
+- P12: NCS family inline — 8 ops (NCS/NCT/NCCS/NCCT/CC/CDP/NCDS/NCDT) with 10 shared helpers
+- P13: MVMVA standalone inline (decoded mx/v/cv, bugged paths fall back to C)
+- P14: RTPS/RTPT inline with C-call division (emit_call_c_lite for UNR)
+- P15: RTPS/RTPT fully inline — branchless CLZ16 + Newton-Raphson + 64-bit multiply. Zero C-calls.
+- P16: FPU DIV.S for RTPS/RTPT perspective division — replaces 52-word UNR (CLZ16+Newton+table) with 18-word FPU path.
 
-Current expansion baselines (82/82 playground tests):
+Current expansion baselines (110/110 playground tests):
 - ALU: ADDU 40 (2.2x), ADDIU 39 (2.2x), SLL 39 (2.2x), LUI 38 (2.1x)
 - MulDiv: MULT 149 (8.3x), DIV 197 (10.9x), DIVU 165 (9.2x)
 - Memory: LW 133 (7.4x), SW 395 (21.9x), LB 133 (7.4x), SB 355 (19.7x)
-- GTE: MTC2 82 (4.6x), MFC2 83 (4.6x), RTPS 208 (11.6x), LWC2 144 (8.0x), SWC2 422 (23.4x)
-- Mixed: GTE xform 187 (10.4x), SW burst 401 (22.3x)
+- GTE: MTC2 82 (4.6x), MFC2 83 (4.6x), LWC2 144 (8.0x), SWC2 422 (23.4x)
+- GTE commands: RTPS 2256 (125.3x), NCLIP 288 (16.0x), MVMVA 1008 (56.0x)
+- GTE lighting: NCS 2304 (128.0x), NCDS 3488 (193.8x), NCDT 10368 (576.0x)
+- Mixed: GTE xform 569 (31.6x), SW burst 401 (22.3x)
 
-Next optimization targets: see `docs/expansion_optimization_proposals.md`
+Next optimization targets (P17-P19):
+- P17: VU0 matrix multiply in JIT (-22 words per mvmva)
+- P18: Shared matrix loads in ×3 variants
+- P19: MMI PMAXW/PMINW for batch saturation
 
 ## File Management
 

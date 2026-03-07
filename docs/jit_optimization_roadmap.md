@@ -12,7 +12,7 @@
 | 6 | Inline Hash Dispatch | ✅ | JR/JALR, 2-way set-associative `jit_ht[4096]`, ~20 insn trampoline |
 | 7 | Cold Slow Paths | ✅ | 256-entry `cold_queue[]`, deferred al final del bloque |
 | 8 | Const-Address Fast Paths | ✅ | RAM, scratchpad, I_STAT, I_MASK, GPU_ReadStatus — todos los anchos (B/H/W) |
-| 9 | GTE Inline + VU0 | ✅ | 22 `GTE_Inline_*` wrappers + VU0 macro mode (config `gte_use_vu0`) |
+| 9 | GTE Inline + VU0 | ✅ | 22 ops full inline, zero C-calls. VU0 macro mode (config `gte_use_vu0`) para C path |
 | 10 | SMC Detection | ✅ | `jit_page_gen[512]` + djb2 hash + `jit_smc_handler` + inline NULL check |
 | 11 | Idle Loop Detection | ✅ | Side-effect scan, `be->is_idle` flag, cycle skipping |
 | 12 | Scratch Register Cache | ✅ | T8/T9 cached (`t8_cached_psx_reg`/`t9_cached_psx_reg`), evita LW redundantes |
@@ -26,30 +26,63 @@
 | 20 | Branch/Load Delay Slots | ✅ | `in_delay_slot` tracking + `pending_load_reg/apply_now` |
 | 21 | CU Exception Dirty Mask Fix | ✅ | save/restore `dyn_dirty_mask` around conditional `emit_call_c(Helper_CU_Exception)` in 9 COP handler sites |
 
----
+### GTE JIT Optimizations (P-series)
 
-## Optimizaciones pendientes (ordenadas por impacto — data de expansion_optimization_proposals.md)
-
-### 1. Hoist CU2 Check to Block Prologue
-**Impacto:** Alto (COP2: 24x → ~8x) · **Esfuerzo:** 1-2 horas · **Riesgo:** Bajo
-**Estado actual:** ❌ No empezado
-
-Every COP2 instruction independently checks SR.CU2 (~9 words + emit_call_c dead code).
-Hoist to prologue: one check per block, skip all per-instruction checks.
-For 5 COP2 insns: eliminates ~45 words of redundant checks.
-
----
-
-### 2. Inline MTC2/MFC2 Data Transfers
-**Impacto:** Alto (COP2 xfer: 24x → ~3x combinado con P1) · **Esfuerzo:** 1-2 horas · **Riesgo:** Bajo
-**Estado actual:** ❌ No empezado
-
-MFC2 already inlines most reads. MTC2 still calls GTE_WriteData via lite trampoline.
-Most GTE data registers are plain storage — inline as `SW reg, cp2_data[rd](S0)`.
+| # | Optimización | Estado | Detalles |
+|---|---|---|---|
+| P1 | CU2 Hoist to Prologue | ✅ | COP2 24x → ~10x. Single check per block |
+| P3 | Inline MTC2/MFC2/LWC2/SWC2 | ✅ | Data transfers inline, no C call (24x → ~5x) |
+| P4 | Branchless DIV/DIVU | ✅ | 15x → ~11x via pipeline 1 registers |
+| P5 | FP($s8) for jit_ht dispatch | ✅ | JR/JALR fast path |
+| P6 | Alignment tracking | ✅ | Skip alignment checks for known-aligned regs (LW 22x → 7.4x) |
+| P7 | SWC2 cold slow path | ✅ | Via `cold_slow_push()` API |
+| P9 | Delay slot fill | ✅ | Trampolines and cold stubs |
+| P10 | Shared cold abort stub | ✅ | SW 24x → 22x |
+| P11 | 11 simple GTE ops inline | ✅ | NCLIP, AVSZ3/4, SQR, OP, GPF, GPL, DPCS, INTPL, DCPL, DPCT |
+| P12 | NCS family inline (8 ops) | ✅ | NCS/NCT/NCCS/NCCT/CC/CDP/NCDS/NCDT. 10 shared helpers |
+| P13 | MVMVA standalone inline | ✅ | Decoded mx/v/cv, bugged paths fall back to C |
+| P14 | RTPS/RTPT with C-call div | ✅ | Matrix multiply inline + emit_call_c_lite for UNR division |
+| P15 | RTPS/RTPT fully inline | ✅ | Branchless CLZ16 + Newton-Raphson + 64-bit multiply. **Zero C-calls** |
+| P16 | FPU DIV.S for RTPS/RTPT | ✅ | Replaces 52-word UNR (CLZ16+Newton+table) with 18-word FPU path. RTPS 155.6x→125.3x |
 
 ---
 
-### 3. SMRV Memory Fast-Path
+## Optimizaciones pendientes (ordenadas por impacto)
+
+### GTE — Próxima fase (inspirado en PCSX-ReARMed NEON)
+
+Análisis completo en `docs/gte_expansion_analysis.md` y `docs/gte_optimization_analysis_rearmed.md`.
+
+#### P17: VU0 Matrix Multiply en JIT
+**Impacto:** Alto (-22 palabras por mvmva, cascada a todos los ops con matriz) · **Esfuerzo:** 4-6 horas · **Riesgo:** Medio
+**Estado:** ❌ No empezado
+
+Emitir VMULAX/VMADDAY/VMADDZ/VADD directamente desde el JIT en vez del MULT/MADD chain.
+Requiere: macros de emisión VU0 (LQC2/SQC2/VMULAX.xyz etc.), escritura de vertex float
+desde GPR→FPU→memoria→VF, y dirty-check de matrices. La infraestructura VU0 ya existe
+en gte.c (vu0_refresh_rt_matrix, vu0_lt_*, vu0_lc_*) y solo hay que emitir las cargas.
+Overhead de conversión int↔float reduce el ahorro neto a ~9 palabras por mvmva.
+
+#### P18: Shared Matrix Loads en variantes ×3
+**Impacto:** Medio (-24 palabras por NCT/NCCT/NCDT/RTPT) · **Esfuerzo:** 2-3 horas · **Riesgo:** Bajo
+**Estado:** ❌ No empezado
+
+Las variantes ×3 (NCT, NCCT, NCDT, RTPT, DPCT) recargan la matriz 3 veces.
+Con VU0 (P17), la matriz permanece en VF1-VF4 y solo cambia el vértice.
+Con integer, se puede compartir al menos el vector de translación (3 LW ahorrados × 2).
+
+#### P19: MMI PMAXW/PMINW para Saturación Batch
+**Impacto:** Bajo-Medio (-4 a -6 palabras por ir_sat) · **Esfuerzo:** 3-4 horas · **Riesgo:** Bajo
+**Estado:** ❌ No empezado
+
+Reemplazar 6× SLT+MOVN (clamp 3 canales) con 2× PMAXW+PMINW sobre datos empaquetados 128-bit.
+Overhead de pack/unpack reduce la ventaja para saturaciones individuales; más útil en batch.
+
+---
+
+### Memoria/CPU (pendientes anteriores)
+
+#### SMRV Memory Fast-Path
 **Impacto:** Muy Alto (LW/SW: 23-27x → ~8-10x) · **Esfuerzo:** 2-4 horas · **Riesgo:** Medio
 **Estado actual:** ❌ No empezado
 
@@ -97,15 +130,20 @@ Batch FlushCache calls across multiple compile_block invocations.
 ## Prioridad recomendada
 
 ```
-1. Hoist CU2 check to prologue   (1-2h — COP2: 24x → 8x)
-2. Inline MTC2/MFC2 transfers    (1-2h — COP2 xfer: 24x → 3x)
-3. SMRV memory fast-path          (2-4h — LW/SW: 23-27x → 8-10x)
-4. DIV simplification              (1h — DIV: 15x → 5x)
-5. SQ/LQ prologue/epilogue        (2-4h — prologue: 32 → 20 words)
-6. FlushCache batching             (30 min — runtime only)
+GTE (próxima fase — inspirado en PCSX-ReARMed NEON):
+  P16. FPU DIV.S para división      ✅ DONE (RTPS: 155x → 125x, RTPT: 438x → 348x)
+  P17. VU0 matrix multiply en JIT   (4-6h — MVMVA/NCS/NCCS/NCDS: -22 words cada)
+  P18. Shared matrix loads ×3       (2-3h — NCT/NCCT/NCDT/RTPT: -24 words cada)
+
+CPU/Memoria (pendientes):
+  1. SMRV memory fast-path           (2-4h — LW/SW: 23-27x → 8-10x)
+  2. DIV simplification              (1h — DIV: 15x → 5x)
+  3. SQ/LQ prologue/epilogue         (2-4h — prologue: 32 → 20 words)
+  4. FlushCache batching             (30 min — runtime only)
 ```
 
-**Expansion ratio data:** see `docs/expansion_optimization_proposals.md` and
+**Expansion ratio data:** see `docs/gte_expansion_analysis.md` (current GTE analysis),
+`docs/gte_optimization_analysis_rearmed.md` (PCSX-ReARMed comparison), and
 `tests/jit/test_expansion.c` (playground compile-only measurement).
 
 ---
