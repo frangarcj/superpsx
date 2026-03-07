@@ -43,12 +43,13 @@ extern GPTestCtx gp_ctx;
  *  Mock Intercept Counters
  * ================================================================ */
 
-/* Fast GIF pointer offset tracking */
+/* External definition from gpu_core.c we'll need to reset */
 extern uint32_t mock_gif_qwords_written;
 
-/* External definition from gpu_core.c we'll need to reset */
+/* Fast GIF pointer offset tracking */
 extern gif_qword_t *fast_gif_ptr;
-#define MOCK_GIF_BUFFER_START ((gif_qword_t *)0x10000000) // Dummy base
+extern gif_qword_t *mock_gif_buffer_base;
+#define MOCK_GIF_BUFFER_START mock_gif_buffer_base
 
 /* ================================================================
  *  Performance Counters (Cop0 EE)
@@ -177,5 +178,6 @@ void gp_reset_state(void);
  * ================================================================ */
 void gp_run_expansion_tests(void);
 void gp_run_expansion_gp1_tests(void);
+void gp_run_clut_tests(void);
 
 #endif /* PLAYGROUND_GPU_H */

@@ -45,6 +45,11 @@ void gp_reset_state(void)
     gpu_cmd_remaining = 0;
     gpu_transfer_words = 0;
     buf_image_ptr = 0;
+
+    /* Reset texture state to 15BPP (no CLUT) so tests start clean */
+    tex_page_format = 2;
+    tex_page_x = 0;
+    tex_page_y = 0;
 }
 
 int main(void)
@@ -66,6 +71,7 @@ int main(void)
     /* Run tests */
     gp_run_expansion_tests();
     gp_run_expansion_gp1_tests();
+    gp_run_clut_tests();
 
     printf("\n====================================================================\n");
     printf("Test Results: %d passed, %d failed (Total %d)\n",

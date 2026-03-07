@@ -291,9 +291,11 @@ set(GPU_PLAYGROUND_SOURCES
     tests/playground_gpu/playground_main.c
     tests/playground_gpu/test_expansion_gpu.c
     tests/playground_gpu/test_expansion_gp1.c
+    tests/playground_gpu/test_clut.c
     tests/playground_gpu/mocks.c
     src/gpu_commands.c
     src/gpu_primitives.c
+    src/gpu_texture.c
 )
 
 add_executable(gpu_playground.elf EXCLUDE_FROM_ALL ${GPU_PLAYGROUND_SOURCES})

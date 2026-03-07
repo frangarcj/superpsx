@@ -28,6 +28,10 @@ gif_qword_t *fast_gif_ptr = NULL;
 gif_qword_t *gif_buffer_end_safe = NULL;
 int current_buffer = 0;
 
+/* Real buffer for mock GIF writes (avoids MMIO writes to VIF0 FIFO) */
+static unsigned __int128 mock_gif_storage[GIF_BUFFER_SIZE];
+gif_qword_t *mock_gif_buffer_base = (gif_qword_t *)mock_gif_storage;
+
 int draw_offset_x = 0;
 int draw_offset_y = 0;
 int draw_clip_x1 = 0;
@@ -171,8 +175,3 @@ uint32_t GPU_Read(void) {
 void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uint32_t word_count) {}
 void GS_UploadRegion(int x, int y, int w, int h, const uint16_t *pixels) {}
 uint16_t *GS_ReadbackRegion(int x, int y, int w_aligned, int h, void *buf, int buf_qwc) { return NULL; }
-
-uint32_t vram_gen_counter = 0;
-void Tex_Cache_Init(void) {}
-void Tex_Cache_DirtyRegion(int x, int y, int w, int h) {}
-int Decode_TexPage_Cached(int tex_format, int tex_page_x, int tex_page_y, int clut_x, int clut_y, int *out_slot_x, int *out_slot_y) { return 0; }

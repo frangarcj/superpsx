@@ -481,18 +481,20 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                  * TCC=1 + TEXA{0x80,1,0x80}: 0x0000→transparent (AEM),
                                  * non-zero→opaque (TA0/TA1=0x80) regardless of STP.
                                  * CBA=0 (PSX VRAM base), CPSM=16S (match storage).
-                                 * CLD=2 needed for PCSX2 (triggers CLUT buffer load). */
+                                 * CLD=2: load CLUT via TEXCLUT register (required for CSM2). */
                                 want_tex0 = GS_SET_TEX0(prim_tex_cache.hw_tbp0, 4, psm, 8, 8,
                                                          1/*TCC*/, (is_raw_tex ? 1 : 0),
                                                          0/*CBA*/, GS_PSM_16S, 1/*CSM2*/, 0, 2/*CLD*/);
                                 want_texclut = GS_SET_TEXCLUT(PSX_VRAM_FBW,
                                                                poly_clut_x / 16, poly_clut_y);
                             } else {
-                                /* CSM1: uploaded CLUT at CBP */
+                                /* CSM1: uploaded CLUT at CBP.
+                                 * CLD=1: always reload (avoids stale palette when
+                                 * round-robin CBP wraps to match GS CBP0). */
                                 want_tex0 = GS_SET_TEX0(prim_tex_cache.hw_tbp0, 4, psm, 8, 8,
                                                          1/*TCC*/, (is_raw_tex ? 1 : 0),
                                                          prim_tex_cache.hw_cbp, GS_PSM_16,
-                                                         0/*CSM1*/, 0, 4/*CLD*/);
+                                                         0/*CSM1*/, 0, 1/*CLD*/);
                             }
                             /* GS CLAMP_1 handles PSX texture window via REGION_REPEAT */
                             want_clamp = Compute_TexWin_Clamp();
@@ -695,18 +697,18 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     {
                         int psm = (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8;
                         if (tri_csm) {
-                            /* CSM2: TCC=1+TEXA for transparency, CLD=2 for PCSX2 */
+                            /* CSM2: TCC=1+TEXA for transparency, CLD=2 for TEXCLUT */
                             tw_tex0 = GS_SET_TEX0(tri_hw_tbp0, 4, psm, 8, 8,
                                                    1/*TCC*/, (is_raw_tex_tri ? 1 : 0),
                                                    0/*CBA*/, GS_PSM_16S, 1/*CSM2*/, 0, 2/*CLD*/);
                             tw_texclut = GS_SET_TEXCLUT(PSX_VRAM_FBW,
                                                          tri_clut_x / 16, tri_clut_y);
                         } else {
-                            /* CSM1 */
+                            /* CSM1: CLD=1 always reload */
                             tw_tex0 = GS_SET_TEX0(tri_hw_tbp0, 4, psm, 8, 8,
                                                    1/*TCC*/, (is_raw_tex_tri ? 1 : 0),
                                                    tri_hw_cbp, GS_PSM_16,
-                                                   0/*CSM1*/, 0, 4/*CLD*/);
+                                                   0/*CSM1*/, 0, 1/*CLD*/);
                         }
                         /* GS CLAMP_1 handles PSX texture window via REGION_REPEAT */
                         tw_clamp = Compute_TexWin_Clamp();
@@ -905,6 +907,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             int rect_hw_tbp0 = 0, rect_hw_cbp = 0;
             int rect_csm = 0; /* 0=CSM1, 1=CSM2 */
             int rect_clut_x = 0, rect_clut_y = 0;
+            int rect_tex_cache_hit = 0;
 
             // Use page-level cache when CLUT format or tex window active
             int need_perpixel = tex_win_active ||
@@ -926,6 +929,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     cache_slot_x = prim_tex_cache.hw_tbp0;
                     cache_slot_y = prim_tex_cache.hw_cbp;
                     rect_csm = prim_tex_cache.csm;
+                    rect_tex_cache_hit = 1;
                 }
                 else
                 {
@@ -1145,18 +1149,18 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     {
                         int psm = (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8;
                         if (rect_csm) {
-                            /* CSM2: TCC=1+TEXA for transparency, CLD=2 for PCSX2 */
+                            /* CSM2: TCC=1+TEXA for transparency, CLD=2 for TEXCLUT */
                             want_tex0_r = GS_SET_TEX0(rect_hw_tbp0, 4, psm, 8, 8,
                                                        1/*TCC*/, (is_raw_texture ? 1 : 0),
                                                        0/*CBA*/, GS_PSM_16S, 1/*CSM2*/, 0, 2/*CLD*/);
                             want_texclut_r = GS_SET_TEXCLUT(PSX_VRAM_FBW,
                                                              rect_clut_x / 16, rect_clut_y);
                         } else {
-                            /* CSM1: uploaded CLUT at CBP */
+                            /* CSM1: CLD=1 always reload */
                             want_tex0_r = GS_SET_TEX0(rect_hw_tbp0, 4, psm, 8, 8,
                                                        1/*TCC*/, (is_raw_texture ? 1 : 0),
                                                        rect_hw_cbp, GS_PSM_16,
-                                                       0/*CSM1*/, 0, 4/*CLD*/);
+                                                       0/*CSM1*/, 0, 1/*CLD*/);
                         }
                         /* GS CLAMP_1 handles PSX texture window via REGION_REPEAT */
                         want_clamp_r = Compute_TexWin_Clamp();
@@ -1171,7 +1175,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                         want_tex0_r = GS_SET_TEX0(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9,
                                                    1, (is_raw_texture ? 1 : 0), 0, 0, 0, 0, 0);
                     }
-                    need_texflush_r = !gs_state.valid || gs_state.tex0 != want_tex0_r;
+                    need_texflush_r = !rect_tex_cache_hit;
                 }
 
                 int emit_dthe_r = (!gs_state.valid || gs_state.dthe != want_dthe_r);
