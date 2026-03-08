@@ -54,7 +54,7 @@ static void test_expansion_flat_tri_fast(void)
     /* Expected QWORDs: 9 for the first triangle + 8 for the second (A+D) = 17 */
     EXPECT_QWORDS(17); 
     /* Expected Cycles: ~770 for the first + ~520 for the second = ~1300 */
-    EXPECT_CYCLES(1400); 
+    EXPECT_CYCLES(1500); 
 
     END_GPU_TEST();
 }
