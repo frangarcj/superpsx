@@ -26,11 +26,12 @@ uint64_t gpu_estimated_pixels = 0;
 gs_state_t gs_state = {0, 0, 0, 0, -1, 0, 0, -1, -1};
 
 /* Primitive-level Decode_TexPage_Cached result cache.
- * Eliminates ~80% of redundant texture cache lookups for consecutive
- * same-texture primitives (582K → ~100K calls).
- * 8-entry FIFO: handles multi-page alternation without thrashing. */
-#define PRIM_TEX_CACHE_SIZE 8
-static struct
+ * Direct-mapped by (tex_format, tex_page_x, tex_page_y):
+ *   index = format*32 + (page_y/256)*16 + (page_x/64)
+ * 96 entries cover all 16×2×3 possible PSX texture pages.
+ * O(1) lookup, zero eviction — eliminates FIFO thrashing. */
+#define PRIM_TEX_CACHE_SIZE 96
+typedef struct
 {
     int valid;
     int tex_format; /* 0=4BPP, 1=8BPP, 2=15BPP */
@@ -38,17 +39,29 @@ static struct
     int tex_page_y;
     int clut_x;
     int clut_y;
-    uint32_t vram_gen;
+    uint32_t vram_gen;    /* page gen at cache time */
+    uint32_t global_gen;  /* vram_gen_counter snapshot — fast staleness check */
     int result; /* 0=not cached (15BPP), 2=HW CLUT (CSM1), 3=HW CLUT (CSM2) */
 
     int hw_clut;
     int csm; /* 0=CSM1, 1=CSM2 (matches GS TEX0.CSM bit directly) */
     int hw_tbp0;
     int hw_cbp;
-} prim_tex_cache[PRIM_TEX_CACHE_SIZE] = {{0}};
-static int prim_tex_cache_next = 0;                 /* FIFO write index */
+} prim_tex_entry_t;
+static prim_tex_entry_t prim_tex_cache[PRIM_TEX_CACHE_SIZE] = {{0}};
 static int prim_tex_cache_last = -1;                /* last-hit index for fast repeated access */
 #define PTCACHE prim_tex_cache[prim_tex_cache_last] /* shorthand for current entry */
+
+/* Compute direct-mapped cache index from texture page coordinates.
+ * tex_page_x: 0,64,128,...,960  → /64 → 0..15
+ * tex_page_y: 0 or 256          → /256 → 0..1
+ * tex_format: 0,1,2             → *32  → 0,32,64
+ * Total range: 0..95 */
+static inline int prim_tex_cache_idx(int tex_format,
+                                     int tex_page_x, int tex_page_y)
+{
+    return tex_format * 32 + (tex_page_y >> 8) * 16 + (tex_page_x >> 6);
+}
 
 /* Invalidate GS state tracking (called on E1, E6, GPU reset, etc.) */
 void Prim_InvalidateGSState(void)
@@ -83,7 +96,6 @@ void Prim_InvalidateTexCache(void)
 {
     for (int i = 0; i < PRIM_TEX_CACHE_SIZE; i++)
         prim_tex_cache[i].valid = 0;
-    prim_tex_cache_next = 0;
     prim_tex_cache_last = -1;
 }
 
@@ -96,57 +108,72 @@ void Prim_InvalidateTexCache_CBP(int cbp)
 }
 
 /* Targeted invalidation: entries referencing a specific texture page.
- * Called when a page is re-uploaded (format change or VRAM dirty). */
+ * Called when a page is re-uploaded (format change or VRAM dirty).
+ * Direct-mapped: invalidate all 3 format slots for this (x,y). */
 void Prim_InvalidateTexCache_Page(int tex_page_x, int tex_page_y)
 {
-    for (int i = 0; i < PRIM_TEX_CACHE_SIZE; i++)
-        if (prim_tex_cache[i].valid &&
-            prim_tex_cache[i].tex_page_x == tex_page_x &&
-            prim_tex_cache[i].tex_page_y == tex_page_y)
-            prim_tex_cache[i].valid = 0;
+    for (int fmt = 0; fmt < 3; fmt++)
+    {
+        int idx = prim_tex_cache_idx(fmt, tex_page_x, tex_page_y);
+        prim_tex_cache[idx].valid = 0;
+    }
 }
 
 /* Try to reuse cached Decode_TexPage_Cached result.
  * Returns 1 if hit (result stored in prim_tex_cache[prim_tex_cache_last]),
- * 0 if miss. */
+ * 0 if miss.  O(1) direct-mapped lookup + global_gen fast-path. */
 static inline int prim_tex_cache_lookup(int tex_format, int tex_page_x, int tex_page_y,
                                         int clut_x, int clut_y)
 {
-    /* CSM2: cache keyed on (tex_format, tex_page_x, tex_page_y) only.
-     * CLUT is irrelevant for page uploads (GS reads CLUT from VRAM mirror).
-     * This lets same-texpage-different-CLUT primitives share cache entries. */
+    (void)clut_x; (void)clut_y; /* page-only key (CSM2) */
 
-    /* Fast path: check last-hit entry first */
+    /* Fast path: repeated same-page access (no index computation) */
     if (prim_tex_cache_last >= 0)
     {
-        typeof(prim_tex_cache[0]) *e = &prim_tex_cache[prim_tex_cache_last];
+        prim_tex_entry_t *e = &prim_tex_cache[prim_tex_cache_last];
         if (e->valid &&
             e->tex_format == tex_format &&
             e->tex_page_x == tex_page_x &&
-            e->tex_page_y == tex_page_y &&
-            e->vram_gen == Tex_Cache_GetPageGen(
-                               tex_format, tex_page_x, tex_page_y))
-            return 1;
-    }
-    /* Search all entries (page-only gen, computed once) */
-    uint32_t gen = Tex_Cache_GetPageGen(tex_format, tex_page_x, tex_page_y);
-    for (int i = 0; i < PRIM_TEX_CACHE_SIZE; i++)
-    {
-        typeof(prim_tex_cache[0]) *e = &prim_tex_cache[i];
-        if (e->valid &&
-            e->tex_format == tex_format &&
-            e->tex_page_x == tex_page_x &&
-            e->tex_page_y == tex_page_y &&
-            e->vram_gen == gen)
+            e->tex_page_y == tex_page_y)
         {
-            prim_tex_cache_last = i;
-            return 1;
+            /* If no VRAM writes since cache time, page gen is guaranteed fresh */
+            if (e->global_gen == vram_gen_counter)
+                return 1;
+            /* VRAM was written — check if THIS page was affected */
+            uint32_t gen = Tex_Cache_GetPageGen(tex_format, tex_page_x, tex_page_y);
+            if (e->vram_gen == gen)
+            {
+                e->global_gen = vram_gen_counter; /* refresh snapshot */
+                return 1;
+            }
+            return 0; /* page was dirtied */
         }
     }
-    return 0;
+
+    /* Direct-mapped lookup */
+    int idx = prim_tex_cache_idx(tex_format, tex_page_x, tex_page_y);
+    prim_tex_entry_t *e = &prim_tex_cache[idx];
+    if (!e->valid)
+        return 0;
+
+    /* If no VRAM writes since cache time, page gen is guaranteed fresh */
+    if (e->global_gen == vram_gen_counter)
+    {
+        prim_tex_cache_last = idx;
+        return 1;
+    }
+    /* VRAM was written — check if THIS page was affected */
+    uint32_t gen = Tex_Cache_GetPageGen(tex_format, tex_page_x, tex_page_y);
+    if (e->vram_gen == gen)
+    {
+        e->global_gen = vram_gen_counter; /* refresh snapshot */
+        prim_tex_cache_last = idx;
+        return 1;
+    }
+    return 0; /* page was dirtied */
 }
 
-/* Call Decode_TexPage_Cached and store result in cache (FIFO slot). */
+/* Call Decode_TexPage_Cached and store result in direct-mapped slot. */
 static inline int prim_tex_decode(int tex_format, int tex_page_x, int tex_page_y,
                                   int clut_x, int clut_y,
                                   int *out_x, int *out_y)
@@ -155,10 +182,9 @@ static inline int prim_tex_decode(int tex_format, int tex_page_x, int tex_page_y
     int result = Decode_TexPage_Cached(tex_format, tex_page_x, tex_page_y,
                                        clut_x, clut_y, out_x, out_y);
     PROF_POP(PROF_GPU_TEXCACHE);
-    int idx = prim_tex_cache_next;
-    prim_tex_cache_next = (prim_tex_cache_next + 1) % PRIM_TEX_CACHE_SIZE;
+    int idx = prim_tex_cache_idx(tex_format, tex_page_x, tex_page_y);
     prim_tex_cache_last = idx;
-    typeof(prim_tex_cache[0]) *e = &prim_tex_cache[idx];
+    prim_tex_entry_t *e = &prim_tex_cache[idx];
     e->result = result;
     e->valid = 1;
     e->tex_format = tex_format;
@@ -167,6 +193,7 @@ static inline int prim_tex_decode(int tex_format, int tex_page_x, int tex_page_y
     e->clut_x = clut_x;
     e->clut_y = clut_y;
     e->vram_gen = Tex_Cache_GetPageGen(tex_format, tex_page_x, tex_page_y);
+    e->global_gen = vram_gen_counter;
     e->hw_clut = (result == 2 || result == 3) ? 1 : 0;
     e->csm = (result == 3) ? 1 : 0; /* 0=CSM1, 1=CSM2 */
 

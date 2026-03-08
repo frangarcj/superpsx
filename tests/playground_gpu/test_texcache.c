@@ -317,6 +317,132 @@ static void test_partial_multi_range(void)
 }
 
 /* ================================================================
+ *  TC7: Multi-page no thrashing (direct-mapped cache)
+ *
+ *  Use 12 different texture pages (> old FIFO size of 8).
+ *  All pages are populated, then re-accessed → ALL must HIT.
+ *  Old FIFO would evict early pages; direct-mapped never does.
+ * ================================================================ */
+static void test_multipage_no_thrash(void)
+{
+    BEGIN_GPU_TEST("tc7_no_thrash");
+
+    Tex_Cache_Init();
+
+    /* Set up 12 texture pages at different X positions (page_tx 2..13) */
+    for (int i = 0; i < 12; i++)
+    {
+        int page_tx = i + 2;
+        int page_px = page_tx * 64;
+        setup_page(0, page_px, 0, 0, 480);
+    }
+    vram_gen_counter++;
+    for (int i = 0; i < 12; i++)
+    {
+        int page_tx = i + 2;
+        int page_px = page_tx * 64;
+        Tex_Cache_DirtyRegion(page_px, 0, 64, 256);
+    }
+
+    /* 1st pass: populate cache (all misses → TEXFLUSH) */
+    for (int i = 0; i < 12; i++)
+    {
+        tc_emit_textured_quad(0, i + 2, 0, 0, 480);
+        Flush_GIF();
+    }
+    gp_gif_reset_counter();
+
+    /* 2nd pass: re-access ALL 12 pages — ALL must HIT (no TEXFLUSH) */
+    for (int i = 0; i < 12; i++)
+    {
+        tc_emit_textured_quad(0, i + 2, 0, 0, 480);
+    }
+    gp_gif_scan();
+    EXPECT_NO_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
+
+    END_GPU_TEST();
+}
+
+/* ================================================================
+ *  TC8: Global gen fast-path — no VRAM writes → O(1) lookup
+ *
+ *  After populating a page, access it multiple times without any
+ *  VRAM writes.  The lookup should HIT via global_gen check only
+ *  (no Tex_Cache_GetPageGen call needed).  Verified by lack of
+ *  TEXFLUSH on repeated draws.
+ * ================================================================ */
+static void test_global_gen_fastpath(void)
+{
+    BEGIN_GPU_TEST("tc8_ggen_fast");
+
+    Tex_Cache_Init();
+    int page_tx = 5;
+    int page_px = page_tx * 64;
+
+    setup_page(0, page_px, 0, 0, 480);
+    vram_gen_counter++;
+    Tex_Cache_DirtyRegion(page_px, 0, 64, 256);
+
+    /* 1st draw: populate cache */
+    tc_emit_textured_quad(0, page_tx, 0, 0, 480);
+    Flush_GIF();
+    gp_gif_reset_counter();
+
+    /* NO VRAM writes — vram_gen_counter stays the same */
+
+    /* 2nd draw: global_gen matches → instant HIT */
+    tc_emit_textured_quad(0, page_tx, 0, 0, 480);
+    gp_gif_scan();
+    EXPECT_NO_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
+
+    gp_gif_reset_counter();
+
+    /* 3rd draw: still no writes → still instant HIT */
+    tc_emit_textured_quad(0, page_tx, 0, 0, 480);
+    gp_gif_scan();
+    EXPECT_NO_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
+
+    END_GPU_TEST();
+}
+
+/* ================================================================
+ *  TC9: VRAM write to OTHER page → current page still HITs
+ *
+ *  Two pages at different positions. Write to page B, then access
+ *  page A → should still HIT (global_gen differs but page gen same).
+ * ================================================================ */
+static void test_other_page_write(void)
+{
+    BEGIN_GPU_TEST("tc9_other_wr");
+
+    Tex_Cache_Init();
+
+    /* Page A at page_tx=3, Page B at page_tx=7 */
+    setup_page(0, 3 * 64, 0, 0, 480);
+    setup_page(0, 7 * 64, 0, 0, 480);
+    vram_gen_counter++;
+    Tex_Cache_DirtyRegion(3 * 64, 0, 64, 256);
+    Tex_Cache_DirtyRegion(7 * 64, 0, 64, 256);
+
+    /* Populate both in cache */
+    tc_emit_textured_quad(0, 3, 0, 0, 480);
+    tc_emit_textured_quad(0, 7, 0, 0, 480);
+    Flush_GIF();
+    gp_gif_reset_counter();
+
+    /* Dirty ONLY page B */
+    vram_gen_counter++;
+    Tex_Cache_DirtyRegion(7 * 64, 0, 64, 16);
+
+    /* Access page A → global_gen differs, but page A's gen unchanged → HIT */
+    tc_emit_textured_quad(0, 3, 0, 0, 480);
+    gp_gif_scan();
+    EXPECT_NO_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
+
+    END_GPU_TEST();
+}
+
+/* ================================================================
  *  Runner
  * ================================================================ */
 void gp_run_texcache_tests(void)
@@ -329,4 +455,7 @@ void gp_run_texcache_tests(void)
     test_fillrect_overlap();         /* TC4 — FillRect doesn't dirty tex */
     test_partial_multi_range();      /* TC5 */
     test_dma_overlap();              /* TC6 — DMA DOES dirty tex */
+    test_multipage_no_thrash();      /* TC7 — 12 pages, no FIFO eviction */
+    test_global_gen_fastpath();      /* TC8 — O(1) fast path */
+    test_other_page_write();         /* TC9 — write to other page → HIT */
 }
