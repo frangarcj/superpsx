@@ -39,6 +39,13 @@ This project has been developed with significant assistance from AI (GitHub Copi
 - Writing analysis tools and test infrastructure
 - Documentation and CI/CD setup
 
+## Acknowledgements
+
+Some design decisions in SuperPSX were **inspired by studying** the architecture of other open-source PSX emulators. No code has been copied from these projects — all implementation is original, targeting the PS2 EE/R5900 platform.
+
+- **[PCSX-ReARMed](https://github.com/notaz/pcsx_rearmed)** — JIT hash-table dispatch design; GTE NEON/SIMD optimization strategies
+- **[PCSX-Redux](https://github.com/grumpycoders/pcsx-redux)** — MVMVA bugged-path reference (FC vector); const-address I/O optimization pattern
+
 ## Building
 
 ### Prerequisites

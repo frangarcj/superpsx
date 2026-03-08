@@ -50,9 +50,7 @@
 
 ## Optimizaciones pendientes (ordenadas por impacto)
 
-### GTE — Próxima fase (inspirado en PCSX-ReARMed NEON)
-
-Análisis completo en `docs/gte_expansion_analysis.md` y `docs/gte_optimization_analysis_rearmed.md`.
+### GTE — Próxima fase
 
 #### P18: Shared Matrix Loads en variantes ×3
 **Impacto:** Medio (-36 palabras por NCDT, -18 por RTPT) · **Esfuerzo:** 1 hora · **Riesgo:** Bajo
@@ -78,6 +76,52 @@ Resultados: RTPS 2256→2032 (-224w, 125x→113x), NCS 2448→2160 (-288w),
 NCDS 3632→3152 (-480w), NCDT 10224→8784 (-1440w, 568x→488x),
 RTPT 5968→5360 (-608w), NCT 6672→5808 (-864w), NCCT 8496→7344 (-1152w),
 MVMVA 1008→912 (-96w), GTE xform 571→529 (-42w).
+
+---
+
+### GPU Optimizations (G-series)
+
+#### G0: VRAM Readback (C0)
+**Impacto:** Correctness (BIOS memory card menu) · **Esfuerzo:** 2h · **Riesgo:** Bajo
+**Estado:** ✅ Completado (commit 4a11f38)
+
+GS→shadow VRAM sync via `GS_ReadbackRegion()` en handler C0. Strip STP bit 15 (`& 0x7FFF`).
+TEXA fix: `GS_SET_TEXA(0x80, 1, 0x80)` para transparencia PSX correcta.
+
+#### G0b: CLD=4 → CLD=1 Fix
+**Impacto:** Correctness (palette glitches on real PS2) · **Esfuerzo:** 15 min · **Riesgo:** Muy Bajo
+**Estado:** ❌ No empezado
+
+CLD=4 skip-reload cuando round-robin CBP wraps y coincide con CBP0 del GS.
+Fix: cambiar 9 sites de CLD=4 a CLD=1 (always reload).
+
+#### G1: CLUT Content Caching
+**Impacto:** Alto (~90% CLUT uploads eliminados) · **Esfuerzo:** 2h · **Riesgo:** Bajo
+**Estado:** ❌ No empezado — Depende de G0b
+
+Track CLUT region gen via `get_region_gen()`. Solo re-upload cuando CLUT data cambia.
+Elimina ~100K uploads/frame en escenas con muchas texturas 8BPP.
+
+#### G2: Wire in `get_tex_combined_gen()`
+**Impacto:** Medio (prim_tex_cache 80%→95% hit rate) · **Esfuerzo:** 30 min · **Riesgo:** Bajo
+**Estado:** ❌ No empezado
+
+Reemplazar `vram_gen_counter` global con gen combinado page+clut en `prim_tex_cache`.
+Elimina false invalidation por FillRect al framebuffer.
+
+#### G3: Multi-Entry prim_tex_cache
+**Impacto:** Medio (multi-texture scenes) · **Esfuerzo:** 1h · **Riesgo:** Bajo
+**Estado:** ❌ No empezado
+
+Expandir de 1 a 4 entradas direct-mapped. Mejora hit rate para games con 2-4 texturas alternantes.
+
+```
+GPU (prioridad):
+  G0b. CLD=1 fix                    (15 min — palette correctness)
+  G1.  CLUT caching                  (2h — biggest perf win)
+  G2.  Combined gen                  (30 min — reduce false invalidation)
+  G3.  Multi-entry cache             (1h — multi-texture scenes)
+```
 
 ---
 
@@ -131,7 +175,7 @@ Batch FlushCache calls across multiple compile_block invocations.
 ## Prioridad recomendada
 
 ```
-GTE (próxima fase — inspirado en PCSX-ReARMed NEON):
+GTE (próxima fase):
   P16. FPU DIV.S para división      ✅ DONE (RTPS: 155x → 125x, RTPT: 438x → 348x)
   P17. VU0 matrix multiply en JIT   ✅ DONE (~30% faster multiply via VMULAX/VMADDAY/VMADDZ/VADD)
   P18. Shared matrix loads ×3       ✅ DONE (NCDT: 600x→568x, 4 fewer C calls per ×3 op)
@@ -143,9 +187,7 @@ CPU/Memoria (pendientes):
   4. FlushCache batching             (30 min — runtime only)
 ```
 
-**Expansion ratio data:** see `docs/gte_expansion_analysis.md` (current GTE analysis),
-`docs/gte_optimization_analysis_rearmed.md` (PCSX-ReARMed comparison), and
-`tests/jit/test_expansion.c` (playground compile-only measurement).
+**Expansion ratio data:** see `tests/jit/test_expansion.c` (playground compile-only measurement).
 
 ---
 

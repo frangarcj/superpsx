@@ -30,3 +30,7 @@ isos/crash_pid*.txt
 jit_optimization_analysis.md
 superpsx_improvement_analysis.md
 gpu_audit.md.resolved
+
+# Temporary working documents (emulator analysis, scratch notes)
+.tmp/
+out.txt

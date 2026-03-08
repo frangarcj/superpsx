@@ -159,8 +159,6 @@ Trampolines at fixed offsets in `code_buffer[]`:
 ## Current Roadmap
 
 See `docs/jit_optimization_roadmap.md` for the master roadmap.
-See `docs/gte_expansion_analysis.md` for GTE expansion data and next steps.
-See `docs/gte_optimization_analysis_rearmed.md` for PCSX-ReARMed comparison analysis.
 
 Completed optimizations (P1-P15):
 - P1: CU2 hoist to prologue (COP2 24x → ~10x)
