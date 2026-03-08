@@ -117,6 +117,13 @@ uint32_t Tex_Cache_GetCombinedGen(int tex_format, int tex_page_x, int tex_page_y
     return get_tex_combined_gen(tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
 }
 
+/* Page-only gen: skip CLUT region scan (used by CSM2 cache path) */
+uint32_t Tex_Cache_GetPageGen(int tex_format, int tex_page_x, int tex_page_y)
+{
+    int tex_hw_w = (tex_format == 0) ? 64 : (tex_format == 1) ? 128 : 256;
+    return get_region_gen(tex_page_x, tex_page_y, tex_hw_w, 256);
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  *  VRAM 1:1 Direct-Mapped Texture Pages + CLUT Round-Robin
  *

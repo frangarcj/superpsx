@@ -310,6 +310,7 @@ void Tex_Cache_ResetStats(void);
 void Tex_Cache_DirtyRegion(int x, int y, int w, int h);
 uint32_t Tex_Cache_GetCombinedGen(int tex_format, int tex_page_x, int tex_page_y,
                                   int clut_x, int clut_y);
+uint32_t Tex_Cache_GetPageGen(int tex_format, int tex_page_x, int tex_page_y);
 uint32_t Tex_Cache_GetClutUploads(void);
 
 /* gpu_primitives.c — GP0 command translation to GS */

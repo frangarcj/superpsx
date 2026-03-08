@@ -28,8 +28,8 @@ gs_state_t gs_state = {0, 0, 0, 0, -1, 0, 0, -1, -1};
 /* Primitive-level Decode_TexPage_Cached result cache.
  * Eliminates ~80% of redundant texture cache lookups for consecutive
  * same-texture primitives (582K → ~100K calls).
- * 4-entry FIFO: handles A→B→A alternation without thrashing. */
-#define PRIM_TEX_CACHE_SIZE 4
+ * 8-entry FIFO: handles multi-page alternation without thrashing. */
+#define PRIM_TEX_CACHE_SIZE 8
 static struct
 {
     int valid;
@@ -112,6 +112,10 @@ void Prim_InvalidateTexCache_Page(int tex_page_x, int tex_page_y)
 static inline int prim_tex_cache_lookup(int tex_format, int tex_page_x, int tex_page_y,
                                         int clut_x, int clut_y)
 {
+    /* CSM2: cache keyed on (tex_format, tex_page_x, tex_page_y) only.
+     * CLUT is irrelevant for page uploads (GS reads CLUT from VRAM mirror).
+     * This lets same-texpage-different-CLUT primitives share cache entries. */
+
     /* Fast path: check last-hit entry first */
     if (prim_tex_cache_last >= 0)
     {
@@ -120,14 +124,12 @@ static inline int prim_tex_cache_lookup(int tex_format, int tex_page_x, int tex_
             e->tex_format == tex_format &&
             e->tex_page_x == tex_page_x &&
             e->tex_page_y == tex_page_y &&
-            e->clut_x == clut_x &&
-            e->clut_y == clut_y &&
-            e->vram_gen == Tex_Cache_GetCombinedGen(
-                               tex_format, tex_page_x, tex_page_y, clut_x, clut_y))
+            e->vram_gen == Tex_Cache_GetPageGen(
+                               tex_format, tex_page_x, tex_page_y))
             return 1;
     }
-    /* Search all entries */
-    uint32_t gen = Tex_Cache_GetCombinedGen(tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
+    /* Search all entries (page-only gen, computed once) */
+    uint32_t gen = Tex_Cache_GetPageGen(tex_format, tex_page_x, tex_page_y);
     for (int i = 0; i < PRIM_TEX_CACHE_SIZE; i++)
     {
         typeof(prim_tex_cache[0]) *e = &prim_tex_cache[i];
@@ -135,8 +137,6 @@ static inline int prim_tex_cache_lookup(int tex_format, int tex_page_x, int tex_
             e->tex_format == tex_format &&
             e->tex_page_x == tex_page_x &&
             e->tex_page_y == tex_page_y &&
-            e->clut_x == clut_x &&
-            e->clut_y == clut_y &&
             e->vram_gen == gen)
         {
             prim_tex_cache_last = i;
@@ -166,8 +166,7 @@ static inline int prim_tex_decode(int tex_format, int tex_page_x, int tex_page_y
     e->tex_page_y = tex_page_y;
     e->clut_x = clut_x;
     e->clut_y = clut_y;
-    e->vram_gen = Tex_Cache_GetCombinedGen(
-        tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
+    e->vram_gen = Tex_Cache_GetPageGen(tex_format, tex_page_x, tex_page_y);
     e->hw_clut = (result == 2 || result == 3) ? 1 : 0;
     e->csm = (result == 3) ? 1 : 0; /* 0=CSM1, 1=CSM2 */
 
@@ -418,7 +417,20 @@ static void emit_poly_state_and_verts(
         if (!is_textured)
             state_fast = 1; /* untextured: dthe+alpha fully determined by cmd_key */
         else if (cache_hit && prim_tex_cache_last == gs_state.last_cache_slot)
-            state_fast = 1; /* textured: same cache entry → same tex0/clamp/test */
+        {
+            /* CSM2: page-only cache means same slot can serve different CLUTs.
+             * Must also verify TEXCLUT hasn't changed. */
+            if (csm)
+            {
+                uint64_t this_texclut = GS_SET_TEXCLUT(PSX_VRAM_FBW, clut_x / 16, clut_y);
+                if (gs_state.texclut == this_texclut)
+                    state_fast = 1;
+            }
+            else
+            {
+                state_fast = 1;
+            }
+        }
     }
 
     int state_qws = 0;
