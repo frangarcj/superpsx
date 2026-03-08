@@ -799,10 +799,13 @@ static void test_g2b_fillrect_tex_overlap(void)
     END_GPU_TEST();
 }
 
-/* G2c: FillRect overlapping CLUT area → must MISS (correctness guard)
+/* G2c: FillRect overlapping CLUT area
  *
- * Texture at page_tx=2, CLUT at (0,480) → column 0, row 30.
- * FillRect at (0,480,16,16) → column 0, row 30. Overlaps CLUT!
+ * CSM2: cache keyed on page-only gen (CLUT excluded).
+ * FillRect dirtying CLUT area does NOT invalidate the page cache.
+ * The GS reads CLUT directly from VRAM mirror via TEXCLUT + CLD=1,
+ * so CLUT changes are picked up automatically at render time.
+ * Expect: prim_tex_cache HIT → no TEXFLUSH on 2nd draw.
  */
 static void test_g2c_fillrect_clut_overlap(void)
 {
@@ -820,14 +823,14 @@ static void test_g2c_fillrect_clut_overlap(void)
     EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
     gp_gif_reset_counter();
 
-    /* FillRect: column 0, row 30 — OVERLAPS CLUT */
+    /* FillRect: column 0, row 30 — OVERLAPS CLUT (but not tex page) */
     emit_fillrect(0, 480, 16, 16, 0x00FF00);
     gp_gif_reset_counter();
 
-    /* 2nd draw: cache MISS (CLUT region gen bumped) → TEXFLUSH */
+    /* 2nd draw: CSM2 page-only cache HIT → no TEXFLUSH */
     emit_textured_quad(2, 0, 0, 480);
     gp_gif_scan();
-    EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH); /* must MISS */
+    EXPECT_NO_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH); /* CSM2: page HIT */
 
     END_GPU_TEST();
 }
@@ -842,10 +845,12 @@ static void test_g2c_fillrect_clut_overlap(void)
  *  Observable: TEXFLUSH on 3rd draw (A→B→A) should be absent.
  * ================================================================ */
 
-/* G3a: A→B→A pattern — 3rd draw should HIT (A still in multi-entry cache)
+/* G3a: A→B→A pattern — same page, different CLUTs
  *
- * Tex A = page 0, CLUT at (0, 480)
- * Tex B = page 0, CLUT at (16, 480)  — different CLUT → different cache key
+ * CSM2: cache keyed on page-only. A and B share the same entry.
+ * Draw B is a cache HIT (same page, CLUT doesn't matter).
+ * Draw A again is also a cache HIT.
+ * All draws after the 1st miss should have no TEXFLUSH.
  */
 static void test_g3a_aba_pattern(void)
 {
@@ -868,13 +873,13 @@ static void test_g3a_aba_pattern(void)
     EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
     gp_gif_reset_counter();
 
-    /* Draw B (miss — different CLUT) */
+    /* Draw B — CSM2: same page → cache HIT → no TEXFLUSH */
     emit_textured_quad(0, 0, 16, 480);
     gp_gif_scan();
-    EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
+    EXPECT_NO_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
     gp_gif_reset_counter();
 
-    /* Draw A again — with multi-entry cache: HIT → no TEXFLUSH */
+    /* Draw A again — still cache HIT → no TEXFLUSH */
     emit_textured_quad(0, 0, 0, 480);
     gp_gif_scan();
     EXPECT_NO_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
@@ -882,8 +887,11 @@ static void test_g3a_aba_pattern(void)
     END_GPU_TEST();
 }
 
-/* G3b: A→B→C→D→E pattern — 5 different textures, 4-entry cache.
- *       5th draw evicts oldest. Return to A = MISS.
+/* G3b: A→B→C→D→E pattern — 5 different CLUTs on same page.
+ *
+ * CSM2: cache keyed on page-only. All 5 draws share the same entry.
+ * Only the 1st draw is a miss. All subsequent draws (including return
+ * to A) are cache HITs.
  */
 static void test_g3b_eviction(void)
 {
@@ -901,16 +909,16 @@ static void test_g3b_eviction(void)
     Tex_Cache_DirtyRegion(0, 0, 64, 256);
     Tex_Cache_DirtyRegion(0, 480, 80, 1);
 
-    /* Draw A through E (5 misses) */
+    /* Draw A through E (only A is miss, rest are HITs — same page) */
     for (int k = 0; k < 5; k++) {
         emit_textured_quad(0, 0, k * 16, 480);
         gp_gif_reset_counter();
     }
 
-    /* Return to A — should be evicted from 4-entry cache → MISS */
+    /* Return to A — CSM2: same page → cache HIT → no TEXFLUSH */
     emit_textured_quad(0, 0, 0, 480);
     gp_gif_scan();
-    EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH); /* MISS: A was evicted */
+    EXPECT_NO_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH); /* CSM2: page HIT */
 
     END_GPU_TEST();
 }

@@ -225,6 +225,8 @@ static struct
     uint32_t total_requests;
     uint32_t page_hits;       /* page data already in GS VRAM (no re-upload) */
     uint32_t page_uploads;    /* page data re-uploaded (dirty) */
+    uint32_t partial_uploads; /* page re-uploaded (partial rows only) */
+    uint32_t full_uploads;    /* page re-uploaded (full 256 rows) */
     uint32_t clut_uploads;    /* CLUT actually uploaded to GS VRAM */
     uint32_t clut_cache_hits; /* CLUT upload skipped (content unchanged) */
     uint32_t clut_aligned_bypasses; /* CSM2 direct VRAM mapping (aligned) */
@@ -284,6 +286,40 @@ static void Upload_Indexed_8BPP(int tbp0, int tex_page_x, int tex_page_y)
     }
 }
 
+/* Upload a contiguous range of rows of an 8BPP page to GS VRAM.
+ * Partial upload: only rows [start_row, start_row+num_rows) are sent.
+ * DY offset ensures data lands at the correct row within the GS texture page. */
+static void Upload_Indexed_8BPP_Partial(int tbp0, int tex_page_x, int tex_page_y,
+                                        int start_row, int num_rows)
+{
+    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
+    Push_GIF_Data(GS_SET_BITBLTBUF(0,0,0, tbp0, 4, GS_PSM_8), GS_REG_BITBLTBUF);
+    Push_GIF_Data(GS_SET_TRXPOS(0,0, 0, start_row, 0), GS_REG_TRXPOS);
+    Push_GIF_Data(GS_SET_TRXREG(256, num_rows), GS_REG_TRXREG);
+    Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR);
+
+    /* 16 QWs per row (256 bytes).  Split into chunks of up to 1024 QWs. */
+    int total_qws = num_rows * 16;
+    int qws_sent = 0;
+    int row = start_row;
+    while (qws_sent < total_qws)
+    {
+        int chunk_qws = total_qws - qws_sent;
+        if (chunk_qws > 1024) chunk_qws = 1024;
+        int chunk_rows = chunk_qws / 16;
+        int eop = (qws_sent + chunk_qws >= total_qws) ? 1 : 0;
+        Push_GIF_Tag(GIF_TAG_LO(chunk_qws, eop, 0, 0, 2, 0), 0);
+        for (int r = 0; r < chunk_rows; r++, row++)
+        {
+            memcpy(fast_gif_ptr,
+                   (const uint8_t *)&psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x],
+                   256);
+            fast_gif_ptr += 16;
+        }
+        qws_sent += chunk_qws;
+    }
+}
+
 /* Upload 256×256 raw 4-bit indices to GS VRAM in PSMT4 format */
 static void Upload_Indexed_4BPP(int tbp0, int tex_page_x, int tex_page_y)
 {
@@ -310,6 +346,39 @@ static void Upload_Indexed_4BPP(int tbp0, int tex_page_x, int tex_page_y)
                    128);
             fast_gif_ptr += 8;
         }
+    }
+}
+
+/* Upload a contiguous range of rows of a 4BPP page to GS VRAM.
+ * Partial upload: only rows [start_row, start_row+num_rows) are sent. */
+static void Upload_Indexed_4BPP_Partial(int tbp0, int tex_page_x, int tex_page_y,
+                                        int start_row, int num_rows)
+{
+    Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
+    Push_GIF_Data(GS_SET_BITBLTBUF(0,0,0, tbp0, 4, GS_PSM_4), GS_REG_BITBLTBUF);
+    Push_GIF_Data(GS_SET_TRXPOS(0,0, 0, start_row, 0), GS_REG_TRXPOS);
+    Push_GIF_Data(GS_SET_TRXREG(256, num_rows), GS_REG_TRXREG);
+    Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR);
+
+    /* 8 QWs per row (128 bytes).  Split into chunks of up to 1024 QWs. */
+    int total_qws = num_rows * 8;
+    int qws_sent = 0;
+    int row = start_row;
+    while (qws_sent < total_qws)
+    {
+        int chunk_qws = total_qws - qws_sent;
+        if (chunk_qws > 1024) chunk_qws = 1024;
+        int chunk_rows = chunk_qws / 8;
+        int eop = (qws_sent + chunk_qws >= total_qws) ? 1 : 0;
+        Push_GIF_Tag(GIF_TAG_LO(chunk_qws, eop, 0, 0, 2, 0), 0);
+        for (int r = 0; r < chunk_rows; r++, row++)
+        {
+            memcpy(fast_gif_ptr,
+                   (const uint8_t *)&psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x],
+                   128);
+            fast_gif_ptr += 8;
+        }
+        qws_sent += chunk_qws;
     }
 }
 
@@ -694,11 +763,68 @@ int Decode_TexPage_Cached(int tex_format,
                       page_format[page_id] != tex_format);
     if (page_dirty)
     {
-        /* Page data is dirty or format changed — re-upload */
-        if (tex_format == 1)
-            Upload_Indexed_8BPP(tbp0, tex_page_x, tex_page_y);
+        int format_changed = (page_format[page_id] != tex_format);
+        uint32_t old_gen = page_gen[page_id];
+
+        /* Determine which block-rows within the page are dirty.
+         * Each block-row covers 16 scanlines.  A page has 16 block-rows.
+         * If format changed or page was never uploaded (old_gen==0),
+         * upload everything. */
+        int use_partial = (!format_changed && old_gen != 0);
+        uint16_t dirty_mask = 0; /* bit i = block-row i is dirty */
+
+        if (use_partial)
+        {
+            unsigned int col_start = (unsigned)tex_page_x >> 6;
+            unsigned int col_end   = (unsigned)(tex_page_x + tex_hw_w - 1) >> 6;
+            unsigned int row_base  = (unsigned)tex_page_y >> VRAM_DIRTY_ROW_SHIFT;
+            if (col_end >= VRAM_DIRTY_COLS) col_end = VRAM_DIRTY_COLS - 1;
+
+            for (int br = 0; br < 16; br++)
+            {
+                unsigned int gr = row_base + br;
+                if (gr >= VRAM_DIRTY_ROWS) break;
+                for (unsigned int c = col_start; c <= col_end; c++)
+                {
+                    if (vram_page_gen[gr * VRAM_DIRTY_COLS + c] > old_gen)
+                    {
+                        dirty_mask |= (1 << br);
+                        break; /* this block-row is dirty, no need to check more cols */
+                    }
+                }
+            }
+            /* If all 16 block-rows dirty, fall back to full upload (no benefit) */
+            if (dirty_mask == 0xFFFF)
+                use_partial = 0;
+        }
+
+        if (!use_partial)
+        {
+            /* Full page upload */
+            tex_stats.full_uploads++;
+            if (tex_format == 1)
+                Upload_Indexed_8BPP(tbp0, tex_page_x, tex_page_y);
+            else
+                Upload_Indexed_4BPP(tbp0, tex_page_x, tex_page_y);
+        }
         else
-            Upload_Indexed_4BPP(tbp0, tex_page_x, tex_page_y);
+        {
+            tex_stats.partial_uploads++;
+            /* Partial upload: emit one transfer per contiguous dirty range */
+            int br = 0;
+            while (br < 16)
+            {
+                if (!(dirty_mask & (1 << br))) { br++; continue; }
+                int start = br;
+                while (br < 16 && (dirty_mask & (1 << br))) br++;
+                int start_row = start * 16;
+                int num_rows  = (br - start) * 16;
+                if (tex_format == 1)
+                    Upload_Indexed_8BPP_Partial(tbp0, tex_page_x, tex_page_y, start_row, num_rows);
+                else
+                    Upload_Indexed_4BPP_Partial(tbp0, tex_page_x, tex_page_y, start_row, num_rows);
+            }
+        }
 
         page_gen[page_id] = current_page_gen;
         page_format[page_id] = tex_format;
@@ -758,6 +884,8 @@ void Tex_Cache_DumpStats(void)
     if (tex_stats.total_requests > 0)
         printf(" (%.1f%%)", (float)tex_stats.page_uploads * 100.0f / tex_stats.total_requests);
     printf("\n");
+    printf("  Full uploads:     %lu\n", (unsigned long)tex_stats.full_uploads);
+    printf("  Partial uploads:  %lu\n", (unsigned long)tex_stats.partial_uploads);
     printf("CLUT uploads:       %lu", (unsigned long)tex_stats.clut_uploads);
     if (tex_stats.total_requests > 0)
         printf(" (%.1f%%)", (float)tex_stats.clut_uploads * 100.0f / tex_stats.total_requests);

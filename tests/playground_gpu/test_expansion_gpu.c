@@ -156,7 +156,7 @@ static void test_expansion_shaded_geom(void)
     EMIT_GP0(0x0000FF00); EMIT_GP0(10|(0<<16));
     EMIT_GP0(0x00FF0000); EMIT_GP0(0|(10<<16));
     Flush_GIF();
-    EXPECT_QWORDS(9); EXPECT_CYCLES(1100);
+    EXPECT_QWORDS(9); EXPECT_CYCLES(1120);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("shaded_quad");

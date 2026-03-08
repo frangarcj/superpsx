@@ -81,6 +81,7 @@ int main(void)
     gp_run_vram_tests();
     gp_run_dma_block_tests();
     gp_run_deferred_tests();
+    gp_run_texcache_tests();
 
     printf("\n====================================================================\n");
     printf("Test Results: %d passed, %d failed (Total %d)\n",
