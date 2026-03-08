@@ -79,6 +79,7 @@ int main(void)
     gp_run_clut_tests();
     gp_run_state_tests();
     gp_run_vram_tests();
+    gp_run_dma_block_tests();
 
     printf("\n====================================================================\n");
     printf("Test Results: %d passed, %d failed (Total %d)\n",

@@ -910,30 +910,182 @@ void GPU_WriteGP1(uint32_t data)
 void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count)
 {
     uint32_t i = 0;
+
+    /* ── Drain any in-progress state from prior calls ── */
+    while (i < word_count && (gpu_transfer_words > 0 || gpu_cmd_remaining > 0 || polyline_active))
+    {
+        GPU_WriteGP0(data_ptr[i]);
+        i++;
+    }
+
+    /* ── Block-level dispatch: process complete commands directly ── */
     while (i < word_count)
     {
-        uint32_t data = data_ptr[i];
+        uint32_t *cmd_ptr = &data_ptr[i];
+        uint32_t cmd_word = cmd_ptr[0];
+        uint32_t cmd_byte = cmd_word >> 24;
 
-        // Vía rápida para ráfagas de imágenes (LoadImage 0xA0)
-        // Solo si no estamos ya en medio de otra transferencia y el bloque cabe completo
-        if (gpu_transfer_words == 0 && gpu_cmd_remaining == 0 && (data >> 24) == 0xA0)
+        /* ── Draw commands (0x20-0x7F) ── */
+        if (cmd_byte >= 0x20 && cmd_byte <= 0x7F)
         {
-            if (i + 2 < word_count)
+            /* Polylines: must go word-by-word for the state machine */
+            if ((cmd_byte & 0xE8) == 0x48)
             {
-                uint32_t dims = data_ptr[i + 2];
-                uint32_t image_words = ((dims & 0xFFFF) * (dims >> 16)) / 2;
+                while (i < word_count)
+                {
+                    GPU_WriteGP0(data_ptr[i]);
+                    i++;
+                    if (gpu_cmd_remaining == 0 && gpu_transfer_words == 0 && !polyline_active)
+                        break;
+                }
+                continue;
+            }
+
+            /* Fast path for flat polygons when gs_state is valid */
+            if ((cmd_byte == 0x20 || cmd_byte == 0x28) && gs_state.valid && gs_state.dthe == 0)
+            {
+                int is_quad = (cmd_byte == 0x28);
+                int size = is_quad ? 5 : 4;
+
+                if (i + size <= word_count)
+                {
+                    uint32_t c = cmd_ptr[0] & 0xFFFFFF;
+                    int num_verts = is_quad ? 4 : 3;
+                    uint64_t prim = is_quad ? 4 : 3;
+
+                    /* PRIM in A+D (EOP=0), vertices in REGLIST */
+                    Push_GIF_Tag(GIF_TAG_LO(1, 0, 0, 0, 0, 1), GIF_REG_AD);
+                    Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim), GS_REG_PRIM);
+
+                    uint64_t regs = (uint64_t)GIF_REG_RGBAQ | ((uint64_t)GIF_REG_XYZ2 << 4);
+                    Push_GIF_Tag(GIF_TAG_LO(num_verts, 1, 0, 0, 1, 2), regs);
+
+                    uint64_t rgbaq = GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000);
+
+                    for (int v = 0; v < num_verts; v++)
+                    {
+                        int16_t px = (int16_t)((int32_t)((cmd_ptr[v + 1] & 0xFFFF) << 21) >> 21);
+                        int16_t py = (int16_t)((int32_t)((cmd_ptr[v + 1] >> 16) << 21) >> 21);
+                        Push_GIF_Data(rgbaq, GS_SET_XYZ(((int32_t)px + draw_offset_x + 2048) << 4, ((int32_t)py + draw_offset_y + 2048) << 4, 0));
+                    }
+
+                    /* Pixel area estimation */
+                    int16_t x0 = (int16_t)((int32_t)((cmd_ptr[1] & 0xFFFF) << 21) >> 21);
+                    int16_t y0 = (int16_t)((int32_t)((cmd_ptr[1] >> 16) << 21) >> 21);
+                    int16_t x1 = (int16_t)((int32_t)((cmd_ptr[2] & 0xFFFF) << 21) >> 21);
+                    int16_t y1 = (int16_t)((int32_t)((cmd_ptr[2] >> 16) << 21) >> 21);
+                    int16_t x2 = (int16_t)((int32_t)((cmd_ptr[3] & 0xFFFF) << 21) >> 21);
+                    int16_t y2 = (int16_t)((int32_t)((cmd_ptr[3] >> 16) << 21) >> 21);
+                    int32_t a = (int32_t)x0 * ((int32_t)y1 - y2) + (int32_t)x1 * ((int32_t)y2 - y0) + (int32_t)x2 * ((int32_t)y0 - y1);
+                    if (a < 0)
+                        a = -a;
+                    uint32_t area = (uint32_t)(a >> 1);
+
+                    if (is_quad)
+                    {
+                        int16_t x3 = (int16_t)((int32_t)((cmd_ptr[4] & 0xFFFF) << 21) >> 21);
+                        int16_t y3 = (int16_t)((int32_t)((cmd_ptr[4] >> 16) << 21) >> 21);
+                        int32_t a2 = (int32_t)x1 * ((int32_t)y3 - y2) + (int32_t)x3 * ((int32_t)y2 - y1) + (int32_t)x2 * ((int32_t)y1 - y3);
+                        if (a2 < 0)
+                            a2 = -a2;
+                        area += (uint32_t)(a2 >> 1);
+                    }
+                    gpu_estimated_pixels += area;
+
+                    i += size;
+                    continue;
+                }
+            }
+
+            /* General draw command: use Translate_GP0_to_GS directly */
+            int size = GPU_GetCommandSize(cmd_byte);
+            if (i + size <= word_count)
+            {
+                Translate_GP0_to_GS(cmd_ptr);
+                i += size;
+            }
+            else
+            {
+                /* Partial command at end of block — fall back to word-at-a-time */
+                while (i < word_count)
+                {
+                    GPU_WriteGP0(data_ptr[i]);
+                    i++;
+                }
+            }
+            continue;
+        }
+
+        /* ── Fill rect (0x02) ── */
+        if (cmd_byte == 0x02)
+        {
+            if (i + 3 <= word_count)
+            {
+                Translate_GP0_to_GS(cmd_ptr);
+                i += 3;
+            }
+            else
+            {
+                while (i < word_count) { GPU_WriteGP0(data_ptr[i]); i++; }
+            }
+            continue;
+        }
+
+        /* ── LoadImage (0xA0): burst upload ── */
+        if (cmd_byte == 0xA0)
+        {
+            if (i + 3 <= word_count)
+            {
+                uint32_t dims = cmd_ptr[2];
+                uint32_t w = dims & 0xFFFF;
+                uint32_t h = dims >> 16;
+                if (w == 0) w = 1024;
+                if (h == 0) h = 512;
+                uint32_t image_words = (w * h + 1) / 2;
                 if (i + 3 + image_words <= word_count)
                 {
-                    uint32_t coords = data_ptr[i + 1];
-                    GS_UploadRegionFast(coords, dims, &data_ptr[i + 3], image_words);
+                    GS_UploadRegionFast(cmd_ptr[1], dims, &cmd_ptr[3], image_words);
                     i += 3 + image_words;
                     continue;
                 }
             }
+            /* Incomplete — fall back to word-at-a-time for header + data */
+            GPU_WriteGP0(data_ptr[i]);
+            i++;
+            continue;
         }
 
-        // Caso normal: procesar palabra por palabra
-        GPU_WriteGP0(data);
+        /* ── StoreImage (0xC0): 3-word header ── */
+        if (cmd_byte == 0xC0)
+        {
+            /* Feed all 3 words so GPU_WriteGP0 sets up the read state */
+            int end = (i + 3 <= word_count) ? i + 3 : word_count;
+            while (i < end) { GPU_WriteGP0(data_ptr[i]); i++; }
+            continue;
+        }
+
+        /* ── VRAM-to-VRAM copy (0x80-0x9F): 4 words ── */
+        if ((cmd_byte & 0xE0) == 0x80)
+        {
+            if (i + 4 <= word_count)
+            {
+                GPU_WriteGP0(cmd_ptr[0]);
+                GPU_WriteGP0(cmd_ptr[1]);
+                GPU_WriteGP0(cmd_ptr[2]);
+                GPU_WriteGP0(cmd_ptr[3]);
+                i += 4;
+            }
+            else
+            {
+                while (i < word_count) { GPU_WriteGP0(data_ptr[i]); i++; }
+            }
+            continue;
+        }
+
+        /* ── Environment commands (E1-E6), NOP (00/01), IRQ (1F) ── */
+        /* These are all single-word commands; dispatch via GPU_WriteGP0
+         * which has the E-command dedup caching. */
+        GPU_WriteGP0(cmd_word);
         i++;
     }
 }

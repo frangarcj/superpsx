@@ -212,6 +212,7 @@ void gp_run_expansion_gp1_tests(void);
 void gp_run_clut_tests(void);
 void gp_run_state_tests(void);
 void gp_run_vram_tests(void);
+void gp_run_dma_block_tests(void);
 
 /* ================================================================
  *  GIF Capture Validation Macros

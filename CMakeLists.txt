@@ -294,6 +294,7 @@ set(GPU_PLAYGROUND_SOURCES
     tests/playground_gpu/test_clut.c
     tests/playground_gpu/test_state.c
     tests/playground_gpu/test_vram.c
+    tests/playground_gpu/test_dma_block.c
     tests/playground_gpu/mocks.c
     src/gpu_commands.c
     src/gpu_primitives.c
