@@ -689,6 +689,37 @@ static void emit_ncds_core(int v, int sf, int lm)
     emit_ir_sat_store(lm);                 /* FLAG=0 */
 }
 
+#ifdef ENABLE_VU0_MICRO
+/* Post-lighting helpers for overlapped ×3 variants.
+ * These emit ONLY the tail after both mvmva calls have completed.
+ * All read inputs from cp2_data[] (memory), safe after launch clobbers regs. */
+
+/* NCS post-lighting: reload MAC + push_color. (~32 words) */
+static void emit_ncs_post_lighting(void)
+{
+    EMIT_LW(REG_V0, CPU_CP2_DATA(25), REG_S0);
+    EMIT_LW(REG_V1, CPU_CP2_DATA(26), REG_S0);
+    EMIT_LW(REG_A0, CPU_CP2_DATA(27), REG_S0);
+    emit_push_color_inline();
+}
+
+/* NCCS post-lighting: RGBC×IR<<4 + sf_mac_push_ir. (~40 words) */
+static void emit_nccs_post_lighting(int sf, int lm)
+{
+    emit_rgbc_times_ir_shl4();
+    emit_sf_mac_push_ir(sf, lm);
+}
+
+/* NCDS post-lighting: RGBC×IR<<4 + interpolate + push_color + IR sat. (~111 words) */
+static void emit_ncds_post_lighting(int sf, int lm)
+{
+    emit_rgbc_times_ir_shl4();
+    emit_interpolate_color(sf);
+    emit_push_color_inline();
+    emit_ir_sat_store(lm);
+}
+#endif /* ENABLE_VU0_MICRO */
+
 /* Emit RTPS core for vertex v: fully inline — matrix multiply, SZ push,
  * UNR division, screen projection, SXY push, and depth cueing.
  * last=1 → also compute MAC0/IR0 (depth cueing).
@@ -2031,7 +2062,31 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             case 0x16: /* NCDT */
                 if (gte_use_vu0 && gte_sf) {
-#ifndef ENABLE_VU0_MICRO
+#ifdef ENABLE_VU0_MICRO
+                    /* P21: Overlapped ×3 — hide VU0 Light×V behind EE post-lighting. */
+                    /* Vertex 0: full sync */
+                    emit_vu0_micro_prepare(1, 3);
+                    emit_vu0_micro_multiply(0, gte_lm, 0);
+                    emit_vu0_micro_prepare(2, 1);
+                    emit_vu0_micro_multiply(3, gte_lm, 0);
+                    /* Overlap: launch Light×V1, post-light V0 */
+                    emit_vu0_micro_prepare(1, 3);
+                    emit_vu0_micro_launch(1, 0);
+                    emit_ncds_post_lighting(gte_sf, gte_lm);
+                    emit_vu0_micro_poll_complete(gte_lm);
+                    /* Vertex 1: Color×IR sync */
+                    emit_vu0_micro_prepare(2, 1);
+                    emit_vu0_micro_multiply(3, gte_lm, 0);
+                    /* Overlap: launch Light×V2, post-light V1 */
+                    emit_vu0_micro_prepare(1, 3);
+                    emit_vu0_micro_launch(2, 0);
+                    emit_ncds_post_lighting(gte_sf, gte_lm);
+                    emit_vu0_micro_poll_complete(gte_lm);
+                    /* Vertex 2: Color×IR sync + final post-light */
+                    emit_vu0_micro_prepare(2, 1);
+                    emit_vu0_micro_multiply(3, gte_lm, 0);
+                    emit_ncds_post_lighting(gte_sf, gte_lm);
+#else
                     /* P18 macro: preload L(VF1-4) + LC(VF7-10) once. */
                     if (gte_sf) {
                         emit_vu0_load_matrix(1, 3, 1);
@@ -2039,11 +2094,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                         vu0_preloaded[1] = 1;
                         vu0_preloaded[2] = 7;
                     }
-#endif
                     emit_ncds_core(0, gte_sf, gte_lm);
                     emit_ncds_core(1, gte_sf, gte_lm);
                     emit_ncds_core(2, gte_sf, gte_lm);
-#ifndef ENABLE_VU0_MICRO
                     vu0_preloaded[1] = 0;
                     vu0_preloaded[2] = 0;
 #endif
@@ -2093,7 +2146,34 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             case 0x20: /* NCT */
                 if (gte_use_vu0 && gte_sf) {
-#ifndef ENABLE_VU0_MICRO
+#ifdef ENABLE_VU0_MICRO
+                    /* P21: Overlapped ×3 — hide VU0 Light×V behind EE post-lighting.
+                     * V0: sync both mvmvas → launch V1 Light → post_light V0 → poll
+                     * V1: sync Color×IR    → launch V2 Light → post_light V1 → poll
+                     * V2: sync Color×IR    → post_light V2 */
+                    /* Vertex 0: full sync */
+                    emit_vu0_micro_prepare(1, 3);
+                    emit_vu0_micro_multiply(0, gte_lm, 0);
+                    emit_vu0_micro_prepare(2, 1);
+                    emit_vu0_micro_multiply(3, gte_lm, 0);
+                    /* Overlap: launch Light×V1, post-light V0 */
+                    emit_vu0_micro_prepare(1, 3);
+                    emit_vu0_micro_launch(1, 0);
+                    emit_ncs_post_lighting();
+                    emit_vu0_micro_poll_complete(gte_lm);
+                    /* Vertex 1: Color×IR sync */
+                    emit_vu0_micro_prepare(2, 1);
+                    emit_vu0_micro_multiply(3, gte_lm, 0);
+                    /* Overlap: launch Light×V2, post-light V1 */
+                    emit_vu0_micro_prepare(1, 3);
+                    emit_vu0_micro_launch(2, 0);
+                    emit_ncs_post_lighting();
+                    emit_vu0_micro_poll_complete(gte_lm);
+                    /* Vertex 2: Color×IR sync + final post-light */
+                    emit_vu0_micro_prepare(2, 1);
+                    emit_vu0_micro_multiply(3, gte_lm, 0);
+                    emit_ncs_post_lighting();
+#else
                     /* P18 macro: preload L(VF1-4) + LC(VF7-10) once. */
                     if (gte_sf) {
                         emit_vu0_load_matrix(1, 3, 1);
@@ -2101,13 +2181,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                         vu0_preloaded[1] = 1;
                         vu0_preloaded[2] = 7;
                     }
-#endif
-                    /* VU0 micro: no preload for 2-matrix ops (Light+Color share VF1-4).
-                     * Each emit_inline_mvmva call does its own prepare+FULL. */
                     emit_ncs_core(0, gte_sf, gte_lm);
                     emit_ncs_core(1, gte_sf, gte_lm);
                     emit_ncs_core(2, gte_sf, gte_lm);
-#ifndef ENABLE_VU0_MICRO
                     vu0_preloaded[1] = 0;
                     vu0_preloaded[2] = 0;
 #endif
@@ -2630,7 +2706,31 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             case 0x3F: /* NCCT */
                 if (gte_use_vu0 && gte_sf) {
-#ifndef ENABLE_VU0_MICRO
+#ifdef ENABLE_VU0_MICRO
+                    /* P21: Overlapped ×3 — hide VU0 Light×V behind EE post-lighting. */
+                    /* Vertex 0: full sync */
+                    emit_vu0_micro_prepare(1, 3);
+                    emit_vu0_micro_multiply(0, gte_lm, 0);
+                    emit_vu0_micro_prepare(2, 1);
+                    emit_vu0_micro_multiply(3, gte_lm, 0);
+                    /* Overlap: launch Light×V1, post-light V0 */
+                    emit_vu0_micro_prepare(1, 3);
+                    emit_vu0_micro_launch(1, 0);
+                    emit_nccs_post_lighting(gte_sf, gte_lm);
+                    emit_vu0_micro_poll_complete(gte_lm);
+                    /* Vertex 1: Color×IR sync */
+                    emit_vu0_micro_prepare(2, 1);
+                    emit_vu0_micro_multiply(3, gte_lm, 0);
+                    /* Overlap: launch Light×V2, post-light V1 */
+                    emit_vu0_micro_prepare(1, 3);
+                    emit_vu0_micro_launch(2, 0);
+                    emit_nccs_post_lighting(gte_sf, gte_lm);
+                    emit_vu0_micro_poll_complete(gte_lm);
+                    /* Vertex 2: Color×IR sync + final post-light */
+                    emit_vu0_micro_prepare(2, 1);
+                    emit_vu0_micro_multiply(3, gte_lm, 0);
+                    emit_nccs_post_lighting(gte_sf, gte_lm);
+#else
                     /* P18 macro: preload L(VF1-4) + LC(VF7-10) once. */
                     if (gte_sf) {
                         emit_vu0_load_matrix(1, 3, 1);
@@ -2638,11 +2738,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                         vu0_preloaded[1] = 1;
                         vu0_preloaded[2] = 7;
                     }
-#endif
                     emit_nccs_core(0, gte_sf, gte_lm);
                     emit_nccs_core(1, gte_sf, gte_lm);
                     emit_nccs_core(2, gte_sf, gte_lm);
-#ifndef ENABLE_VU0_MICRO
                     vu0_preloaded[1] = 0;
                     vu0_preloaded[2] = 0;
 #endif
