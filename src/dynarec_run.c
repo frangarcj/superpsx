@@ -592,6 +592,7 @@ static inline void handle_performance_report(void)
         perf_last_report_tick = now_ms;
         perf_last_report_cycle = global_cycles;
         dynarec_print_stats();
+        dynarec_print_jit_profile();
     }
 #endif
 }

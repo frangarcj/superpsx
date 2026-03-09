@@ -8,6 +8,82 @@
 #include "dynarec.h"
 #include "scheduler.h"
 
+/* ---- JIT instruction category profiling ---- */
+enum {
+    JCAT_ALU = 0,    /* ALU, shifts, LUI, set-compare */
+    JCAT_MULDIV,     /* MULT/MULTU/DIV/DIVU/MFHI/MFLO/MTHI/MTLO */
+    JCAT_LOADSTORE,  /* LB/LH/LW/SB/SH/SW/LWL/LWR/SWL/SWR */
+    JCAT_BRANCH,     /* BEQ/BNE/BLTZ/BGEZ/BLEZ/BGTZ/J/JAL/JR/JALR */
+    JCAT_COP0,       /* MFC0/MTC0/RFE */
+    JCAT_COP2_DATA,  /* MFC2/MTC2/CFC2/CTC2/LWC2/SWC2 */
+    JCAT_COP2_CMD,   /* GTE compute ops */
+    JCAT_OTHER,      /* COP1/COP3/BREAK/SYSCALL */
+    JCAT_NUM
+};
+static const char *jcat_names[JCAT_NUM] = {
+    "ALU", "MulDiv", "Load/Store", "Branch", "COP0", "COP2data", "GTE_cmd", "Other"
+};
+uint64_t jcat_psx_count[JCAT_NUM];   /* PSX instructions per category */
+uint64_t jcat_native_words[JCAT_NUM]; /* EE native words emitted per category */
+uint32_t jcat_cache_flushes;          /* code buffer full resets */
+uint32_t jcat_peak_buffer_used;       /* high water mark (bytes) */
+
+static inline int classify_opcode(uint32_t op)
+{
+    uint32_t major = OP(op);
+    if (major == 0) {
+        uint32_t fn = FUNC(op);
+        if (fn == 0x18 || fn == 0x19 || fn == 0x1A || fn == 0x1B ||
+            fn == 0x10 || fn == 0x11 || fn == 0x12 || fn == 0x13)
+            return JCAT_MULDIV;
+        if (fn == 0x08 || fn == 0x09) return JCAT_BRANCH; /* JR/JALR */
+        if (fn == 0x0C || fn == 0x0D) return JCAT_OTHER;  /* SYSCALL/BREAK */
+        return JCAT_ALU;
+    }
+    if (major == 1) return JCAT_BRANCH;   /* BLTZ/BGEZ family */
+    if (major == 2 || major == 3) return JCAT_BRANCH; /* J/JAL */
+    if (major >= 4 && major <= 7) return JCAT_BRANCH; /* BEQ/BNE/BLEZ/BGTZ */
+    if (major >= 8 && major <= 0x0F) return JCAT_ALU; /* ADDI-XORI, LUI */
+    if (major == 0x10) return JCAT_COP0;
+    if (major == 0x11) return JCAT_OTHER; /* COP1 */
+    if (major == 0x12) return (op & 0x02000000) ? JCAT_COP2_CMD : JCAT_COP2_DATA;
+    if (major == 0x13) return JCAT_OTHER; /* COP3 */
+    if (major >= 0x20 && major <= 0x2E) return JCAT_LOADSTORE;
+    if (major == 0x32) return JCAT_COP2_DATA; /* LWC2 */
+    if (major == 0x3A) return JCAT_COP2_DATA; /* SWC2 */
+    return JCAT_OTHER;
+}
+
+void dynarec_print_jit_profile(void)
+{
+    uint64_t total_psx = 0, total_native = 0;
+    for (int i = 0; i < JCAT_NUM; i++) {
+        total_psx += jcat_psx_count[i];
+        total_native += jcat_native_words[i];
+    }
+    if (total_psx == 0) return;
+    uint32_t buf_used = (uint32_t)((uint8_t *)code_ptr - (uint8_t *)code_buffer);
+    printf("[JIT PROFILE] buf=%luKB/%luKB (%.0f%%) peak=%luKB flushes=%lu blocks=%lu\n",
+           (unsigned long)(buf_used / 1024), (unsigned long)(CODE_BUFFER_SIZE / 1024),
+           (double)buf_used * 100.0 / CODE_BUFFER_SIZE,
+           (unsigned long)(jcat_peak_buffer_used / 1024),
+           (unsigned long)jcat_cache_flushes, (unsigned long)blocks_compiled);
+    printf("[JIT INSNS]  ");
+    for (int i = 0; i < JCAT_NUM; i++) {
+        if (jcat_psx_count[i] == 0) continue;
+        uint64_t pc = jcat_psx_count[i];
+        uint64_t nw = jcat_native_words[i];
+        printf("%s:%llu(%.1fx,%.0f%%) ", jcat_names[i],
+               (unsigned long long)pc,
+               pc > 0 ? (double)nw / pc : 0.0,
+               (double)nw * 100.0 / total_native);
+    }
+    printf("\n[JIT TOTAL] %llu PSX → %llu EE (%.1fx avg)\n",
+           (unsigned long long)total_psx, (unsigned long long)total_native,
+           (double)total_native / total_psx);
+    fflush(stdout);
+}
+
 /* ---- Compile-time state ---- */
 uint32_t blocks_compiled = 0;
 int jit_flush_pending = 0;
@@ -785,10 +861,13 @@ uint32_t *compile_block(uint32_t psx_pc)
 
     /* Check for code buffer overflow: reset if < 64KB remaining */
     uint32_t used = (uint32_t)((uint8_t *)code_ptr - (uint8_t *)code_buffer);
+    if (used > jcat_peak_buffer_used)
+        jcat_peak_buffer_used = used;
     if (used > CODE_BUFFER_SIZE - 65536)
     {
         DLOG("Code buffer nearly full (%u/%u), flushing cache\n",
              (unsigned)used, CODE_BUFFER_SIZE);
+        jcat_cache_flushes++;
         code_ptr = code_buffer + 144;
         memset(code_buffer + 144, 0, CODE_BUFFER_SIZE - 144 * sizeof(uint32_t));
         Free_PageTable();
@@ -950,8 +1029,17 @@ uint32_t *compile_block(uint32_t psx_pc)
     int block_mult_count = 0;
     int gte_stall_remaining = 0; /* GTE pipeline stall tracker */
 
+#define ACCOUNT_INSN(op) do {                                       \
+    uint32_t _wa = (uint32_t)(code_ptr - block_start);              \
+    int _cat = classify_opcode(op);                                 \
+    jcat_psx_count[_cat]++;                                         \
+    jcat_native_words[_cat] += (_wa - words_before_insn);           \
+    words_before_insn = _wa;                                        \
+} while(0)
+
     while (!block_ended)
     {
+        uint32_t words_before_insn = (uint32_t)(code_ptr - block_start);
         uint32_t opcode = *psx_code++;
 
         /* GTE stall model (PSX R3000A COP2 interlock):
@@ -1045,6 +1133,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                     block_ended = 1;
                     break;
                 }
+                ACCOUNT_INSN(opcode);
             }
             dynarec_lwx_pending = 0;
             cur_pc += 4;
@@ -1455,6 +1544,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                     block_ended = 1;
                     break;
                 }
+                ACCOUNT_INSN(opcode);
             }
             dynarec_lwx_pending = 0;
             dynarec_load_defer = 0;

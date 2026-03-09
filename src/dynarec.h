@@ -597,5 +597,6 @@ int BIOS_HLE_C(void);
  *  Function prototypes — dynarec_run.c
  * ================================================================ */
 void dynarec_print_stats(void);
+void dynarec_print_jit_profile(void);
 
 #endif /* DYNAREC_H */
