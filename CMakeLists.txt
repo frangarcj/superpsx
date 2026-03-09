@@ -29,7 +29,7 @@ option(ENABLE_DYNAREC_STATS "Enable dynarec execution statistics" OFF)
 option(ENABLE_SUBSYSTEM_PROFILER "Enable per-subsystem wall-clock profiler" ON)
 option(ENABLE_PSX_TLB "Enable TLB fast-path for PSX RAM (experimental)" OFF)
 option(ENABLE_TEX_DEBUG "Enable texture debug overlay (colored bounding boxes)" OFF)
-option(ENABLE_VU0_MICRO "Use VU0 micro mode for GTE acceleration" OFF)
+option(ENABLE_VU0_MICRO "Use VU0 micro mode for GTE acceleration" ON)
 option(HEADLESS "Build without GPU/video output (no-op GPU stubs)" OFF)
 
 # ============================================================================

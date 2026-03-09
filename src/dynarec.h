@@ -422,6 +422,17 @@ static inline void emit(uint32_t inst)
 #define EMIT_VMADDZ_XYZ(fd, fs, ft) emit(MK_COP2(VU_DEST_XYZ, (ft), (fs), (fd), 0x0A))
 #define EMIT_VADD_XYZ(fd, fs, ft) emit(MK_COP2(VU_DEST_XYZ, (ft), (fs), (fd), 0x28))
 
+#ifdef ENABLE_VU0_MICRO
+/* VU0 micro mode: CTC2/CFC2 for CMSAR0 + status, VCALLMSR to launch.
+ * CTC2 rt, rd: EE GPR → VU0 control reg  (rd=27 → CMSAR0)
+ * CFC2 rt, rd: VU0 control reg → EE GPR  (rd=29 → VU0 status, bit 0 = VBS0)
+ * VCALLMSR: launch micro at address in CMSAR0 */
+#define EMIT_CTC2(rt, rd) emit((0x12u << 26) | (0x06u << 21) | ((uint32_t)(rt) << 16) | ((uint32_t)(rd) << 11))
+#define EMIT_CFC2(rt, rd) emit((0x12u << 26) | (0x02u << 21) | ((uint32_t)(rt) << 16) | ((uint32_t)(rd) << 11))
+#define EMIT_VCALLMSR()   emit(0x4A000039u)
+#define EMIT_SYNC_L()     emit(0x0000000Fu)
+#endif /* ENABLE_VU0_MICRO */
+
 /* ================================================================
  *  Function prototypes — dynarec_emit.c
  * ================================================================ */

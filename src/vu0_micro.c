@@ -192,25 +192,23 @@ void vu0_micro_prepare_matrix(R3000CPU *cpu, uint32_t mx_cv)
     int mx = mx_cv & 3;
     int cv = mx_cv >> 2;
 
-    /* Determine matrix QW base in VU data memory */
-    int qw_base;
+    /* Always write to QW[1-4] — micro program _FULL reads from fixed QW[1-4].
+     * The separate QW bases (RT=1, LT=5, LC=9) are reserved for future
+     * multi-matrix programs that preload several matrices simultaneously. */
     float *col1, *col2, *col3;
 
     switch (mx) {
     case 0:
         if (vu0_rt_is_dirty(cpu)) vu0_refresh_rt_matrix(cpu);
         col1 = vu0_rt_col1; col2 = vu0_rt_col2; col3 = vu0_rt_col3;
-        qw_base = VU0_QW_RT_COL1;
         break;
     case 1:
         if (vu0_lt_is_dirty(cpu)) vu0_refresh_lt_matrix(cpu);
         col1 = vu0_lt_col1; col2 = vu0_lt_col2; col3 = vu0_lt_col3;
-        qw_base = VU0_QW_LT_COL1;
         break;
     default:
         if (vu0_lc_is_dirty(cpu)) vu0_refresh_lc_matrix(cpu);
         col1 = vu0_lc_col1; col2 = vu0_lc_col2; col3 = vu0_lc_col3;
-        qw_base = VU0_QW_LC_COL1;
         break;
     }
 
@@ -230,7 +228,7 @@ void vu0_micro_prepare_matrix(R3000CPU *cpu, uint32_t mx_cv)
         break;
     }
 
-    vu0_write_matrix_to_datamem(qw_base, col1, col2, col3, trans);
+    vu0_write_matrix_to_datamem(VU0_QW_RT_COL1, col1, col2, col3, trans);
 }
 
 #endif /* _EE */

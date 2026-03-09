@@ -13,6 +13,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "dynarec.h"
+#ifdef ENABLE_VU0_MICRO
+#include "vu0_micro.h"
+#endif
 #include "spu.h"
 #include "scheduler.h"
 #undef LOG_TAG
@@ -409,6 +412,11 @@ void Init_Dynarec(void)
     }
 
     code_ptr = code_buffer + 144;
+
+#ifdef ENABLE_VU0_MICRO
+    vu0_micro_init();
+    printf("  VU0 micro programs uploaded\n");
+#endif
 
     printf("  Code buffer at %p (%u KB)\n", code_buffer, CODE_BUFFER_SIZE / 1024);
     printf("  Page Table (L1) initialized: %u + %u entries\n", JIT_L1_RAM_PAGES, JIT_L1_BIOS_PAGES);

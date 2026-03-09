@@ -266,6 +266,7 @@ static void emit_interpolate_color(int sf)
  * into VF registers starting at that base.  emit_inline_mvmva skips the
  * C call + LQC2 and uses the preloaded VF registers directly.
  * Index: 0=RT, 1=Light, 2=Color. */
+#ifndef ENABLE_VU0_MICRO
 static int vu0_preloaded[3] = {0, 0, 0};
 
 /* Emit C call to refresh matrix cache + load into VF[vf_base..vf_base+3].
@@ -331,6 +332,92 @@ static void emit_vu0_vertex_multiply(int v, int lm, int vf_col1, int t8_valid)
     EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);
     emit_ir_sat_store(lm);
 }
+#endif /* !ENABLE_VU0_MICRO */
+
+#ifdef ENABLE_VU0_MICRO
+#include "vu0_micro.h"
+
+/* ---- VU0 Micro Mode: matrix × vector via micro program ----
+ *
+ * Instead of the macro pipeline (int→FPU→VU0 macro→FPU→int = ~35 words),
+ * we write vertex int32 to VU0 data memory, launch a micro program via
+ * VCALLMS, poll for completion, and read the int32 result back.
+ * The micro program handles ITOF0, matrix multiply, FTOI0 internally.
+ *
+ * For ×3 variants, the first vertex uses _FULL (loads matrix from data mem
+ * into VF1-4), subsequent vertices use _CORE (reuses VF1-4).
+ *
+ * vu0_micro_preloaded[mx]:
+ *   0 = matrix not yet in VU0 data mem → needs prepare_matrix + _FULL
+ *   1 = matrix in VU0 data mem + VF regs → can use _CORE
+ */
+static int vu0_micro_preloaded[3] = {0, 0, 0};
+
+/* Emit: refresh matrix in VU0 data memory via C call.
+ * mx: 0=RT, 1=Light, 2=Color.  cv: 0=TR, 1=BK, 3=none.
+ * After call, the 4 QWs (col1,col2,col3,trans) are in VU data mem. */
+static void emit_vu0_micro_prepare(int mx, int cv)
+{
+    uint32_t mx_cv = (uint32_t)(mx | (cv << 2));
+    EMIT_MOVE(REG_A0, REG_S0);
+    EMIT_ORI(REG_A1, REG_ZERO, mx_cv);
+    emit_call_c_lite((uint32_t)(uintptr_t)vu0_micro_prepare_matrix);
+}
+
+/* Emit: write vertex to VU0 data memory QW[0], launch micro, poll, read result.
+ * v: 0-2=V0/V1/V2, 3=IR1-3.  lm: limit flag.  use_core: 1=reuse VF1-4.
+ * After: V0=MAC1, V1=MAC2, A0=MAC3 stored to cp2_data[25-27], IR1-3 sat, FLAG=0.
+ * Clobbers: T8, T9, AT, V0, V1, A0. */
+static void emit_vu0_micro_multiply(int v, int lm, int use_core)
+{
+    /* Load vertex from cpu struct */
+    if (v < 3) {
+        int base = v * 2;
+        EMIT_LH(REG_V0, CPU_CP2_DATA(base) + 0, REG_S0);     /* VX */
+        EMIT_LH(REG_V1, CPU_CP2_DATA(base) + 2, REG_S0);     /* VY */
+        EMIT_LH(REG_A0, CPU_CP2_DATA(base + 1), REG_S0);     /* VZ */
+    } else {
+        /* v=3: use IR1-3 as vector (for Color matrix step) */
+        EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);           /* IR1 */
+        EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);           /* IR2 */
+        EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);           /* IR3 */
+    }
+
+    /* Write vertex to VU0 data memory QW[0] as int32.
+     * VU0 data mem at 0x11004000 (uncached, no sync needed for writes). */
+    emit_load_imm32(REG_T8, VU0_DATA_MEM);
+    EMIT_SW(REG_V0, VU0_OFF_VERTEX + 0,  REG_T8);            /* x */
+    EMIT_SW(REG_V1, VU0_OFF_VERTEX + 4,  REG_T8);            /* y */
+    EMIT_SW(REG_A0, VU0_OFF_VERTEX + 8,  REG_T8);            /* z */
+    EMIT_SW(REG_ZERO, VU0_OFF_VERTEX + 12, REG_T8);          /* w=0 */
+
+    /* Launch micro program: CTC2 sets CMSAR0, VCALLMSR starts execution */
+    int prog_addr = use_core ? VU0_PROG_MVMVA_CORE : VU0_PROG_MVMVA_FULL;
+    EMIT_ORI(REG_T9, REG_ZERO, prog_addr >> 3);
+    EMIT_CTC2(REG_T9, 27);                                    /* CMSAR0 = addr */
+    EMIT_VCALLMSR();                                           /* launch VU0 */
+
+    /* Poll VU0 completion: CFC2 $t9, $vi29; ANDI $t9, 1; BNE → loop.
+     * VU0 MVMVA is ~17 insns @ 1 cycle each ≈ 17 VU cycles.
+     * EE may need 1-3 poll iterations. */
+    EMIT_CFC2(REG_T9, 29);                                    /* T9 = VU0 status */
+    EMIT_ANDI(REG_T9, REG_T9, 1);                             /* bit 0 = VBS0 */
+    EMIT_BNE(REG_T9, REG_ZERO, -3);                           /* branch back to CFC2 */
+    EMIT_NOP();                                                /* delay slot */
+
+    /* Read result from VU data mem QW[15] = MAC1, MAC2, MAC3, 0 */
+    /* T8 still = VU0_DATA_MEM from above */
+    EMIT_LW(REG_V0, VU0_OFF_OUT_MAC + 0,  REG_T8);           /* MAC1 */
+    EMIT_LW(REG_V1, VU0_OFF_OUT_MAC + 4,  REG_T8);           /* MAC2 */
+    EMIT_LW(REG_A0, VU0_OFF_OUT_MAC + 8,  REG_T8);           /* MAC3 */
+
+    /* Store MAC1-3 + IR saturation + FLAG=0 */
+    EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);
+    EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);
+    EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);
+    emit_ir_sat_store(lm);
+}
+#endif /* ENABLE_VU0_MICRO */
 
 /* Emit inline MVMVA: MAC = Matrix × Vector + Translation, then store MAC+IR.
  * mx: 0=RT, 1=Light(L), 2=Color(LC)
@@ -355,6 +442,19 @@ static void emit_inline_mvmva(int mx, int v, int cv, int sf, int lm)
      * Results: V0=MAC1, V1=MAC2, A0=MAC3 → cp2_data[25-27], IR1-3, FLAG=0.
      * Uses: $f0-$f2 (FPU scratch), T8 (base addr). */
     if (sf) {
+#ifdef ENABLE_VU0_MICRO
+        /* VU0 micro path: write vertex to VU data mem, launch micro program.
+         * vu0_micro_preloaded[mx] tracks if matrix is in VU data mem + VF regs. */
+        int micro_ready = (mx < 3) ? vu0_micro_preloaded[mx] : 0;
+        if (micro_ready) {
+            /* Matrix already in VU data mem + VF1-4 from prior _FULL call → use _CORE */
+            emit_vu0_micro_multiply(v, lm, 1);
+        } else {
+            /* Prepare matrix in VU0 data mem, then launch _FULL (loads into VF1-4) */
+            emit_vu0_micro_prepare(mx, cv);
+            emit_vu0_micro_multiply(v, lm, 0);
+        }
+#else
         int vf_base = (mx < 3) ? vu0_preloaded[mx] : 0;
         if (vf_base) {
             /* P18: matrix already in VF[vf_base..vf_base+3], skip prepare.
@@ -366,6 +466,7 @@ static void emit_inline_mvmva(int mx, int v, int cv, int sf, int lm)
             emit_vu0_load_matrix(mx, cv, 1);
             emit_vu0_vertex_multiply(v, lm, 1, 1);
         }
+#endif /* ENABLE_VU0_MICRO */
         return;
     }
     /* --- Integer fallback (sf=0 — rare, e.g. standalone MVMVA) --- */
@@ -1874,18 +1975,22 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             case 0x16: /* NCDT */
                 if (gte_use_vu0) {
-                    /* P18: preload L(VF1-4) + LC(VF7-10) once. */
+#ifndef ENABLE_VU0_MICRO
+                    /* P18 macro: preload L(VF1-4) + LC(VF7-10) once. */
                     if (gte_sf) {
                         emit_vu0_load_matrix(1, 3, 1);
                         emit_vu0_load_matrix(2, 1, 7);
                         vu0_preloaded[1] = 1;
                         vu0_preloaded[2] = 7;
                     }
+#endif
                     emit_ncds_core(0, gte_sf, gte_lm);
                     emit_ncds_core(1, gte_sf, gte_lm);
                     emit_ncds_core(2, gte_sf, gte_lm);
+#ifndef ENABLE_VU0_MICRO
                     vu0_preloaded[1] = 0;
                     vu0_preloaded[2] = 0;
+#endif
                 } else {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
@@ -1932,18 +2037,24 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             case 0x20: /* NCT */
                 if (gte_use_vu0) {
-                    /* P18: preload L(VF1-4) + LC(VF7-10) once. */
+#ifndef ENABLE_VU0_MICRO
+                    /* P18 macro: preload L(VF1-4) + LC(VF7-10) once. */
                     if (gte_sf) {
                         emit_vu0_load_matrix(1, 3, 1);
                         emit_vu0_load_matrix(2, 1, 7);
                         vu0_preloaded[1] = 1;
                         vu0_preloaded[2] = 7;
                     }
+#endif
+                    /* VU0 micro: no preload for 2-matrix ops (Light+Color share VF1-4).
+                     * Each emit_inline_mvmva call does its own prepare+FULL. */
                     emit_ncs_core(0, gte_sf, gte_lm);
                     emit_ncs_core(1, gte_sf, gte_lm);
                     emit_ncs_core(2, gte_sf, gte_lm);
+#ifndef ENABLE_VU0_MICRO
                     vu0_preloaded[1] = 0;
                     vu0_preloaded[2] = 0;
+#endif
                 } else {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
@@ -2189,13 +2300,22 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 if (gte_use_vu0) {
                     /* P18: load RT+TR matrix once, reuse for all 3 vertices. */
                     if (gte_sf) {
+#ifdef ENABLE_VU0_MICRO
+                        emit_vu0_micro_prepare(0, 0);
+                        vu0_micro_preloaded[0] = 1;
+#else
                         emit_vu0_load_matrix(0, 0, 1);
                         vu0_preloaded[0] = 1;
+#endif
                     }
                     emit_rtps_core(0, gte_sf, gte_lm, 0);
                     emit_rtps_core(1, gte_sf, gte_lm, 0);
                     emit_rtps_core(2, gte_sf, gte_lm, 1);
+#ifdef ENABLE_VU0_MICRO
+                    vu0_micro_preloaded[0] = 0;
+#else
                     vu0_preloaded[0] = 0;
+#endif
                 } else {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
@@ -2447,18 +2567,22 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             case 0x3F: /* NCCT */
                 if (gte_use_vu0) {
-                    /* P18: preload L(VF1-4) + LC(VF7-10) once. */
+#ifndef ENABLE_VU0_MICRO
+                    /* P18 macro: preload L(VF1-4) + LC(VF7-10) once. */
                     if (gte_sf) {
                         emit_vu0_load_matrix(1, 3, 1);
                         emit_vu0_load_matrix(2, 1, 7);
                         vu0_preloaded[1] = 1;
                         vu0_preloaded[2] = 7;
                     }
+#endif
                     emit_nccs_core(0, gte_sf, gte_lm);
                     emit_nccs_core(1, gte_sf, gte_lm);
                     emit_nccs_core(2, gte_sf, gte_lm);
+#ifndef ENABLE_VU0_MICRO
                     vu0_preloaded[1] = 0;
                     vu0_preloaded[2] = 0;
+#endif
                 } else {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
