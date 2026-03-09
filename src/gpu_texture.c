@@ -126,81 +126,32 @@ uint32_t Tex_Cache_GetPageGen(int tex_format, int tex_page_x, int tex_page_y)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- *  VRAM 1:1 Direct-Mapped Texture Pages + CLUT Round-Robin
+ *  VRAM 1:1 Direct-Mapped Texture Pages (Dual-Format)
  *
- *  Each of the 32 possible PSX texture pages has a FIXED slot in GS
- *  VRAM (O(1) TBP0 computation, zero lookup/LRU/hash).  Pages are
- *  only re-uploaded when the underlying PSX VRAM is dirty.
+ *  Each of the 32 possible PSX texture pages has TWO fixed slots in
+ *  GS VRAM — one for 4BPP (PSMT4) and one for 8BPP (PSMT8).  This
+ *  eliminates re-uploads when the game alternates between 4BPP and
+ *  8BPP interpretations of the same VRAM region (common: Crash
+ *  Bandicoot uploads 45 pages/frame, ALL due to format switching).
  *
- *  Slots are format-agnostic: each slot is 256 blocks (enough for
- *  PSMT8 256×256).  PSMT4 data (128 blocks) fits in the same slot.
- *  If a page switches format (rare), it's re-uploaded.
- *
- *  CLUTs use a round-robin allocator — each request gets a fresh CBP,
- *  so CLUT data is never stale (no caching = no invalidation bugs).
+ *  CLUTs are read via CSM2 — the GS reads palette data directly from
+ *  the PSX VRAM mirror (CT16S at block 0) via the TEXCLUT register.
+ *  No CLUT upload or round-robin allocator needed.
  *
  *  GS VRAM layout (in 256-byte blocks, TBP0 units):
  *    [0..4095]         PSX VRAM (CT16S, 1MB) — display + 15BPP
- *    [4096..12287]     32 format-agnostic page slots (256 blocks each) = 2MB
- *    [12288..14335]    64 CLUT round-robin CT16 slots (32 blocks each) = 512KB
- *    [14336..16383]    Free (512KB)
- *    Total: 14336 / 16384 blocks used (87.5%)
+ *    [4096..12287]     32 × 256 = 8BPP page slots (PSMT8 256×256) = 2MB
+ *    [12288..16383]    32 × 128 = 4BPP page slots (PSMT4 256×256) = 1MB
+ *    Total: 16384 / 16384 blocks used (100%)
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* ── Direct-mapped page slots ────────────────────────────────────── */
-#define PAGE_SLOTS       32    /* 16 X positions × 2 Y positions */
-#define PAGE_TBP_BASE    4096
-#define PAGE_TBP_STRIDE  256   /* 256×256 PSMT8 = 64KB = 256 blocks (also fits 4BPP) */
-
-/* ── CLUT Round-Robin Allocator ──────────────────────────────────── */
-/* 64 CT16 CLUT slots placed AFTER the page slots — never overlaps
- * with the PSX VRAM CT16S mirror (blocks 0..4095).                    */
-#define CLUT_CBP_BASE    (PAGE_TBP_BASE + PAGE_SLOTS * PAGE_TBP_STRIDE)  /* 12288 */
-#define CLUT_CBP_STRIDE  32    /* 1 CT16 page = 32 blocks */
-#define CLUT_ROBIN_SLOTS 64
-static int clut_robin_idx = 0;
-
-/* ── CLUT Content Cache (G1) ─────────────────────────────────────── */
-/* 4-entry direct-mapped cache keyed by (clut_x, clut_y, format).
- * Avoids re-uploading CLUT data when the underlying VRAM region
- * has not been dirtied since the last upload.  ~90% of CLUT uploads
- * are eliminated in typical games (same palette drawn many times).
- * Set to 0 to disable (always upload, like pre-G1 behavior). */
-#define ENABLE_CLUT_CONTENT_CACHE 1
-#define CLUT_CONTENT_CACHE_SIZE 16
-
-static struct {
-    int      clut_x, clut_y;
-    int      format;      /* 0=4BPP, 1=8BPP */
-    uint32_t gen;         /* VRAM region gen when uploaded */
-    int      cbp;         /* GS VRAM CBP where this CLUT lives */
-    int      valid;
-} clut_content_cache[CLUT_CONTENT_CACHE_SIZE];
-
-static inline int clut_cache_index(int clut_x, int clut_y, int format)
-{
-    /* Hash: combine coords + format, mask to cache size.
-     * With 64 entries, collisions should be very rare. */
-    unsigned h = ((unsigned)clut_x * 7) ^ ((unsigned)clut_y * 31) ^ ((unsigned)format * 127);
-    return (int)(h & (CLUT_CONTENT_CACHE_SIZE - 1));
-}
-
-static inline int alloc_clut_cbp(void)
-{
-    int cbp = CLUT_CBP_BASE + clut_robin_idx * CLUT_CBP_STRIDE;
-    clut_robin_idx = (clut_robin_idx + 1) % CLUT_ROBIN_SLOTS;
-
-    /* Invalidate CLUT content cache entries whose CBP slot is being
-     * reused.  Also invalidate prim_tex_cache entries that reference
-     * this CBP — they hold stale hw_cbp after the round-robin wraps. */
-    for (int i = 0; i < CLUT_CONTENT_CACHE_SIZE; i++) {
-        if (clut_content_cache[i].valid && clut_content_cache[i].cbp == cbp)
-            clut_content_cache[i].valid = 0;
-    }
-    Prim_InvalidateTexCache_CBP(cbp);
-
-    return cbp;
-}
+/* ── Dual-format direct-mapped page slots ────────────────────────── */
+#define PAGE_LOCS        32    /* 16 X positions × 2 Y positions */
+#define PAGE_SLOTS       64    /* 32 per format (4BPP + 8BPP) */
+#define PAGE8_TBP_BASE   4096
+#define PAGE8_TBP_STRIDE 256   /* PSMT8 256×256 = 64KB = 256 blocks */
+#define PAGE4_TBP_BASE   12288 /* immediately after 8BPP region */
+#define PAGE4_TBP_STRIDE 128   /* PSMT4 256×256 = 32KB = 128 blocks */
 
 /* ── Compute page_id from PSX texture page coordinates ───────────── */
 /* page_x: 0,64,128..960 (halfword coords), page_y: 0 or 256 */
@@ -209,16 +160,24 @@ static inline int compute_page_id(int page_x, int page_y)
     return (page_x >> 6) + ((page_y >> 8) << 4);  /* 0..31 */
 }
 
-/* ── Compute deterministic TBP0 for a page (format-agnostic) ──── */
-static inline int page_tbp0(int page_id)
+/* ── Compute page slot index (format-specific) ───────────────────── */
+static inline int page_slot(int page_id, int tex_format)
 {
-    return PAGE_TBP_BASE + page_id * PAGE_TBP_STRIDE;
+    return tex_format * PAGE_LOCS + page_id;  /* 0..63 */
+}
+
+/* ── Compute deterministic TBP0 for a page (format-specific) ──── */
+static inline int page_tbp0(int page_id, int tex_format)
+{
+    return (tex_format == 0)
+        ? PAGE4_TBP_BASE + page_id * PAGE4_TBP_STRIDE   /* 4BPP */
+        : PAGE8_TBP_BASE + page_id * PAGE8_TBP_STRIDE;  /* 8BPP */
 }
 
 /* ── Per-page dirty tracking ───────────────────────────────────── */
-/* One gen + format per page slot.  If format changes, force re-upload. */
-static uint32_t page_gen[PAGE_SLOTS];     /* gen when page was last uploaded */
-static int      page_format[PAGE_SLOTS];  /* format when last uploaded (0=4BPP, 1=8BPP, -1=none) */
+/* One gen per slot (64 slots: 32 4BPP + 32 8BPP).
+ * No format field needed — format is implicit in the slot index. */
+static uint32_t page_gen[PAGE_SLOTS];
 
 /* ── Statistics ───────────────────────────────────────────────────── */
 static struct
@@ -240,9 +199,6 @@ static struct
 void Tex_Cache_Init(void)
 {
     memset(page_gen, 0, sizeof(page_gen));
-    memset(page_format, 0xFF, sizeof(page_format)); /* -1 = never uploaded */
-    clut_robin_idx = 0;
-    memset(clut_content_cache, 0, sizeof(clut_content_cache));
     memset(&tex_stats, 0, sizeof(tex_stats));
     tex_stats.vram_gen_at_start = vram_gen_counter;
 }
@@ -750,24 +706,22 @@ int Decode_TexPage_Cached(int tex_format,
     }
 
     int page_id = compute_page_id(tex_page_x, tex_page_y);
-    int tbp0 = page_tbp0(page_id);
+    int slot = page_slot(page_id, tex_format);
+    int tbp0 = page_tbp0(page_id, tex_format);
 
-    /* ── Check if page needs re-upload (dirty or format change) ── */
+    /* ── Check if page needs re-upload (VRAM dirty) ────────────────── */
     int tex_hw_w = (tex_format == 0) ? 64 : 128;  /* halfword width of page data */
     uint32_t current_page_gen = get_region_gen(tex_page_x, tex_page_y, tex_hw_w, 256);
 
-    int page_dirty = (page_gen[page_id] != current_page_gen ||
-                      page_format[page_id] != tex_format);
+    int page_dirty = (page_gen[slot] != current_page_gen);
     if (page_dirty)
     {
-        int format_changed = (page_format[page_id] != tex_format);
-        uint32_t old_gen = page_gen[page_id];
+        uint32_t old_gen = page_gen[slot];
 
         /* Determine which block-rows within the page are dirty.
          * Each block-row covers 16 scanlines.  A page has 16 block-rows.
-         * If format changed or page was never uploaded (old_gen==0),
-         * upload everything. */
-        int use_partial = (!format_changed && old_gen != 0);
+         * If page was never uploaded (old_gen==0), upload everything. */
+        int use_partial = (old_gen != 0);
         uint16_t dirty_mask = 0; /* bit i = block-row i is dirty */
 
         if (use_partial)
@@ -799,6 +753,12 @@ int Decode_TexPage_Cached(int tex_format,
         {
             /* Full page upload */
             tex_stats.full_uploads++;
+#ifdef ENABLE_SUBSYSTEM_PROFILER
+            gpu_frame_stats.tex_upload_full++;
+            gpu_frame_stats.tex_upload_rows += 256;
+            if (tex_format == 1) gpu_frame_stats.tex_upload_8bpp++;
+            else                 gpu_frame_stats.tex_upload_4bpp++;
+#endif
             if (tex_format == 1)
                 Upload_Indexed_8BPP(tbp0, tex_page_x, tex_page_y);
             else
@@ -807,6 +767,11 @@ int Decode_TexPage_Cached(int tex_format,
         else
         {
             tex_stats.partial_uploads++;
+#ifdef ENABLE_SUBSYSTEM_PROFILER
+            gpu_frame_stats.tex_upload_partial++;
+            if (tex_format == 1) gpu_frame_stats.tex_upload_8bpp++;
+            else                 gpu_frame_stats.tex_upload_4bpp++;
+#endif
             /* Partial upload: emit one transfer per contiguous dirty range */
             int br = 0;
             while (br < 16)
@@ -816,6 +781,9 @@ int Decode_TexPage_Cached(int tex_format,
                 while (br < 16 && (dirty_mask & (1 << br))) br++;
                 int start_row = start * 16;
                 int num_rows  = (br - start) * 16;
+#ifdef ENABLE_SUBSYSTEM_PROFILER
+                gpu_frame_stats.tex_upload_rows += num_rows;
+#endif
                 if (tex_format == 1)
                     Upload_Indexed_8BPP_Partial(tbp0, tex_page_x, tex_page_y, start_row, num_rows);
                 else
@@ -823,13 +791,11 @@ int Decode_TexPage_Cached(int tex_format,
             }
         }
 
-        page_gen[page_id] = current_page_gen;
-        page_format[page_id] = tex_format;
+        page_gen[slot] = current_page_gen;
         tex_stats.page_uploads++;
         /* Invalidate prim_tex_cache entries referencing this page.
-         * The gen check alone is NOT sufficient: format changes (4bpp↔8bpp)
-         * cause a GS re-upload without dirtying PSX VRAM, so stale entries
-         * with the old format would falsely HIT on matching gen. */
+         * With dual-format slots, only THIS format's entry is affected,
+         * but we invalidate all formats for safety (3 array writes). */
         Prim_InvalidateTexCache_Page(tex_page_x, tex_page_y);
     }
     else
@@ -901,11 +867,11 @@ void Tex_Cache_DumpStats(void)
            (unsigned long)vram_gen_counter,
            (unsigned long)(vram_gen_counter - tex_stats.vram_gen_at_start));
     printf("--------------------------------------------\n");
-    printf("Page gen (fmt): ");
+    printf("Page gen (slot): ");
     for (int i = 0; i < PAGE_SLOTS; i++)
         if (page_gen[i])
-            printf("[%d]=%lu(f%d) ", i, (unsigned long)page_gen[i], page_format[i]);
-    printf("\nCLUT robin idx: %d/%d\n", clut_robin_idx, CLUT_ROBIN_SLOTS);
+            printf("[%d]=%lu ", i, (unsigned long)page_gen[i]);
+    printf("\n");
     printf("============================================\n\n");
 }
 
@@ -915,8 +881,6 @@ void Tex_Cache_ResetStats(void)
     tex_stats.vram_gen_at_start = vram_gen_counter;
     /* Reset page dirty tracking to force re-upload on next access */
     memset(page_gen, 0, sizeof(page_gen));
-    memset(page_format, 0xFF, sizeof(page_format));
-    clut_robin_idx = 0;
 }
 
 /* ── Per-pixel texture window decode (legacy, used as fallback) ───── */

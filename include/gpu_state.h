@@ -306,6 +306,11 @@ typedef struct {
     uint32_t vram_copy;     /* VRAM→VRAM copy (GP0.80) */
     uint32_t texcache_hit;  /* prim_tex_cache hits */
     uint32_t texcache_miss; /* prim_tex_cache misses → Decode_TexPage_Cached */
+    uint32_t tex_upload_full;    /* full page uploads (all 256 rows) */
+    uint32_t tex_upload_partial; /* partial page uploads (subset of rows) */
+    uint32_t tex_upload_4bpp;    /* 4BPP page uploads */
+    uint32_t tex_upload_8bpp;    /* 8BPP page uploads */
+    uint32_t tex_upload_rows;    /* total rows actually uploaded */
 } gpu_frame_stats_t;
 extern gpu_frame_stats_t gpu_frame_stats;
 int Decode_CLUT4_Texture(int clut_x, int clut_y, int tex_x, int tex_y,

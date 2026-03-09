@@ -256,7 +256,8 @@ void profiler_frame_end(uint64_t psx_cycles_this_frame)
                         "  Poly tex=%.1f flat=%.1f | Rect tex=%.1f flat=%.1f\n"
                         "  Line=%.1f Fill=%.1f\n"
                         "  VRAM: load=%.1f store=%.1f copy=%.1f\n"
-                        "  TexCache: hit=%.1f miss=%.1f (%.1f%% hit rate)\n",
+                        "  TexCache: hit=%.1f miss=%.1f (%.1f%% hit rate)\n"
+                        "  Uploads: full=%.1f partial=%.1f (4bpp=%.1f 8bpp=%.1f) rows=%.0f\n",
                         (unsigned long)prof.frames,
                         gpu_frame_stats.poly_tex / nf,
                         gpu_frame_stats.poly_flat / nf,
@@ -272,7 +273,12 @@ void profiler_frame_end(uint64_t psx_cycles_this_frame)
                         (gpu_frame_stats.texcache_hit + gpu_frame_stats.texcache_miss > 0)
                             ? (100.0 * gpu_frame_stats.texcache_hit /
                                (gpu_frame_stats.texcache_hit + gpu_frame_stats.texcache_miss))
-                            : 0.0);
+                            : 0.0,
+                        gpu_frame_stats.tex_upload_full / nf,
+                        gpu_frame_stats.tex_upload_partial / nf,
+                        gpu_frame_stats.tex_upload_4bpp / nf,
+                        gpu_frame_stats.tex_upload_8bpp / nf,
+                        gpu_frame_stats.tex_upload_rows / nf);
                 /* Reset for next report interval */
                 memset(&gpu_frame_stats, 0, sizeof(gpu_frame_stats));
             }
