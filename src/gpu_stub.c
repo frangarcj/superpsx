@@ -87,6 +87,10 @@ uint32_t vram_gen_counter = 0;
 
 uint64_t gpu_busy_until = 0;
 
+gs_state_t gs_state = {0};
+
+gpu_frame_stats_t gpu_frame_stats = {0};
+
 /* ── superpsx.h public GPU functions ────────────────────────────────── */
 
 void Init_Graphics(void) {}
@@ -205,6 +209,10 @@ void Tex_Cache_DirtyRegion(int x, int y, int w, int h)
 
 int Translate_GP0_to_GS(uint32_t *psx_cmd) { 
     (void)psx_cmd; 
+    return 0;
+}
+int GPU_TryFastEmit(uint32_t *psx_cmd) {
+    (void)psx_cmd;
     return 0;
 }
 void Prim_InvalidateGSState(void) {}
