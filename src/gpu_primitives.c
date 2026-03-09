@@ -676,6 +676,416 @@ static void emit_poly_state_and_verts(
 #endif
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+ *  GPU_TryFastEmit — Unified fast path for all common primitives
+ *
+ *  Called from DMA parsers (linked-list + block mode) BEFORE
+ *  Translate_GP0_to_GS().  Handles the hot-path case where GS state
+ *  is unchanged from the previous primitive and texture cache is hit.
+ *
+ *  Returns:  >0 = PSX words consumed (fast path handled the command)
+ *             0 = cold path needed → caller falls through to
+ *                 Translate_GP0_to_GS()
+ *
+ *  Handles: polygons (0x20-0x3F), rectangles (0x60-0x7F)
+ *  Does NOT handle: lines, polylines, fill-rect, VRAM ops, env cmds
+ * ═══════════════════════════════════════════════════════════════════ */
+int GPU_TryFastEmit(uint32_t *psx_cmd)
+{
+    uint32_t cmd_word = psx_cmd[0];
+    uint32_t cmd = (cmd_word >> 24) & 0xFF;
+
+    /* ── Polygon fast path (0x20-0x3F) ── */
+    if ((cmd & 0xE0) == 0x20)
+    {
+        int is_quad     = (cmd & 0x08) != 0;
+        int is_shaded   = (cmd & 0x10) != 0;
+        int is_textured = (cmd & 0x04) != 0;
+        int is_semi_trans = (cmd & 0x02) != 0;
+        int is_raw_tex  = is_textured && (cmd & 0x01);
+        int use_dither  = dither_enabled && (is_shaded || (is_textured && !is_raw_tex));
+
+        /* Build state key (must match emit_poly_state_and_verts) */
+        int cmd_key = is_raw_tex | (use_dither << 1) | (is_semi_trans << 2) |
+                      (semi_trans_mode << 3) | (is_textured << 5);
+
+        if (!gs_state.valid || cmd_key != gs_state.last_cmd_key)
+            return 0; /* state changed → cold path */
+
+        /* For textured: verify texture page cache is still hit + same slot */
+        int cache_hit = 0;
+        int clut_decoded = 0, hw_clut = 0;
+        (void)hw_clut; /* suppress -Wunused-but-set: needed for symmetry with cold path */
+        int uv_off_u = 0, uv_off_v = 0;
+        int poly_tex_page_x = tex_page_x;
+        int poly_tex_page_y = tex_page_y;
+
+        if (is_textured)
+        {
+            /* Parse command to find tpage (vertex 1's UV word upper 16 bits) */
+            int idx = 1;
+            /* Skip to V1's UV word: V0 has color(skip if V0)+XY+UV, V1 has color(if shaded)+XY+UV */
+            idx++;                             /* V0 XY */
+            idx++;                             /* V0 UV */
+            if (is_shaded) idx++;              /* V1 color */
+            idx++;                             /* V1 XY */
+            /* psx_cmd[idx] is V1's UV word — upper 16 bits contain tpage */
+            uint32_t tpage = psx_cmd[idx] >> 16;
+            poly_tex_page_x = (tpage & 0xF) * 64;
+            poly_tex_page_y = ((tpage >> 4) & 0x1) * 256;
+
+            /* Also extract CLUT from V0's UV word (bits 16..31) */
+            uint32_t uv0 = psx_cmd[2]; /* V0 UV is always at index 2 (cmd+XY+UV) */
+            int clut_x = ((uv0 >> 16) & 0x3F) * 16;
+            int clut_y = (uv0 >> 22) & 0x1FF;
+
+            /* Check tex page format from the tpage we just parsed */
+            int fast_format = (tpage >> 7) & 3;
+
+            cache_hit = prim_tex_cache_lookup(fast_format,
+                                              poly_tex_page_x, poly_tex_page_y,
+                                              clut_x, clut_y);
+            if (!cache_hit)
+                return 0; /* cache miss → cold path for full decode */
+
+            /* Verify same cache slot as last prim */
+            if (prim_tex_cache_last != gs_state.last_cache_slot)
+                return 0; /* different slot → need state re-emit */
+
+            /* For CSM2, verify TEXCLUT hasn't changed */
+            if (PTCACHE.csm)
+            {
+                uint64_t this_texclut = GS_SET_TEXCLUT(PSX_VRAM_FBW, clut_x / 16, clut_y);
+                if (gs_state.texclut != this_texclut)
+                    return 0; /* CLUT changed → cold path */
+            }
+
+            gpu_frame_stats.texcache_hit++;
+            int result = PTCACHE.result;
+            uv_off_u = PTCACHE.hw_tbp0;
+            uv_off_v = PTCACHE.hw_cbp;
+            if (result == 2 || result == 3)
+            {
+                clut_decoded = 1;
+                hw_clut = 1;
+                uv_off_u = 0;
+                uv_off_v = 0;
+            }
+            else if (result == 1)
+            {
+                clut_decoded = 1;
+            }
+
+            /* Update tex page state (PSX updates these on every textured prim) */
+            tex_page_x = poly_tex_page_x;
+            tex_page_y = poly_tex_page_y;
+            tex_page_format = fast_format;
+            semi_trans_mode = (tpage >> 5) & 3;
+
+            /* Update GPUSTAT bits from tpage */
+            gpu_stat = (gpu_stat & ~0x81FF) | (tpage & 0x1FF);
+            if (gp1_allow_2mb)
+                gpu_stat = (gpu_stat & ~0x8000) | (((tpage >> 11) & 1) << 15);
+            else
+                gpu_stat &= ~0x8000;
+        }
+
+        /* ── State is valid + key matches → emit PRIM only ── */
+        uint64_t prim_reg = is_quad ? 4 : 3; /* TRISTRIP or TRIANGLE */
+        if (is_shaded)    prim_reg |= (1 << 3); /* IIP */
+        if (is_textured) { prim_reg |= (1 << 4); prim_reg |= (1 << 8); } /* TME + FST */
+        if (is_semi_trans) prim_reg |= (1 << 6); /* ABE */
+
+        Push_GIF_Tag(GIF_TAG_LO(1, 0, 0, 0, 0, 1), GIF_REG_AD);
+        Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
+
+        /* ── Parse vertices + emit REGLIST ── */
+        int num_verts = is_quad ? 4 : 3;
+        int nreg = is_textured ? 3 : 2;
+        uint64_t regs = is_textured
+            ? ((uint64_t)GIF_REG_UV | ((uint64_t)GIF_REG_RGBAQ << 4) | ((uint64_t)GIF_REG_XYZ2 << 8))
+            : ((uint64_t)GIF_REG_RGBAQ | ((uint64_t)GIF_REG_XYZ2 << 4));
+        Push_GIF_Tag(GIF_TAG_LO(num_verts, 1, 0, 0, 1, nreg), regs);
+
+        uint64_t vdata[16]; /* max 4×3 = 12 */
+        int vc = 0;
+
+        uint32_t color = cmd_word & 0xFFFFFF;
+        uint64_t flat_rgbaq = 0;
+        if (!is_shaded)
+            flat_rgbaq = GS_SET_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0x3F800000);
+
+        int32_t ox = draw_offset_x + 2048;
+        int32_t oy = draw_offset_y + 2048;
+
+        int idx = 1;
+        for (int v = 0; v < num_verts; v++)
+        {
+            uint32_t c;
+            if (v == 0)
+                c = color;
+            else if (is_shaded)
+                c = psx_cmd[idx++] & 0xFFFFFF;
+            else
+                c = color;
+
+            uint32_t xy = psx_cmd[idx++];
+            int16_t px = (int16_t)((int32_t)((xy & 0xFFFF) << 21) >> 21);
+            int16_t py = (int16_t)((int32_t)((xy >> 16) << 21) >> 21);
+
+            if (is_textured)
+            {
+                uint32_t uv_word = psx_cmd[idx++];
+                uint32_t u, v_coord;
+                if (clut_decoded)
+                {
+                    u = (uv_word & 0xFF) + uv_off_u;
+                    v_coord = ((uv_word >> 8) & 0xFF) + uv_off_v;
+                }
+                else
+                {
+                    u = Apply_Tex_Window_U(uv_word & 0xFF) + poly_tex_page_x;
+                    v_coord = Apply_Tex_Window_V((uv_word >> 8) & 0xFF) + poly_tex_page_y;
+                }
+                vdata[vc++] = GS_SET_XYZ(u << 4, v_coord << 4, 0);
+            }
+
+            if (is_shaded)
+                vdata[vc++] = GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000);
+            else
+                vdata[vc++] = flat_rgbaq;
+
+            vdata[vc++] = GS_SET_XYZ(((int32_t)px + ox) << 4, ((int32_t)py + oy) << 4, 0);
+        }
+
+        for (int i = 0; i < vc; i += 2)
+            Push_GIF_Data(vdata[i], (i + 1 < vc) ? vdata[i + 1] : 0);
+
+        /* Pixel area estimation */
+        {
+            int16_t x0 = (int16_t)((int32_t)((psx_cmd[1] & 0xFFFF) << 21) >> 21);
+            int16_t y0 = (int16_t)((int32_t)((psx_cmd[1] >> 16) << 21) >> 21);
+            /* Find V1 XY — offset depends on shading/texturing */
+            int v1_xy_idx = 1 + 1 + (is_textured ? 1 : 0); /* skip V0: XY + UV? */
+            if (is_shaded) v1_xy_idx++; /* V1 color */
+            int16_t x1 = (int16_t)((int32_t)((psx_cmd[v1_xy_idx] & 0xFFFF) << 21) >> 21);
+            int16_t y1 = (int16_t)((int32_t)((psx_cmd[v1_xy_idx] >> 16) << 21) >> 21);
+            int v2_xy_idx = v1_xy_idx + 1 + (is_textured ? 1 : 0);
+            if (is_shaded) v2_xy_idx++;
+            int16_t x2 = (int16_t)((int32_t)((psx_cmd[v2_xy_idx] & 0xFFFF) << 21) >> 21);
+            int16_t y2 = (int16_t)((int32_t)((psx_cmd[v2_xy_idx] >> 16) << 21) >> 21);
+
+            uint32_t area = tri_area_abs(x0, y0, x1, y1, x2, y2);
+            if (is_quad)
+            {
+                int v3_xy_idx = v2_xy_idx + 1 + (is_textured ? 1 : 0);
+                if (is_shaded) v3_xy_idx++;
+                int16_t x3 = (int16_t)((int32_t)((psx_cmd[v3_xy_idx] & 0xFFFF) << 21) >> 21);
+                int16_t y3 = (int16_t)((int32_t)((psx_cmd[v3_xy_idx] >> 16) << 21) >> 21);
+                area += tri_area_abs(x1, y1, x3, y3, x2, y2);
+            }
+            gpu_estimated_pixels += area;
+        }
+
+        /* Update stats */
+        if (is_textured)
+            gpu_frame_stats.poly_tex++;
+        else
+            gpu_frame_stats.poly_flat++;
+
+        return idx; /* words consumed */
+    }
+
+    /* ── Rectangle fast path (0x60-0x7F) ── */
+    if ((cmd & 0xE0) == 0x60)
+    {
+        int is_textured  = (cmd & 0x04) != 0;
+        int is_semi_trans = (cmd & 0x02) != 0;
+        int is_raw_tex   = is_textured && (cmd & 0x01);
+        int size_mode    = (cmd >> 3) & 3;
+        int is_var_size  = (size_mode == 0);
+
+        /* Bail on state changes requiring cold-path */
+        if (!gs_state.valid)
+            return 0;
+
+        /* Bail on texture flips — need STQ float math (cold path) */
+        if (is_textured && (tex_flip_x || tex_flip_y))
+            return 0;
+
+        /* Parse command words */
+        uint32_t color = cmd_word & 0xFFFFFF;
+        int idx = 1;
+
+        uint32_t xy = psx_cmd[idx++];
+        int16_t x = (int16_t)((int32_t)((xy & 0xFFFF) << 21) >> 21);
+        int16_t y = (int16_t)((int32_t)((xy >> 16) << 21) >> 21);
+
+        uint32_t uv_clut = 0;
+        if (is_textured)
+            uv_clut = psx_cmd[idx++];
+
+        int w, h;
+        if (is_var_size)
+        {
+            uint32_t wh = psx_cmd[idx++];
+            w = wh & 0x3FF;
+            h = (wh >> 16) & 0x1FF;
+        }
+        else
+        {
+            if (size_mode == 1) { w = 1; h = 1; }
+            else if (size_mode == 2) { w = 8; h = 8; }
+            else { w = 16; h = 16; }
+        }
+
+        gpu_estimated_pixels += (uint32_t)w * (uint32_t)h;
+
+        if (is_textured)
+        {
+            /* Check texture cache */
+            int clut_x = ((uv_clut >> 16) & 0x3F) * 16;
+            int clut_y = (uv_clut >> 22) & 0x1FF;
+
+            int need_perpixel = (tex_win_mask_x != 0 || tex_win_mask_y != 0) ||
+                                (tex_page_format == 0 || tex_page_format == 1);
+
+            if (!need_perpixel)
+                return 0; /* 15BPP direct — let cold path handle */
+
+            int cache_hit = prim_tex_cache_lookup(tex_page_format,
+                                                  tex_page_x, tex_page_y,
+                                                  clut_x, clut_y);
+            if (!cache_hit)
+                return 0; /* cache miss → cold path for full decode */
+
+            /* Build state key for rect: raw_tex | dthe=0 | semi_trans | trans_mode | textured */
+            int cmd_key = is_raw_tex | (0 << 1) | (is_semi_trans << 2) |
+                          (semi_trans_mode << 3) | (1 << 5);
+
+            /* Check if state matches (rect uses its own key pattern, so check last_cmd_key
+             * OR check if we set it to -1 which means "rect last") */
+            if (cmd_key != gs_state.last_cmd_key)
+            {
+                /* Different state key → BUT if only the cache slot changed,
+                 * we could still be fast. Actually let's bail to cold path
+                 * for any key mismatch. Cold path sets cmd_key=-1 for rects,
+                 * so first rect always goes cold. Subsequent same-type rects
+                 * will hit fast path. */
+                return 0;
+            }
+
+            /* Verify same cache slot */
+            if (prim_tex_cache_last != gs_state.last_cache_slot)
+                return 0;
+
+            /* For CSM2, verify TEXCLUT */
+            int csm = PTCACHE.csm;
+            if (csm)
+            {
+                uint64_t this_texclut = GS_SET_TEXCLUT(PSX_VRAM_FBW, clut_x / 16, clut_y);
+                if (gs_state.texclut != this_texclut)
+                    return 0;
+            }
+
+            gpu_frame_stats.texcache_hit++;
+            gpu_frame_stats.rect_tex++;
+
+            int result = PTCACHE.result;
+            int clut_decoded = (result == 1 || result == 2 || result == 3);
+            int hw_clut = (result == 2 || result == 3);
+
+            /* Compute UV coordinates */
+            uint32_t u0_cmd = uv_clut & 0xFF;
+            uint32_t v0_cmd = (uv_clut >> 8) & 0xFF;
+            uint32_t u0_gs, u1_gs, v0_gs, v1_gs;
+            if (clut_decoded)
+            {
+                int cache_slot_x = hw_clut ? 0 : PTCACHE.hw_tbp0;
+                int cache_slot_y = hw_clut ? 0 : PTCACHE.hw_cbp;
+                u0_gs = cache_slot_x + u0_cmd;
+                u1_gs = cache_slot_x + u0_cmd + w;
+                v0_gs = cache_slot_y + v0_cmd;
+                v1_gs = cache_slot_y + v0_cmd + h;
+            }
+            else
+            {
+                uint32_t u0_raw = Apply_Tex_Window_U(u0_cmd);
+                uint32_t v0_raw = Apply_Tex_Window_V(v0_cmd);
+                u0_gs = u0_raw + tex_page_x;
+                u1_gs = u0_raw + w + tex_page_x;
+                v0_gs = v0_raw + tex_page_y;
+                v1_gs = v0_raw + h + tex_page_y;
+            }
+
+            uint64_t rgbaq = GS_SET_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0x3F800000);
+
+            /* SPRITE: PRIM (A+D) + 2 vertices (REGLIST: UV+RGBAQ+XYZ2) */
+            uint64_t prim_reg = 6; /* SPRITE */
+            prim_reg |= (1 << 4);  /* TME */
+            prim_reg |= (1 << 8);  /* FST */
+            if (is_semi_trans)
+                prim_reg |= (1 << 6); /* ABE */
+
+            Push_GIF_Tag(GIF_TAG_LO(1, 0, 0, 0, 0, 1), GIF_REG_AD);
+            Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
+
+            int32_t sgx0 = ((int32_t)x + draw_offset_x + 2048) << 4;
+            int32_t sgy0 = ((int32_t)y + draw_offset_y + 2048) << 4;
+            int32_t sgx1 = ((int32_t)(x + w) + draw_offset_x + 2048) << 4;
+            int32_t sgy1 = ((int32_t)(y + h) + draw_offset_y + 2048) << 4;
+
+            uint64_t regs = (uint64_t)GIF_REG_UV | ((uint64_t)GIF_REG_RGBAQ << 4) | ((uint64_t)GIF_REG_XYZ2 << 8);
+            Push_GIF_Tag(GIF_TAG_LO(2, 1, 0, 0, 1, 3), regs);
+            uint64_t vdata[6];
+            vdata[0] = GS_SET_XYZ(u0_gs << 4, v0_gs << 4, 0);
+            vdata[1] = rgbaq;
+            vdata[2] = GS_SET_XYZ(sgx0, sgy0, 0);
+            vdata[3] = GS_SET_XYZ(u1_gs << 4, v1_gs << 4, 0);
+            vdata[4] = rgbaq;
+            vdata[5] = GS_SET_XYZ(sgx1, sgy1, 0);
+            for (int i = 0; i < 6; i += 2)
+                Push_GIF_Data(vdata[i], vdata[i + 1]);
+
+            return idx;
+        }
+        else
+        {
+            /* Flat (untextured) rectangle */
+            int cmd_key_flat = (0 /*raw*/) | (0 << 1 /*dthe*/) | (is_semi_trans << 2) |
+                               (semi_trans_mode << 3) | (0 << 5 /*not textured*/);
+
+            if (cmd_key_flat != gs_state.last_cmd_key)
+                return 0; /* state mismatch → cold path */
+
+            gpu_frame_stats.rect_flat++;
+
+            uint64_t rgbaq = GS_SET_RGBAQ(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, 0x80, 0x3F800000);
+
+            uint64_t prim_reg = 6; /* SPRITE */
+            if (is_semi_trans)
+                prim_reg |= (1 << 6);
+
+            Push_GIF_Tag(GIF_TAG_LO(1, 0, 0, 0, 0, 1), GIF_REG_AD);
+            Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
+
+            int32_t gx0 = ((int32_t)x + draw_offset_x + 2048) << 4;
+            int32_t gy0 = ((int32_t)y + draw_offset_y + 2048) << 4;
+            int32_t gx1 = ((int32_t)(x + w) + draw_offset_x + 2048) << 4;
+            int32_t gy1 = ((int32_t)(y + h) + draw_offset_y + 2048) << 4;
+
+            uint64_t regs = (uint64_t)GIF_REG_RGBAQ | ((uint64_t)GIF_REG_XYZ2 << 4);
+            Push_GIF_Tag(GIF_TAG_LO(2, 1, 0, 0, 1, 2), regs);
+            Push_GIF_Data(rgbaq, GS_SET_XYZ(gx0, gy0, 0));
+            Push_GIF_Data(rgbaq, GS_SET_XYZ(gx1, gy1, 0));
+
+            return idx;
+        }
+    }
+
+    return 0; /* command type not handled by fast path */
+}
+
 /* ── Main GP0 → GS translator ────────────────────────────────────── */
 
 int Translate_GP0_to_GS(uint32_t *psx_cmd)

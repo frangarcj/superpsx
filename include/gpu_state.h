@@ -320,6 +320,7 @@ uint32_t Tex_Cache_GetPageGen(int tex_format, int tex_page_x, int tex_page_y);
 
 /* gpu_primitives.c — GP0 command translation to GS */
 int Translate_GP0_to_GS(uint32_t *psx_cmd);
+int GPU_TryFastEmit(uint32_t *psx_cmd);
 void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
                           int16_t x1, int16_t y1, uint32_t color1,
                           int is_shaded, int is_semi_trans);
