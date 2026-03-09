@@ -178,18 +178,20 @@ Completed optimizations (P1-P15):
 - P17: VU0 matrix multiply in JIT — emit_inline_mvmva uses VMULAX/VMADDAY/VMADDZ/VADD via VU0JITCache. ~30% faster multiply, same code size. C call for matrix refresh.
 - P18: Shared matrix loads in ×3 variants — vu0_preloaded[] array lets ×3 callers (RTPT/NCT/NCDT/NCCT) preload matrices into VF1-4/VF7-10 once, skipping redundant C calls. NCDT: 600x→568x, 4 fewer lite calls per ×3 op.
 - P19: MMI PMAXW/PMINW saturation — replace SLT+MOVN clamp patterns with R5900 PMAXW/PMINW (signed per-word min/max). Saves ~6 words per 3-channel clamp across all GTE inline ops. RTPS: 125x→113x, NCDT: 568x→488x.
+- P20: RTPT vertex overlap — hide VU0 micro latency behind EE projection. While EE projects vertex N, VU0 computes vertex N+1 matrix multiply. RTPT: 297.8x→269.3x, micro speed 97.5%→102.7%.
+- P21: NCS family ×3 vertex overlap — NCT, NCDT, NCCT. Same pattern: overlap Light×V(N+1) with post-lighting of V(N). NCT: 322.7x→283.6x, NCDT: 488.0x→448.9x, NCCT: 408.0x→368.9x.
 
-Current expansion baselines (110/110 playground tests):
+Current expansion baselines (135/135 playground tests):
 - ALU: ADDU 40 (2.2x), ADDIU 39 (2.2x), SLL 39 (2.2x), LUI 38 (2.1x)
 - MulDiv: MULT 149 (8.3x), DIV 197 (10.9x), DIVU 165 (9.2x)
 - Memory: LW 133 (7.4x), SW 395 (21.9x), LB 133 (7.4x), SB 355 (19.7x)
 - GTE: MTC2 82 (4.6x), MFC2 83 (4.6x), LWC2 144 (8.0x), SWC2 422 (23.4x)
-- GTE commands: RTPS 2032 (112.9x), NCLIP 288 (16.0x), MVMVA 912 (50.7x)
-- GTE lighting: NCS 2160 (120.0x), NCDS 3152 (175.1x), NCDT 8784 (488.0x)
-- GTE ×3: RTPT 5360 (297.8x), NCT 5808 (322.7x), NCCT 7344 (408.0x)
+- GTE commands: RTPS 1808 (100.4x), NCLIP 288 (16.0x), MVMVA 912 (50.7x)
+- GTE lighting: NCS 1712 (95.1x), NCDS 2704 (150.2x), NCDT 8080 (448.9x)
+- GTE ×3: RTPT 4848 (269.3x), NCT 5104 (283.6x), NCCT 6640 (368.9x)
 - Mixed: GTE xform 529 (29.4x), SW burst 401 (22.3x)
 
-Next optimization targets (P20+):
+Next optimization targets (P22+):
 
 ## File Management
 
