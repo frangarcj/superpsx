@@ -3059,6 +3059,22 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         /* Flush lazy consts before conditional fast/slow split */
         flush_dirty_consts();
 
+        /* P22: Inline ISC skip for SWC2 when SMRV+aligned (same as SW) */
+        if (block_isc_cached
+            && smrv_is_known_ram(rs)
+            && align_is_known(rs) && (imm % 4 == 0))
+        {
+            EMIT_LW(REG_AT, 80, REG_SP);                     /* at = cached ISC     */
+            uint32_t *isc_skip = code_ptr;
+            emit(MK_I(0x05, REG_AT, REG_ZERO, 0));           /* bne at,zero,@skip   */
+            emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* [delay] and at,t8,s3 */
+            EMIT_ADDU(REG_AT, REG_AT, REG_S1);               /* addu at, at, s1     */
+            EMIT_SW(REG_T9, 0, REG_AT);                      /* store               */
+            int32_t skip_off = (int32_t)(code_ptr - isc_skip - 1);
+            *isc_skip = (*isc_skip & 0xFFFF0000) | ((uint32_t)skip_off & 0xFFFF);
+        }
+        else
+        {
         /* Cache Isolation check */
         uint32_t *isc_swc2;
         if (block_isc_cached)
@@ -3119,6 +3135,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                            (uint32_t)WriteWord, psx_pc,
                            (int16_t)emit_cycle_offset, 4, 1, 1,
                            dyn_dirty_mask);
+        }
         }
         reg_cache_invalidate();
     }
