@@ -8,7 +8,7 @@
  */
 #include "vu0_micro.h"
 
-#ifdef _EE
+#if defined(_EE) && defined(ENABLE_VU0_MICRO)
 
 #include <string.h>
 
@@ -128,4 +128,4 @@ void vu0_micro_prepare_matrix(R3000CPU *cpu, uint32_t mx_cv)
     vu0_write_matrix_to_datamem(VU0_QW_RT_COL1, col1, col2, col3, trans);
 }
 
-#endif /* _EE */
+#endif /* _EE && ENABLE_VU0_MICRO */
