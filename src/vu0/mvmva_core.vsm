@@ -1,0 +1,29 @@
+; mvmva_core.vsm — VU0 Micro: Multiply only (reuse VF01-04 from mvmva_full)
+;
+; Entry: VCALLMS 0x088 (byte offset 136)
+;
+; Assumes VF01-04 already loaded with matrix.
+; Same input/output layout as mvmva_full.
+;
+; 13 instructions
+
+        .vu
+        .align 4
+        .global vu0_mvmva_core
+        .global vu0_mvmva_core_end
+
+vu0_mvmva_core:
+        nop                     lq.xyzw    vf05, 0(vi00)       ; load vertex
+        itof0.xyzw  vf05, vf05  nop                             ; int -> float
+        nop                     nop                             ; ITOF latency
+        nop                     nop                             ; pipeline
+        mulax.xyz   acc, vf01, vf05  nop                        ; ACC = col1 * vx
+        madday.xyz  acc, vf02, vf05  nop                        ; ACC += col2 * vy
+        maddz.xyz   vf06, vf03, vf05  nop                      ; VF06 = ACC + col3 * vz
+        add.xyz     vf06, vf06, vf04  nop                      ; VF06 += translation
+        ftoi0.xyzw  vf07, vf06  nop                             ; float -> int32
+        nop                     nop                             ; FTOI latency
+        nop                     sq.xyzw    vf07, 15(vi00)      ; store result
+        nop[e]                  nop                             ; end program
+        nop                     nop                             ; E delay slot
+vu0_mvmva_core_end:

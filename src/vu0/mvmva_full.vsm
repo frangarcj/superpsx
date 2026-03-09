@@ -1,0 +1,45 @@
+; mvmva_full.vsm — VU0 Micro: Load matrix + multiply vertex + store result
+;
+; Entry: VCALLMS 0x000 (byte offset 0)
+;
+; Input (VU0 data memory):
+;   QW[0]  = vertex (int32 x, y, z, 0)
+;   QW[1]  = matrix col1 (float, pre-scaled /4096)
+;   QW[2]  = matrix col2 (float)
+;   QW[3]  = matrix col3 (float)
+;   QW[4]  = translation (float)
+;
+; Output (VU0 data memory):
+;   QW[15] = result MAC1, MAC2, MAC3, 0 (int32)
+;
+; VF state after execution:
+;   VF01-04 = matrix (persists for mvmva_core reuse)
+;   VF06    = result float
+;   VF07    = result int32
+;
+; 17 instructions
+
+        .vu
+        .align 4
+        .global vu0_mvmva_full
+        .global vu0_mvmva_full_end
+
+vu0_mvmva_full:
+        nop                     lq.xyzw    vf01, 1(vi00)       ; load col1
+        nop                     lq.xyzw    vf02, 2(vi00)       ; load col2
+        nop                     lq.xyzw    vf03, 3(vi00)       ; load col3
+        nop                     lq.xyzw    vf04, 4(vi00)       ; load translation
+        nop                     lq.xyzw    vf05, 0(vi00)       ; load vertex
+        itof0.xyzw  vf05, vf05  nop                             ; int -> float
+        nop                     nop                             ; ITOF latency
+        nop                     nop                             ; pipeline
+        mulax.xyz   acc, vf01, vf05  nop                        ; ACC = col1 * vx
+        madday.xyz  acc, vf02, vf05  nop                        ; ACC += col2 * vy
+        maddz.xyz   vf06, vf03, vf05  nop                      ; VF06 = ACC + col3 * vz
+        add.xyz     vf06, vf06, vf04  nop                      ; VF06 += translation
+        ftoi0.xyzw  vf07, vf06  nop                             ; float -> int32
+        nop                     nop                             ; FTOI latency
+        nop                     sq.xyzw    vf07, 15(vi00)      ; store result
+        nop[e]                  nop                             ; end program
+        nop                     nop                             ; E delay slot
+vu0_mvmva_full_end:

@@ -79,6 +79,48 @@ set(SUPERPSX_SOURCES
 )
 
 # ============================================================================
+# VU0 Micro Program Assembly Pipeline
+# .vsm → dvp-as → .o → extract_vutext.py → .bin → bin2c → .h
+# Always built (playground always enables VU0 micro, main target is optional)
+# ============================================================================
+find_program(DVP_AS dvp-as PATHS "$ENV{PS2DEV}/dvp/bin" REQUIRED)
+find_program(BIN2C bin2c PATHS "$ENV{PS2DEV}/ps2sdk/bin" REQUIRED)
+
+set(VU0_SRC_DIR "${CMAKE_SOURCE_DIR}/src/vu0")
+set(VU0_GEN_DIR "${CMAKE_BINARY_DIR}/generated/vu0")
+file(MAKE_DIRECTORY ${VU0_GEN_DIR})
+
+set(VU0_PROGRAMS mvmva_full mvmva_core)
+set(VU0_GENERATED_HEADERS)
+
+foreach(prog ${VU0_PROGRAMS})
+    set(_vsm "${VU0_SRC_DIR}/${prog}.vsm")
+    set(_obj "${VU0_GEN_DIR}/${prog}.o")
+    set(_bin "${VU0_GEN_DIR}/${prog}.bin")
+    set(_hdr "${VU0_GEN_DIR}/${prog}_data.h")
+
+    add_custom_command(OUTPUT ${_obj}
+        COMMAND ${DVP_AS} ${_vsm} -o ${_obj}
+        DEPENDS ${_vsm}
+        COMMENT "Assembling VU0: ${prog}.vsm"
+    )
+    add_custom_command(OUTPUT ${_bin}
+        COMMAND ${CMAKE_COMMAND} -E env python3
+                ${CMAKE_SOURCE_DIR}/cmake/extract_vutext.py ${_obj} ${_bin}
+        DEPENDS ${_obj} ${CMAKE_SOURCE_DIR}/cmake/extract_vutext.py
+        COMMENT "Extracting VU0: ${prog}.bin"
+    )
+    add_custom_command(OUTPUT ${_hdr}
+        COMMAND ${BIN2C} ${_bin} ${_hdr} ${prog}_data
+        DEPENDS ${_bin}
+        COMMENT "Generating VU0: ${prog}_data.h"
+    )
+    list(APPEND VU0_GENERATED_HEADERS ${_hdr})
+endforeach()
+
+add_custom_target(vu0_programs DEPENDS ${VU0_GENERATED_HEADERS})
+
+# ============================================================================
 # Executable target
 # ============================================================================
 add_executable(${PROJECT_NAME}.elf ${SUPERPSX_SOURCES})
@@ -124,6 +166,8 @@ endif()
 
 if(ENABLE_VU0_MICRO)
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_VU0_MICRO)
+    target_include_directories(${PROJECT_NAME}.elf PRIVATE ${VU0_GEN_DIR})
+    add_dependencies(${PROJECT_NAME}.elf vu0_programs)
 endif()
 
 if(HEADLESS)
@@ -251,10 +295,12 @@ target_include_directories(jit_playground.elf PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/tests/jit
+    ${VU0_GEN_DIR}
 )
 
 target_compile_options(jit_playground.elf PRIVATE -O2 -G0 -Wall)
 target_compile_definitions(jit_playground.elf PRIVATE JIT_PLAYGROUND ENABLE_VU0_MICRO)
+add_dependencies(jit_playground.elf vu0_programs)
 
 target_link_libraries(jit_playground.elf PRIVATE
     -lpatches
