@@ -35,6 +35,10 @@
 #define PSX_VRAM_HEIGHT 512
 #define PSX_VRAM_FBW (PSX_VRAM_WIDTH / 64) /* =16 in 64-pixel units */
 
+/* GS pixel storage mode for PSX VRAM.  CT16S (swizzled) matches PSX 15-bit.
+ * Change to GS_PSM_16 to test linear layout (debugging). */
+#define PSX_VRAM_PSM GS_PSM_16S
+
 /* ── GIF packet buffer ───────────────────────────────────────────── */
 #define GIF_BUFFER_SIZE 16384
 

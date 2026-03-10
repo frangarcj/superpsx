@@ -25,7 +25,7 @@ volatile uint64_t gpu_irq_delay_cycle = 0;
 int fb_address = 0;
 int fb_width = 640;
 int fb_height = 448;
-int fb_psm = GS_PSM_16S;
+int fb_psm = PSX_VRAM_PSM;
 
 /* GIF double-buffered packet buffers */
 unsigned __int128 gif_packet_buf[2][GIF_BUFFER_SIZE] __attribute__((aligned(128)));
@@ -344,7 +344,7 @@ void Init_Graphics(void)
         uint64_t dispfb = 0;
         dispfb |= (uint64_t)0 << 0;                  /* FBP (Base 0) */
         dispfb |= (uint64_t)PSX_VRAM_FBW << 9;       /* FBW (1024 pixels) */
-        dispfb |= (uint64_t)GS_PSM_16S << 15;        /* PSM (CT16S — matches PSX 15-bit VRAM) */
+        dispfb |= (uint64_t)PSX_VRAM_PSM << 15;       /* PSM — matches PSX 15-bit VRAM */
         dispfb |= (uint64_t)0 << 32;                 /* DBX */
         dispfb |= (uint64_t)0 << 43;                 /* DBY */
         *((volatile uint64_t *)0x12000070) = dispfb; /* DISPFB1 */

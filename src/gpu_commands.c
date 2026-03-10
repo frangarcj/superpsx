@@ -834,7 +834,7 @@ void GPU_WriteGP1(uint32_t data)
             uint64_t dispfb = 0;
             dispfb |= (uint64_t)0 << 0;
             dispfb |= (uint64_t)PSX_VRAM_FBW << 9;
-            dispfb |= (uint64_t)GS_PSM_16S << 15;
+            dispfb |= (uint64_t)PSX_VRAM_PSM << 15;
             dispfb |= (uint64_t)x << 32;
             dispfb |= (uint64_t)y << 43;
 

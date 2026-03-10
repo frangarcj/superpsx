@@ -491,7 +491,7 @@ static void emit_poly_state_and_verts(
                         /* CSM2: TCC=1+TEXA for transparency, CLD=1 unconditional */
                         want_tex0 = GS_SET_TEX0(PTCACHE.hw_tbp0, 4, psm, 8, 8,
                                                 1 /*TCC*/, (is_raw_tex ? 1 : 0),
-                                                0 /*CBA*/, GS_PSM_16S, 1 /*CSM2*/, 0, 1 /*CLD*/);
+                                                0 /*CBA*/, PSX_VRAM_PSM, 1 /*CSM2*/, 0, 1 /*CLD*/);
                         want_texclut = GS_SET_TEXCLUT(PSX_VRAM_FBW,
                                                       clut_x / 16, clut_y);
                     }
@@ -507,7 +507,7 @@ static void emit_poly_state_and_verts(
                 }
                 else
                 {
-                    want_tex0 = GS_SET_TEX0(4096, PSX_VRAM_FBW, GS_PSM_16S, 10, 10,
+                    want_tex0 = GS_SET_TEX0(4096, PSX_VRAM_FBW, PSX_VRAM_PSM, 10, 10,
                                             1, (is_raw_tex ? 1 : 0), 0, 0, 0, 0, 0);
                 }
                 need_texflush = !cache_hit;
@@ -515,7 +515,7 @@ static void emit_poly_state_and_verts(
             else
             {
                 /* Non-CLUT 15BPP: default VRAM view */
-                want_tex0 = GS_SET_TEX0(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9,
+                want_tex0 = GS_SET_TEX0(0, PSX_VRAM_FBW, PSX_VRAM_PSM, 10, 9,
                                         1, (is_raw_tex ? 1 : 0), 0, 0, 0, 0, 0);
             }
         }
@@ -1405,7 +1405,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
 
                 if (is_raw_texture)
                 {
-                    Push_GIF_Data(GS_SET_TEX0_SMALL(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9, 1, 1), GS_REG_TEX0);
+                    Push_GIF_Data(GS_SET_TEX0_SMALL(0, PSX_VRAM_FBW, PSX_VRAM_PSM, 10, 9, 1, 1), GS_REG_TEX0);
                     Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH);
                 }
 
@@ -1472,7 +1472,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 {
                     uint64_t flip_tex0 = 0;
                     flip_tex0 |= (uint64_t)PSX_VRAM_FBW << 14;
-                    flip_tex0 |= (uint64_t)GS_PSM_16S << 20;
+                    flip_tex0 |= (uint64_t)PSX_VRAM_PSM << 20;
                     flip_tex0 |= (uint64_t)10 << 26;
                     flip_tex0 |= (uint64_t)9 << 30;
                     flip_tex0 |= (uint64_t)1 << 34;
@@ -1532,7 +1532,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                             /* CSM2: TCC=1+TEXA for transparency, CLD=1 unconditional */
                             want_tex0_r = GS_SET_TEX0(rect_hw_tbp0, 4, psm, 8, 8,
                                                       1 /*TCC*/, (is_raw_texture ? 1 : 0),
-                                                      0 /*CBA*/, GS_PSM_16S, 1 /*CSM2*/, 0, 1 /*CLD*/);
+                                                      0 /*CBA*/, PSX_VRAM_PSM, 1 /*CSM2*/, 0, 1 /*CLD*/);
                             want_texclut_r = GS_SET_TEXCLUT(PSX_VRAM_FBW,
                                                             rect_clut_x / 16, rect_clut_y);
                         }
@@ -1549,12 +1549,12 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     }
                     else if (clut_decoded)
                     {
-                        want_tex0_r = GS_SET_TEX0(4096, PSX_VRAM_FBW, GS_PSM_16S, 10, 10,
+                        want_tex0_r = GS_SET_TEX0(4096, PSX_VRAM_FBW, PSX_VRAM_PSM, 10, 10,
                                                   1, (is_raw_texture ? 1 : 0), 0, 0, 0, 0, 0);
                     }
                     else
                     {
-                        want_tex0_r = GS_SET_TEX0(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9,
+                        want_tex0_r = GS_SET_TEX0(0, PSX_VRAM_FBW, PSX_VRAM_PSM, 10, 9,
                                                   1, (is_raw_texture ? 1 : 0), 0, 0, 0, 0, 0);
                     }
                     need_texflush_r = !rect_tex_cache_hit;
