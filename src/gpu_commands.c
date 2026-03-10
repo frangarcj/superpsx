@@ -8,56 +8,80 @@
 #include "gpu_state.h"
 #include <gif_tags.h>
 
-/* ── Command size lookup ─────────────────────────────────────────── */
+/* ── Command size lookup table (256 entries, O(1)) ───────────────── */
+/*
+ * gpu_cmd_size[cmd_byte] = number of PSX words for that GP0 command.
+ * 0 means "variable/special" (polylines, LoadImage, StoreImage).
+ * Indexed by the top byte of the GP0 command word.
+ *
+ * Layout:
+ *   0x00-0x01  NOP (1)
+ *   0x02       Fill rect (3)
+ *   0x03-0x1E  Reserved/NOP (1)
+ *   0x1F       IRQ (1)
+ *   0x20-0x3F  Polygons (4-12 depending on flags)
+ *   0x40-0x47  Non-poly lines: flat=3, shaded=4
+ *   0x48-0x5F  Polylines: 0 (variable length — use word-at-a-time)
+ *   0x60-0x7F  Rectangles (2-4 depending on flags)
+ *   0x80-0x9F  VRAM-to-VRAM copy (4)
+ *   0xA0       LoadImage (0 — variable: 3 header + N data words)
+ *   0xC0       StoreImage (0 — 3 words, but triggers read mode)
+ *   0xE1-0xE6  Environment commands (1)
+ *   Everything else: 1 (NOP/unknown)
+ */
+const uint8_t gpu_cmd_size[256] = {
+    /* 0x00-0x0F: NOP / fill / reserved */
+    1, 1, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    /* 0x10-0x1F: reserved, 0x1F = IRQ */
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
 
+    /* 0x20-0x2F: Polygons (tri/quad × flat/shaded × untex/tex) */
+    /*         base  +tex  +semi +tex+semi  +quad +quad+tex +quad+semi +quad+tex+semi */
+    /* 0x20 */ 4,  4,  4,  4,  7,  7,  7,  7,  5,  5,  5,  5,  9,  9,  9,  9,
+    /* 0x30: +shaded */
+    /* 0x30 */ 6,  6,  6,  6,  9,  9,  9,  9,  8,  8,  8,  8, 12, 12, 12, 12,
+
+    /* 0x40-0x4F: Lines (0x40-0x47 single, 0x48-0x4F polyline=variable) */
+    3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0,
+    /* 0x50-0x5F: Shaded lines (0x50-0x57 single, 0x58-0x5F polyline=variable) */
+    4, 4, 4, 4, 4, 4, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0,
+
+    /* 0x60-0x6F: Rectangles */
+    /* size=var: 0x60-0x63 untex(3), 0x64-0x67 tex(4) */
+    3, 3, 3, 3, 4, 4, 4, 4,
+    /* size=1x1: 0x68-0x6B untex(2), 0x6C-0x6F tex(3) */
+    2, 2, 2, 2, 3, 3, 3, 3,
+    /* 0x70-0x7F: Rectangles (cont.) */
+    /* size=8x8: 0x70-0x73 untex(2), 0x74-0x77 tex(3) */
+    2, 2, 2, 2, 3, 3, 3, 3,
+    /* size=16x16: 0x78-0x7B untex(2), 0x7C-0x7F tex(3) */
+    2, 2, 2, 2, 3, 3, 3, 3,
+
+    /* 0x80-0x9F: VRAM-to-VRAM copy (4 words) */
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+
+    /* 0xA0-0xAF: LoadImage = 0 (variable) */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    /* 0xB0-0xBF: reserved (1) */
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+
+    /* 0xC0-0xCF: StoreImage = 0 (special) */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    /* 0xD0-0xDF: reserved (1) */
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+
+    /* 0xE0-0xEF: Environment commands (1 word each) */
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    /* 0xF0-0xFF: reserved / NOP (1) */
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+};
+
+/* Compatibility wrapper (for callers outside the hot path) */
 int GPU_GetCommandSize(uint32_t cmd)
 {
-    if ((cmd & 0xE0) == 0x20)
-    { // Polygon
-        int is_quad = (cmd & 0x08) != 0;
-        int is_shaded = (cmd & 0x10) != 0;
-        int is_textured = (cmd & 0x04) != 0;
-        int num_verts = is_quad ? 4 : 3;
-
-        int words = 1;
-        words += num_verts;
-        if (is_textured)
-            words += num_verts;
-        if (is_shaded)
-            words += (num_verts - 1);
-        return words;
-    }
-    if (cmd == 0x02)
-        return 3;
-
-    // Rectangles (0x60-0x7F)
-    if ((cmd & 0xE0) == 0x60)
-    {
-        int is_textured = (cmd & 0x04) != 0;
-        int size_mode = (cmd >> 3) & 3;
-        int words = 1;
-        words += 1;
-        if (is_textured)
-            words += 1;
-        if (size_mode == 0)
-            words += 1;
-        return words;
-    }
-
-    // Lines (0x40-0x5F)
-    if ((cmd & 0xE0) == 0x40)
-    {
-        int is_shaded = (cmd & 0x10) != 0;
-        if (is_shaded)
-            return 4;
-        return 3;
-    }
-
-    // VRAM-to-VRAM copy (0x80-0x9F)
-    if ((cmd & 0xE0) == 0x80)
-        return 4;
-
-    return 1;
+    uint8_t s = gpu_cmd_size[cmd & 0xFF];
+    return s ? s : 1;
 }
 static uint32_t cache_e1 = 0xFFFFFFFF;
 static uint32_t cache_e3 = 0xFFFFFFFF;
@@ -925,89 +949,25 @@ void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count)
         i++;
     }
 
-    /* ── Block-level dispatch: process complete commands directly ── */
+    /* ── Block-level dispatch: table-driven ── */
     while (i < word_count)
     {
         uint32_t *cmd_ptr = &data_ptr[i];
         uint32_t cmd_word = cmd_ptr[0];
         uint32_t cmd_byte = cmd_word >> 24;
+        uint8_t cmd_size = gpu_cmd_size[cmd_byte];
 
-        /* ── Draw commands (0x20-0x7F) ── */
-        if (cmd_byte >= 0x20 && cmd_byte <= 0x7F)
+        /* ── Variable-length commands (polylines, LoadImage, StoreImage) ── */
+        if (cmd_size == 0)
         {
-            /* Polylines: must go word-by-word for the state machine */
-            if ((cmd_byte & 0xE8) == 0x48)
+            if (cmd_byte == 0xA0 && i + 3 <= word_count)
             {
-                while (i < word_count)
-                {
-                    GPU_WriteGP0(data_ptr[i]);
-                    i++;
-                    if (gpu_cmd_remaining == 0 && gpu_transfer_words == 0 && !polyline_active)
-                        break;
-                }
-                continue;
-            }
-
-            /* Fast path for flat polygons when gs_state is valid */
-            {
-                int fast_size = GPU_TryFastEmit(cmd_ptr);
-                if (fast_size > 0)
-                {
-                    i += fast_size;
-                    continue;
-                }
-            }
-
-            /* General draw command: use Translate_GP0_to_GS directly */
-            int size = GPU_GetCommandSize(cmd_byte);
-            if (i + size <= word_count)
-            {
-                Translate_GP0_to_GS(cmd_ptr);
-                i += size;
-            }
-            else
-            {
-                /* Partial command at end of block — fall back to word-at-a-time */
-                while (i < word_count)
-                {
-                    GPU_WriteGP0(data_ptr[i]);
-                    i++;
-                }
-            }
-            continue;
-        }
-
-        /* ── Fill rect (0x02) ── */
-        if (cmd_byte == 0x02)
-        {
-            if (i + 3 <= word_count)
-            {
-                Translate_GP0_to_GS(cmd_ptr);
-                i += 3;
-            }
-            else
-            {
-                while (i < word_count)
-                {
-                    GPU_WriteGP0(data_ptr[i]);
-                    i++;
-                }
-            }
-            continue;
-        }
-
-        /* ── LoadImage (0xA0): burst upload ── */
-        if (cmd_byte == 0xA0)
-        {
-            if (i + 3 <= word_count)
-            {
+                /* LoadImage: burst upload if entire block fits */
                 uint32_t dims = cmd_ptr[2];
                 uint32_t w = dims & 0xFFFF;
                 uint32_t h = dims >> 16;
-                if (w == 0)
-                    w = 1024;
-                if (h == 0)
-                    h = 512;
+                if (w == 0) w = 1024;
+                if (h == 0) h = 512;
                 uint32_t image_words = (w * h + 1) / 2;
                 if (i + 3 + image_words <= word_count)
                 {
@@ -1016,22 +976,49 @@ void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count)
                     continue;
                 }
             }
-            /* Incomplete — fall back to word-at-a-time for header + data */
-            GPU_WriteGP0(data_ptr[i]);
-            i++;
-            continue;
-        }
-
-        /* ── StoreImage (0xC0): 3-word header ── */
-        if (cmd_byte == 0xC0)
-        {
-            /* Feed all 3 words so GPU_WriteGP0 sets up the read state */
-            int end = (i + 3 <= word_count) ? i + 3 : word_count;
-            while (i < end)
+            else if (cmd_byte == 0xC0)
+            {
+                /* StoreImage: feed 3 header words to set up read state */
+                uint32_t end = (i + 3 <= word_count) ? i + 3 : word_count;
+                while (i < end)
+                {
+                    GPU_WriteGP0(data_ptr[i]);
+                    i++;
+                }
+                continue;
+            }
+            /* Polylines / fragmented LoadImage → word-by-word */
+            while (i < word_count)
             {
                 GPU_WriteGP0(data_ptr[i]);
                 i++;
+                if (gpu_cmd_remaining == 0 && gpu_transfer_words == 0 && !polyline_active)
+                    break;
             }
+            continue;
+        }
+
+        /* ── Draw commands: polys, rects, lines, fill-rect (0x02-0x7F) ── */
+        if (cmd_byte <= 0x7F)
+        {
+            int size = GPU_TryFastEmit(cmd_ptr);
+            if (size <= 0)
+            {
+                size = cmd_size;
+                if (i + size <= word_count)
+                    Translate_GP0_to_GS(cmd_ptr);
+                else
+                {
+                    /* Partial command at end of block → word-at-a-time */
+                    while (i < word_count)
+                    {
+                        GPU_WriteGP0(data_ptr[i]);
+                        i++;
+                    }
+                    continue;
+                }
+            }
+            i += size;
             continue;
         }
 
@@ -1057,9 +1044,7 @@ void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count)
             continue;
         }
 
-        /* ── Environment commands (E1-E6), NOP (00/01), IRQ (1F) ── */
-        /* These are all single-word commands; dispatch via GPU_WriteGP0
-         * which has the E-command dedup caching. */
+        /* ── E1-E6, NOP, IRQ, etc. — single-word via GPU_WriteGP0 ── */
         GPU_WriteGP0(cmd_word);
         i++;
     }

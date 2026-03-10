@@ -235,6 +235,8 @@ void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
 
 /* ── gpu_commands.c interface ───────────────────────────────────────── */
 
+const uint8_t gpu_cmd_size[256] = {0}; /* headless: all 0 (unused) */
+
 int GPU_GetCommandSize(uint32_t cmd)
 {
     (void)cmd;

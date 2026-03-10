@@ -1083,6 +1083,40 @@ int GPU_TryFastEmit(uint32_t *psx_cmd)
         }
     }
 
+    /* ── Line fast path (0x40-0x47, 0x50-0x57 — excludes polylines 0x48+/0x58+) ── */
+    if ((cmd & 0xE0) == 0x40)
+    {
+        /* Polylines (0x48-0x4F, 0x58-0x5F) are variable-length → always cold path */
+        if (cmd & 0x08)
+            return 0;
+
+        int is_shaded     = (cmd & 0x10) != 0;
+        int is_semi_trans  = (cmd & 0x02) != 0;
+
+        uint32_t color0 = cmd_word & 0xFFFFFF;
+        int idx = 1;
+
+        uint32_t xy0 = psx_cmd[idx++];
+        int16_t x0 = (int16_t)(xy0 & 0xFFFF);
+        int16_t y0 = (int16_t)(xy0 >> 16);
+
+        uint32_t color1 = color0;
+        if (is_shaded)
+            color1 = psx_cmd[idx++] & 0xFFFFFF;
+        uint32_t xy1 = psx_cmd[idx++];
+        int16_t x1 = (int16_t)(xy1 & 0xFFFF);
+        int16_t y1 = (int16_t)(xy1 >> 16);
+
+        Emit_Line_Segment_AD(x0, y0, color0, x1, y1, color1, is_shaded, is_semi_trans);
+
+        /* Update gs_state.alpha so next primitive's lazy check works */
+        if (is_semi_trans)
+            gs_state.alpha = Get_Alpha_Reg(semi_trans_mode);
+
+        gpu_frame_stats.line++;
+        return idx;
+    }
+
     return 0; /* command type not handled by fast path */
 }
 

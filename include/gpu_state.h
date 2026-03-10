@@ -329,6 +329,7 @@ void Prim_InvalidateTexCache(void);
 void Prim_InvalidateTexCache_Page(int tex_page_x, int tex_page_y);
 
 /* gpu_commands.c — GP0/GP1 command processing */
+extern const uint8_t gpu_cmd_size[256]; /* O(1) command size lookup */
 int GPU_GetCommandSize(uint32_t cmd);
 void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count);
 
