@@ -259,7 +259,7 @@ void Handle_Syscall(void)
 }
 
 /* ---- EE Exception Handler (for catching native faults) ---- */
-static void EE_ExceptionHandler(int cause)
+static void __attribute__((unused)) EE_ExceptionHandler(int cause)
 {
     uint32_t epc;
     asm volatile("mfc0 %0, $14" : "=r"(epc));

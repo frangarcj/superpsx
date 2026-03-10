@@ -884,6 +884,7 @@ void CDROM_Write(uint32_t addr, uint32_t data)
             cdrom.int_flag &= ~(val & 0x07);
             DLOG("ACK: val=%02X old_flag=%d new_flag=%d has_pending=%d\n",
                  val, old_flag, cdrom.int_flag, cdrom.has_pending);
+            (void)old_flag;
             if (cdrom.int_flag == 0)
             {
                 cdrom_irq_active = 0; /* No longer level-triggering */

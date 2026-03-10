@@ -8,6 +8,7 @@
 #include "superpsx.h"
 #include "psx_sio.h"
 
+#undef LOG_TAG
 #define LOG_TAG "MEM"
 
 /* PSX Memory Map:
@@ -93,7 +94,8 @@ void Init_MemoryLUT(void)
 
 /* Memory control regs the BIOS writes during init */
 static uint32_t mem_ctrl[16];
-static uint32_t ram_size_reg = 0x00000B88;
+/* ram_size_reg: BIOS writes here but value is unused by emulation */
+/* static uint32_t ram_size_reg = 0x00000B88; */
 static uint32_t cache_ctrl = 0;
 
 void Init_Memory(void)
@@ -198,12 +200,14 @@ int Load_BIOS(const char *filename)
         printf("  BIOS loaded: %lu bytes at %p\n", (unsigned long)rd, psx_bios);
 
         /* Print first 4 instructions for verification */
-        uint32_t *bios32 = (uint32_t *)psx_bios;
-        int i;
-        for (i = 0; i < 4; i++)
+#ifdef ENABLE_DEBUG_LOG
         {
-            DLOG("  BIOS[%d]: 0x%08X\n", i, (unsigned)bios32[i]);
+            uint32_t *bios32 = (uint32_t *)psx_bios;
+            int i;
+            for (i = 0; i < 4; i++)
+                DLOG("  BIOS[%d]: 0x%08X\n", i, (unsigned)bios32[i]);
         }
+#endif
         return 0;
     }
 

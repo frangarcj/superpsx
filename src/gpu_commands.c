@@ -851,14 +851,11 @@ void GPU_WriteGP1(uint32_t data)
                        ((data & 0x3F) << 17) | ((data & 0x40) << 10);
 
             cache_gp1_08 = mode_bits;
-            uint32_t hres = data & 3;
-            uint32_t vres = (data >> 2) & 1;
             uint32_t pal = (data >> 3) & 1;
             uint32_t interlace = (data >> 5) & 1;
-            int widths[] = {256, 320, 512, 640};
-            DLOG("GP1(08) Display Mode CHANGED: %dx%d %s %s\n",
-                 widths[hres], vres ? 480 : 240,
-                 pal ? "PAL" : "NTSC", interlace ? "Interlaced" : "Progressive");
+            DLOG("GP1(08) Display Mode CHANGED: %s %s hres=%u vres=%u\n",
+                 pal ? "PAL" : "NTSC", interlace ? "Interlaced" : "Progressive",
+                 (unsigned)(data & 3), (unsigned)((data >> 2) & 1));
 
             SetGsCrt(interlace, pal ? 3 : 2, 0);
             Update_GS_Display();
