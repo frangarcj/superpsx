@@ -905,6 +905,18 @@ static inline int run_jit_chain(uint64_t deadline)
 #endif
                 global_cycles = deadline;
             }
+            /* Restore poll patch so the block can re-execute normally
+             * after the scheduler fires events that may change IO state.
+             * Without this, the block stays patched to abort and never
+             * actually reads the changed IO value. */
+            if (poll_patched_addr)
+            {
+                poll_patched_addr[0] = poll_patched_saved[0];
+                poll_patched_addr[1] = poll_patched_saved[1];
+                poll_patched_addr = NULL;
+                jit_flush_pending = 1;
+            }
+            idle_skip_count = 0;
             return RUN_RES_BREAK;
         }
     }
