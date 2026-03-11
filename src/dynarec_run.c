@@ -30,7 +30,6 @@
  *  Constants and Result Codes
  * ================================================================ */
 #define HBLANK_BATCH_SIZE 32
-#define ENABLE_PERF_REPORT /* Enabled by default for visible feedback */
 
 /* Execution results for the JIT engine */
 #define RUN_RES_NORMAL 0
@@ -122,10 +121,8 @@ static uint32_t frame_limit_next_ms = 0;
 static const uint32_t FRAME_TIME_NTSC_US = 16667; /* 1000000 / 60 */
 static const uint32_t FRAME_TIME_PAL_US = 20000;  /* 1000000 / 50 */
 
-#ifdef ENABLE_PERF_REPORT
 static uint64_t perf_last_report_cycle = 0;
 static uint32_t perf_last_report_tick = 0;
-#endif
 
 /* Main execution flow state */
 static int binary_loaded = 0;
@@ -571,8 +568,7 @@ static inline void handle_vram_dump(uint32_t iterations)
 
 static inline void handle_performance_report(void)
 {
-#ifdef ENABLE_PERF_REPORT
-    if ((perf_frame_count % 60) == 0)
+    if (psx_config.perf_report && (perf_frame_count % 60) == 0)
     {
         uint32_t now_ms = get_wall_ms();
         uint32_t elapsed_ms = now_ms - perf_last_report_tick;
@@ -594,7 +590,6 @@ static inline void handle_performance_report(void)
         dynarec_print_stats();
         dynarec_print_jit_profile();
     }
-#endif
 }
 
 static inline void sync_hardware_and_interrupts(void)

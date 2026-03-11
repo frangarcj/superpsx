@@ -47,6 +47,7 @@ int load_config_file(void)
     psx_config.frame_limit = 1;
     psx_config.gte_vu0 = 1;
     psx_config.show_fps = 0;
+    psx_config.perf_report = 0;
     strncpy(psx_config.bios_path, BIOS_PATH_DEFAULT, sizeof(psx_config.bios_path) - 1);
     psx_config.bios_path[sizeof(psx_config.bios_path) - 1] = '\0';
 
@@ -170,6 +171,11 @@ int load_config_file(void)
         {
             psx_config.show_fps = (atoi(val) != 0 && strcasecmp(val, "false") != 0);
             printf("CONFIG: show_fps = %d\n", psx_config.show_fps);
+        }
+        else if (strcasecmp(key, "perf_report") == 0)
+        {
+            psx_config.perf_report = (atoi(val) != 0 && strcasecmp(val, "false") != 0);
+            printf("CONFIG: perf_report = %d\n", psx_config.perf_report);
         }
         line = next;
     }

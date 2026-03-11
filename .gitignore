@@ -31,6 +31,9 @@ isos/*
 jit_optimization_analysis.md
 superpsx_improvement_analysis.md
 gpu_audit.md.resolved
+docs/crash_profile_analysis.md
+docs/gpu_optimization_plan.md
+docs/vu0_micro_analysis.md
 
 # Temporary working documents (emulator analysis, scratch notes)
 .tmp/

@@ -21,6 +21,7 @@ typedef struct {
     int  frame_limit;         /* 1 = cap at 60fps NTSC / 50fps PAL (default 1) */
     int  gte_vu0;             /* 1 = use VU0 macro mode for RTPS/RTPT (default 1) */
     int  show_fps;            /* 1 = show frame counter on OSD (default 0) */
+    int  perf_report;         /* 1 = print JIT/EMU perf stats to stdout (default 0) */
 } PSXConfig;
 
 extern PSXConfig psx_config;
