@@ -109,6 +109,10 @@ extern int draw_clip_y2;
 extern int disp_range_y1;
 extern int disp_range_y2;
 
+/* Display start in VRAM (from GP1(05h)) */
+extern int display_start_x;
+extern int display_start_y;
+
 /* Texture page state (from GP0 E1) */
 extern int tex_page_x;
 extern int tex_page_y;

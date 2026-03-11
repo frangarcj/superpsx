@@ -1,7 +1,6 @@
 #include <stdint.h>
 #include <kernel.h>
 #include <sifrpc.h>
-#include <debug.h>
 #include <unistd.h>
 #include <iopcontrol.h>
 #include <sbv_patches.h>
@@ -16,6 +15,7 @@
 #include "spu.h"
 #include "iso_image.h"
 #include "iso_fs.h"
+#include "osd.h"
 
 #include <string.h>
 #include <limits.h>
@@ -129,8 +129,6 @@ int main(int argc, char *argv[])
         }
     }
 
-    init_scr();
-    scr_printf("SuperPSX v0.2 - Native Dynarec\n");
     printf("SuperPSX v0.2 - Native Dynarec\n");
     printf("Initializing SuperPSX... with %d arguments\n", argc);
     for (int i = 0; i < argc; i++)
@@ -150,8 +148,8 @@ int main(int argc, char *argv[])
     if (!psx_config.boot_bios_only && psx_exe_filename_buf[0] == '\0')
     {
         printf("No ROM specified via argument or config file.\n");
-        scr_printf("No ROM specified.\nPlace a superpsx.ini next to the ELF with:\n  rom = path/to/game.cue\n  (or: boot = bios)\n");
-        scr_printf("Halting.\n");
+        printf("No ROM specified.\nPlace a superpsx.ini next to the ELF with:\n  rom = path/to/game.cue\n  (or: boot = bios)\n");
+        printf("Halting.\n");
         deinit_only_boot_ps2_filesystem_driver();
         SleepThread();
         return 1;
@@ -165,7 +163,7 @@ int main(int argc, char *argv[])
 
     Init_SuperPSX();
 
-    scr_printf("SuperPSX finished.\n");
+    printf("SuperPSX finished.\n");
 
     if (psx_config.controllers_enabled)
         Joystick_Shutdown();
@@ -185,6 +183,7 @@ void Init_SuperPSX(void)
     fflush(stdout);
 
     Init_Graphics();
+    osd_boot_log("SuperPSX v0.2 - Native Dynarec");
 
     Init_Memory();
     Init_Interrupts();
@@ -194,7 +193,7 @@ void Init_SuperPSX(void)
     if (psx_host_argc > 0 && psx_host_args)
     {
         PSX_SetArgs(psx_host_args, psx_host_argc);
-        printf("Wrote %d PSX args into scratchpad.\n", psx_host_argc);
+        osd_boot_log("PSX args: %d written", psx_host_argc);
     }
 
     if (!psx_config.boot_bios_only)
@@ -203,7 +202,7 @@ void Init_SuperPSX(void)
         if (psx_exe_filename && has_disc_extension(psx_exe_filename))
         {
             psx_boot_mode = BOOT_MODE_ISO;
-            printf("Disc image detected: %s\n", psx_exe_filename);
+            osd_boot_log("Disc: %s", psx_exe_filename);
 
             int open_result;
             if (has_cue_extension(psx_exe_filename))
@@ -213,15 +212,13 @@ void Init_SuperPSX(void)
 
             if (open_result < 0)
             {
-                printf("ERROR: Failed to open disc image: %s\n", psx_exe_filename);
-                scr_printf("Failed to open disc image. Halting.\n");
+                osd_boot_log("ERROR: Failed to open disc image");
                 SleepThread();
             }
 
             if (ISOFS_Init() < 0)
             {
-                printf("ERROR: Failed to parse ISO 9660 filesystem\n");
-                scr_printf("Failed to parse ISO. Halting.\n");
+                osd_boot_log("ERROR: Failed to parse ISO");
                 SleepThread();
             }
 
@@ -229,13 +226,13 @@ void Init_SuperPSX(void)
             {
                 char boot_path[256];
                 if (ISOFS_ReadBootPath(boot_path, sizeof(boot_path)) == 0)
-                    printf("Boot executable from SYSTEM.CNF: %s\n", boot_path);
+                    osd_boot_log("Boot: %s", boot_path);
                 else
-                    printf("WARNING: Could not parse SYSTEM.CNF boot path\n");
+                    osd_boot_log("WARNING: No SYSTEM.CNF boot path");
             }
 
             CDROM_InsertDisc();
-            printf("ISO mounted, disc inserted. BIOS will boot from CD.\n");
+            osd_boot_log("ISO mounted, disc inserted");
 
             /* Clear the EXE filename so the BIOS shell hook won't intercept */
             psx_exe_filename_buf[0] = '\0';
@@ -247,24 +244,23 @@ void Init_SuperPSX(void)
     }
     else
     {
-        printf("Boot mode: BIOS shell (no ROM)\n");
+        osd_boot_log("Boot mode: BIOS shell");
         psx_boot_mode = BOOT_MODE_EXE;
         psx_exe_filename_buf[0] = '\0';
     }
 
     if (Load_BIOS(psx_config.bios_path) < 0)
     {
-        printf("ERROR: Failed to load BIOS from %s!\n", psx_config.bios_path);
-        scr_printf("Failed to load BIOS. Halting.\n");
+        osd_boot_log("ERROR: BIOS load failed: %s", psx_config.bios_path);
         SleepThread();
     }
+    osd_boot_log("BIOS loaded OK");
 
     Init_CPU();
     Init_Dynarec();
 
-    printf("=== Starting Execution ===\n");
+    osd_boot_log("Starting execution...");
     fflush(stdout);
-    scr_printf("Starting PSX BIOS execution...\n");
 
     Run_CPU();
 

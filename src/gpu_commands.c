@@ -6,7 +6,10 @@
  * environment registers (E1-E6), and GP1 display/status commands.
  */
 #include "gpu_state.h"
+#include "osd.h"
+#include "config.h"
 #include <gif_tags.h>
+#include <time.h>
 
 /* ── Command size lookup table (256 entries, O(1)) ───────────────── */
 /*
@@ -31,50 +34,288 @@
  */
 const uint8_t gpu_cmd_size[256] = {
     /* 0x00-0x0F: NOP / fill / reserved */
-    1, 1, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1,
+    1,
+    3,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
     /* 0x10-0x1F: reserved, 0x1F = IRQ */
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
 
     /* 0x20-0x2F: Polygons (tri/quad × flat/shaded × untex/tex) */
     /*         base  +tex  +semi +tex+semi  +quad +quad+tex +quad+semi +quad+tex+semi */
-    /* 0x20 */ 4,  4,  4,  4,  7,  7,  7,  7,  5,  5,  5,  5,  9,  9,  9,  9,
+    /* 0x20 */ 4,
+    4,
+    4,
+    4,
+    7,
+    7,
+    7,
+    7,
+    5,
+    5,
+    5,
+    5,
+    9,
+    9,
+    9,
+    9,
     /* 0x30: +shaded */
-    /* 0x30 */ 6,  6,  6,  6,  9,  9,  9,  9,  8,  8,  8,  8, 12, 12, 12, 12,
+    /* 0x30 */ 6,
+    6,
+    6,
+    6,
+    9,
+    9,
+    9,
+    9,
+    8,
+    8,
+    8,
+    8,
+    12,
+    12,
+    12,
+    12,
 
     /* 0x40-0x4F: Lines (0x40-0x47 single, 0x48-0x4F polyline=variable) */
-    3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0,
+    3,
+    3,
+    3,
+    3,
+    3,
+    3,
+    3,
+    3,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
     /* 0x50-0x5F: Shaded lines (0x50-0x57 single, 0x58-0x5F polyline=variable) */
-    4, 4, 4, 4, 4, 4, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
 
     /* 0x60-0x6F: Rectangles */
     /* size=var: 0x60-0x63 untex(3), 0x64-0x67 tex(4) */
-    3, 3, 3, 3, 4, 4, 4, 4,
+    3,
+    3,
+    3,
+    3,
+    4,
+    4,
+    4,
+    4,
     /* size=1x1: 0x68-0x6B untex(2), 0x6C-0x6F tex(3) */
-    2, 2, 2, 2, 3, 3, 3, 3,
+    2,
+    2,
+    2,
+    2,
+    3,
+    3,
+    3,
+    3,
     /* 0x70-0x7F: Rectangles (cont.) */
     /* size=8x8: 0x70-0x73 untex(2), 0x74-0x77 tex(3) */
-    2, 2, 2, 2, 3, 3, 3, 3,
+    2,
+    2,
+    2,
+    2,
+    3,
+    3,
+    3,
+    3,
     /* size=16x16: 0x78-0x7B untex(2), 0x7C-0x7F tex(3) */
-    2, 2, 2, 2, 3, 3, 3, 3,
+    2,
+    2,
+    2,
+    2,
+    3,
+    3,
+    3,
+    3,
 
     /* 0x80-0x9F: VRAM-to-VRAM copy (4 words) */
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
 
     /* 0xA0-0xAF: LoadImage = 0 (variable) */
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
     /* 0xB0-0xBF: reserved (1) */
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
 
     /* 0xC0-0xCF: StoreImage = 0 (special) */
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
     /* 0xD0-0xDF: reserved (1) */
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
 
     /* 0xE0-0xEF: Environment commands (1 word each) */
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
     /* 0xF0-0xFF: reserved / NOP (1) */
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
 };
 
 /* Compatibility wrapper (for callers outside the hot path) */
@@ -104,6 +345,12 @@ void clear_gpu_param_cache(void)
     cache_gp1_08 = 0xFFFFFFFF;
 }
 
+/* ── Frame counter state ─────────────────────────────────────────── */
+static uint32_t frame_count = 0;
+static uint32_t fps_display = 0;
+static uint32_t speed_display = 0;
+static clock_t fps_clock_start = 0;
+
 /* ── GP0 Write ───────────────────────────────────────────────────── */
 
 void GPU_WriteGP0(uint32_t data)
@@ -111,6 +358,27 @@ void GPU_WriteGP0(uint32_t data)
     // Deferred flush from VBlank ISR
     if (gpu_pending_vblank_flush)
     {
+        if (psx_config.show_fps)
+        {
+            frame_count++;
+            clock_t now = clock();
+            if (now - fps_clock_start >= CLOCKS_PER_SEC)
+            {
+                fps_display = frame_count;
+                /* Speed %: vblanks/sec relative to target (60 NTSC, 50 PAL) */
+                uint32_t target = psx_config.region_pal ? 50 : 60;
+                uint32_t vblanks = osd_vblank_count;
+                osd_vblank_count = 0;
+                speed_display = (vblanks * 100 + target / 2) / target;
+                frame_count = 0;
+                fps_clock_start = now;
+            }
+            osd_printf(display_start_x + 4, display_start_y + 4,
+                       OSD_COLOR_WHITE, "%luFPS %lu%%  ",
+                       (unsigned long)fps_display,
+                       (unsigned long)speed_display);
+        }
+        osd_draw(); /* render OSD overlay before frame flush */
         Flush_GIF();
         gpu_pending_vblank_flush = 0;
     }
@@ -827,6 +1095,8 @@ void GPU_WriteGP1(uint32_t data)
             cache_gp1_05 = data;
             uint32_t x = data & 0x3FF;
             uint32_t y = (data >> 10) & 0x1FF;
+            display_start_x = x;
+            display_start_y = y;
 #ifdef TEX_DEBUG_OVERLAY
             printf("[DISP] GP1(05) display_start=(%u,%u)\n", x, y);
 #endif
@@ -966,8 +1236,10 @@ void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count)
                 uint32_t dims = cmd_ptr[2];
                 uint32_t w = dims & 0xFFFF;
                 uint32_t h = dims >> 16;
-                if (w == 0) w = 1024;
-                if (h == 0) h = 512;
+                if (w == 0)
+                    w = 1024;
+                if (h == 0)
+                    h = 512;
                 uint32_t image_words = (w * h + 1) / 2;
                 if (i + 3 + image_words <= word_count)
                 {

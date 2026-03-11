@@ -7,6 +7,7 @@
  * GPU_Flush, and Update_GS_Display.
  */
 #include "gpu_state.h"
+#include "osd.h"
 #include "scheduler.h"
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -44,6 +45,10 @@ int draw_clip_y2 = 480;
 /* PSX Display Range */
 int disp_range_y1 = 0;
 int disp_range_y2 = 0;
+
+/* Display start in VRAM (from GP1(05h)) */
+int display_start_x = 0;
+int display_start_y = 0;
 
 /* Texture page state (from GP0 E1) */
 int tex_page_x = 0;
@@ -206,6 +211,7 @@ void GPU_VBlank(void)
     // Do NOT flush here (ISR). Set flag to be handled in main thread.
     gpu_pending_vblank_flush = 1;
     gpu_stat ^= 0x80000000;
+    osd_vblank_count++;
 }
 
 void GPU_Flush(void)
@@ -325,8 +331,23 @@ void Init_Graphics(void)
      *     fprintf(gpu_debug_log, "GPU Debug Log\n");
      */
 
+    /* NOTE: GIF controller reset removed — graph_initialize handles
+     * the GS/GIF state correctly via graph_set_mode + SetGsCrt. */
+
     dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
     dma_channel_fast_waits(DMA_CHANNEL_GIF);
+
+    /* Prime DMA fast-wait: send a minimal NOP GIF packet so the COP0
+     * condition bit (used by dma_wait_fast) gets initialized.  Without
+     * this, dma_wait_fast() hangs forever on the first call because
+     * the bc0t condition is only updated after a DMA completion. */
+    {
+        static u128 nop_gif __attribute__((aligned(16)));
+        nop_gif = (u128)0;  /* NLOOP=0, EOP=0 → GIF ignores */
+        SyncDCache(&nop_gif, &nop_gif + 1);
+        dma_channel_send_normal(DMA_CHANNEL_GIF, &nop_gif, 1, 0, 0);
+        dma_channel_wait(DMA_CHANNEL_GIF, -1);
+    }
 
     if (!psx_vram_shadow)
     {
@@ -377,6 +398,9 @@ void Init_Graphics(void)
         Push_GIF_Data(GS_SET_XYZ((2048 + PSX_VRAM_WIDTH) << 4, (2048 + PSX_VRAM_HEIGHT) << 4, 0), GS_REG_XYZ2);
         Flush_GIF();
     }
+
+    /* Initialize On-Screen Display overlay (uploads font texture to GS VRAM) */
+    osd_init();
 
     printf("Graphics Initialized. GS rendering state set.\n");
 }

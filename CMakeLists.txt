@@ -46,6 +46,7 @@ else()
         src/gpu_primitives.c
         src/gpu_commands.c
         src/gpu_dma.c
+        src/osd.c
     )
 endif()
 
@@ -191,7 +192,6 @@ endif()
 target_link_libraries(${PROJECT_NAME}.elf PRIVATE
     -lpatches
     -lps2_drivers
-    -ldebug
     -lgraph
     -ldma
     -ldraw
@@ -299,7 +299,6 @@ target_link_libraries(jit_playground.elf PRIVATE
     ${VU0_OBJECTS}
     -lpatches
     -lps2_drivers
-    -ldebug
 )
 
 # ============================================================================
@@ -365,7 +364,6 @@ target_compile_definitions(gpu_playground.elf PRIVATE GPU_PLAYGROUND)
 target_link_libraries(gpu_playground.elf PRIVATE
     -lpatches
     -lps2_drivers
-    -ldebug
 )
 
 # Build PCSX2 command for running the GPU playground ELF

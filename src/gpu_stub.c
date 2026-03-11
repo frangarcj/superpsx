@@ -37,6 +37,9 @@ int draw_clip_y2 = 511;
 int disp_range_y1 = 0;
 int disp_range_y2 = 240;
 
+int display_start_x = 0;
+int display_start_y = 0;
+
 int tex_page_x = 0;
 int tex_page_y = 0;
 int tex_page_format = 0;
