@@ -165,6 +165,64 @@ void CDROM_InsertDisc(void)
     DLOG("Disc inserted\n");
 }
 
+/* ---- Shell close recovery stages ---- */
+static void cdrom_shell_close_stage2(void);
+static void cdrom_shell_close_stage3(void);
+
+static void cdrom_shell_close_stage2(void)
+{
+    /* Stage 2: ShellOpen clears, motor still on */
+    cdrom.stat = 0x10; /* ShellOpen only (motor spinning down check) */
+    Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_PENDING,
+                            global_cycles + 2000000U,
+                            cdrom_shell_close_stage3);
+}
+
+static void cdrom_shell_close_stage3(void)
+{
+    /* Stage 3: fully ready */
+    cdrom.disc_present = 1;
+    cdrom.stat = 0x00; /* All clear — idle, ready */
+    DLOG("Shell close complete — disc ready\n");
+}
+
+/* ---- Eject disc (shell open event) ---- */
+void CDROM_EjectDisc(void)
+{
+    cdrom.disc_present = 0;
+    cdrom.reading = 0;
+    cdrom.stat = 0x01; /* Error (no disc / shell open condition) */
+
+    /* Send async INT5 (error) to notify the game */
+    uint8_t resp[2];
+    resp[0] = cdrom.stat;
+    resp[1] = 0x08; /* Shell open error code */
+    memcpy(cdrom.response_fifo, resp, 2);
+    cdrom.response_count = 2;
+    cdrom.response_read_pos = 0;
+    cdrom.int_flag = 5;
+
+    /* Schedule I_STAT assertion */
+    cdrom_irq_active = 0;
+    Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_IRQ,
+                            global_cycles + 800,
+                            CDROM_DeferredIRQActivate);
+    DLOG("Disc ejected — INT5 sent\n");
+}
+
+/* ---- Close shell (re-insert disc) ---- */
+void CDROM_CloseShell(void)
+{
+    /* Stage 1: motor spinning up + shell still flagged */
+    cdrom.stat = 0x12; /* STAT_MOTOR_ON | STAT_SHELL_OPEN */
+
+    /* Schedule stage 2 after motor spinup: ShellOpen → clear */
+    Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_PENDING,
+                            global_cycles + 2000000U,
+                            cdrom_shell_close_stage2);
+    DLOG("Shell closing — motor spinup\n");
+}
+
 /* ---- Read data from the CD-ROM data FIFO (used by DMA3) ---- */
 uint32_t CDROM_ReadDataFIFO(uint8_t *dst, uint32_t count)
 {

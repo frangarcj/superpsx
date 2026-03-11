@@ -190,6 +190,8 @@ extern uint32_t psx_abort_pc;
 /*=== CD-ROM ===*/
 void CDROM_Init(void);
 void CDROM_InsertDisc(void);
+void CDROM_EjectDisc(void);
+void CDROM_CloseShell(void);
 uint32_t CDROM_Read(uint32_t addr);
 void CDROM_Write(uint32_t addr, uint32_t data);
 /* Set by scheduler when CD-ROM int_flag is active and signal delay expired.
