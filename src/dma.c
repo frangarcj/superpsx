@@ -15,8 +15,9 @@ static DmaChannel dma_channels[7];
 static uint32_t dma_dpcr = 0x07654321;
 static uint32_t dma_dicr = 0;
 
-/* Pending deferred DMA completion: which channel and IRQ state */
+/* Pending deferred DMA completion: which channel and deadline */
 static int dma_pending_channel = -1;
+static uint64_t dma_pending_deadline = 0;
 
 /* Cycles per word for SPU DMA (NoCash: ~4 cycles/word at CPU clock).
  * We use a conservative 16 cycles/word so tests see non-zero transfer time. */
@@ -40,6 +41,21 @@ static void DMA_FireCompletion(void) {
   if (ch >= 0 && ch < 7)
     dma_complete_channel(ch);
   dma_pending_channel = -1;
+}
+
+/* Effective cycles accounting for mid-block consumption in JIT */
+#define DMA_EFFECTIVE_CYCLES \
+  (global_cycles + (cpu.initial_cycles_left - cpu.cycles_left) + partial_block_cycles)
+
+/* Inline check for CHCR polling: complete DMA early if deadline reached,
+ * cancel the scheduler event (which would be a no-op duplicate). */
+static inline void dma_check_pending(void) {
+  if (dma_pending_channel >= 0 && DMA_EFFECTIVE_CYCLES >= dma_pending_deadline) {
+    int ch = dma_pending_channel;
+    dma_pending_channel = -1;
+    Scheduler_RemoveEvent(SCHED_EVENT_DMA);
+    dma_complete_channel(ch);
+  }
 }
 
 static void CDROM_DMA3(uint32_t madr, uint32_t bcr, uint32_t chcr) {
@@ -96,6 +112,9 @@ uint32_t DMA_Read(uint32_t addr) {
         /* DMA6/OTC: bit 1 hardwired to 1, only bits 24,28,30 exposed */
         if (ch == 6)
           return (dma_channels[ch].chcr & 0x51000000) | 0x00000002;
+        /* Check deferred DMA completion inline when polling CHCR */
+        if (ch == dma_pending_channel)
+          dma_check_pending();
         return dma_channels[ch].chcr;
       default:
         return 0;
@@ -186,7 +205,9 @@ void DMA_Write(uint32_t addr, uint32_t data) {
               delay_cycles = 32; /* minimum visible delay */
 
             dma_pending_channel = ch;
-            /* chcr bit24 stays set (busy) until the deferred event fires */
+            dma_pending_deadline = DMA_EFFECTIVE_CYCLES + delay_cycles;
+            /* Schedule event as fallback for IRQ-based completion;
+             * inline check in DMA_Read handles polling-based completion. */
             uint64_t dma_deadline = global_cycles + delay_cycles;
             Scheduler_ScheduleEvent(SCHED_EVENT_DMA, dma_deadline,
                                     DMA_FireCompletion);
