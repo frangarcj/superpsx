@@ -140,11 +140,11 @@ void DMA_Write(uint32_t addr, uint32_t data) {
           dma_channels[ch].chcr = data;
 
         if (data & 0x01000000) {
-          /* Check DPCR master enable for this channel */
-          if (!((dma_dpcr >> (ch * 4 + 3)) & 1)) {
-            dma_channels[ch].chcr &= ~0x01000000;
+          /* Check DPCR master enable for this channel.
+           * If master is disabled, leave bit24 SET (DMA stuck/pending) —
+           * hardware never clears it when the channel can't run. */
+          if (!((dma_dpcr >> (ch * 4 + 3)) & 1))
             break;
-          }
 
           /* SyncMode=0 channels (incl. DMA6) require bit28 (Start/Trigger) */
           uint32_t sync_mode = (dma_channels[ch].chcr >> 9) & 3;
@@ -154,8 +154,9 @@ void DMA_Write(uint32_t addr, uint32_t data) {
           }
 
           /* Execute the actual data transfer */
+          int dma_stalled = 0;
           if (ch == 2)
-            GPU_DMA2(dma_channels[ch].madr, dma_channels[ch].bcr,
+            dma_stalled = GPU_DMA2(dma_channels[ch].madr, dma_channels[ch].bcr,
                      dma_channels[ch].chcr);
           else if (ch == 3)
             CDROM_DMA3(dma_channels[ch].madr, dma_channels[ch].bcr,
@@ -189,6 +190,9 @@ void DMA_Write(uint32_t addr, uint32_t data) {
             uint64_t dma_deadline = global_cycles + delay_cycles;
             Scheduler_ScheduleEvent(SCHED_EVENT_DMA, dma_deadline,
                                     DMA_FireCompletion);
+          } else if (dma_stalled) {
+            /* Linked-list DMA stalled (loop detected) — leave bit24 set,
+             * the transfer never completes on real hardware either. */
           } else {
             /* All other channels / modes: clear bit24 and bit28 immediately */
             dma_channels[ch].chcr &= ~0x11000000;

@@ -26,12 +26,12 @@ uint64_t gpu_busy_until = 0;
 #define GPU_CYCLES_PER_PIXEL 2
 
 /* ── DMA Channel 2 entry point ───────────────────────────────────── */
-
-void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
+/* Returns 0 if transfer completed normally, 1 if stalled (e.g. linked list loop). */
+int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
 {
     uint32_t addr = madr & 0x1FFFFC;
     if ((chcr & 0x01000000) == 0)
-        return;
+        return 0;
 
     PROF_PUSH(PROF_GPU_DMA);
 
@@ -125,7 +125,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
             }
         }
         PROF_POP(PROF_GPU_DMA);
-        return;
+        return 0;
     }
 
     if (sync_mode == 2)
@@ -133,6 +133,8 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
         int packets = 0;
         int max_packets = 20000;
         uint32_t total_dma_words = 0; /* track total data words for cycle cost */
+        int chain_completed = 0; /* set to 1 when 0xFFFFFF terminator reached */
+        uint32_t start_addr = addr; /* for loop detection */
 
         while (packets < max_packets)
         {
@@ -255,10 +257,12 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
 
             packets++;
 
-            if (next == 0xFFFFFF)
+            if (next == 0xFFFFFF) {
+                chain_completed = 1;
                 break;
+            }
 
-            if (next == packet_addr)
+            if (next == packet_addr || (next & 0x1FFFFC) == start_addr)
             {
                 DLOG("Warning: Linked List Self-Reference %06" PRIX32 ". Breaking chain to allow CPU operation.\n", next);
                 break;
@@ -295,6 +299,10 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
             while (global_cycles >= scheduler_cached_earliest)
                 Scheduler_DispatchEvents(global_cycles);
         }
+
+        PROF_POP(PROF_GPU_DMA);
+        return chain_completed ? 0 : 1;
     }
     PROF_POP(PROF_GPU_DMA);
+    return 0;
 }

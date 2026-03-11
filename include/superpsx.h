@@ -229,7 +229,7 @@ uint32_t GPU_Read(void);
 uint32_t GPU_ReadStatus(void);
 void GPU_VBlank(void);
 void GPU_Flush(void);
-void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr);
+int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr);
 
 /*=== Main ===*/
 void Init_SuperPSX(void);

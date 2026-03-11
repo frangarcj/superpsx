@@ -107,11 +107,12 @@ uint32_t GPU_ReadStatus(void) { return 0x1C000000; }
 void GPU_VBlank(void) {}
 void GPU_Flush(void) {}
 
-void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
+int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
 {
     (void)madr;
     (void)bcr;
     (void)chcr;
+    return 0;
 }
 
 /* ── gpu_core.c interface ───────────────────────────────────────────── */
