@@ -24,7 +24,8 @@ test.exe
 tests/*
 !tests/jit/
 !tests/playground_gpu/
-isos/crash_pid*.txt
+isos/*
+!isos/.keepme
 
 # Analysis files (not tracked)
 jit_optimization_analysis.md
