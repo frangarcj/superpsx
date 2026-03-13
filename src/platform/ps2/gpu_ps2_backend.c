@@ -5,7 +5,7 @@
  * to the PS2-specific GS/GIF rendering layer.
  */
 #include "gpu_backend.h"
-#include "gpu_state.h"
+#include "gpu_ps2_state.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <malloc.h>
@@ -242,4 +242,59 @@ void GPU_Backend_VRAMCopy(int sx, int sy, int dx, int dy, int w, int h)
 void GPU_Backend_InvalidateState(void)
 {
     Prim_InvalidateGSState();
+}
+
+/* ── Fast polygon path (GS REGLIST for flat untextured polys) ────── */
+
+int GPU_Backend_TryFastPoly(uint32_t *cmd_buffer)
+{
+    uint32_t cmd_byte = cmd_buffer[0] >> 24;
+
+    if ((cmd_byte != 0x20 && cmd_byte != 0x28) || !gs_state.valid || gs_state.dthe != 0)
+        return 0;
+
+    int is_quad = (cmd_byte == 0x28);
+    uint32_t c = cmd_buffer[0] & 0xFFFFFF;
+    int num_verts = is_quad ? 4 : 3;
+    uint64_t prim = is_quad ? 4 : 3; /* 4=TRISTRIP, 3=TRIANGLE */
+
+    /* G4: PRIM in A+D (EOP=0), vertices in REGLIST */
+    Push_GIF_Tag(GIF_TAG_LO(1, 0, 0, 0, 0, 1), GIF_REG_AD);
+    Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim), GS_REG_PRIM);
+
+    uint64_t regs = (uint64_t)GIF_REG_RGBAQ | ((uint64_t)GIF_REG_XYZ2 << 4);
+    Push_GIF_Tag(GIF_TAG_LO(num_verts, 1, 0, 0, 1, 2), regs);
+
+    uint64_t rgbaq = GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000);
+
+    for (int v = 0; v < num_verts; v++)
+    {
+        int16_t px = (int16_t)((int32_t)((cmd_buffer[v + 1] & 0xFFFF) << 21) >> 21);
+        int16_t py = (int16_t)((int32_t)((cmd_buffer[v + 1] >> 16) << 21) >> 21);
+        Push_GIF_Data(rgbaq, GS_SET_XYZ(((int32_t)px + draw_offset_x + 2048) << 4,
+                                         ((int32_t)py + draw_offset_y + 2048) << 4, 0));
+    }
+
+    /* Pixel area estimation for cycle accounting */
+    int16_t x0 = (int16_t)((int32_t)((cmd_buffer[1] & 0xFFFF) << 21) >> 21);
+    int16_t y0 = (int16_t)((int32_t)((cmd_buffer[1] >> 16) << 21) >> 21);
+    int16_t x1 = (int16_t)((int32_t)((cmd_buffer[2] & 0xFFFF) << 21) >> 21);
+    int16_t y1 = (int16_t)((int32_t)((cmd_buffer[2] >> 16) << 21) >> 21);
+    int16_t x2 = (int16_t)((int32_t)((cmd_buffer[3] & 0xFFFF) << 21) >> 21);
+    int16_t y2 = (int16_t)((int32_t)((cmd_buffer[3] >> 16) << 21) >> 21);
+    int32_t a = (int32_t)x0 * ((int32_t)y1 - y2) + (int32_t)x1 * ((int32_t)y2 - y0) + (int32_t)x2 * ((int32_t)y0 - y1);
+    if (a < 0) a = -a;
+    uint32_t area = (uint32_t)(a >> 1);
+
+    if (is_quad)
+    {
+        int16_t x3 = (int16_t)((int32_t)((cmd_buffer[4] & 0xFFFF) << 21) >> 21);
+        int16_t y3 = (int16_t)((int32_t)((cmd_buffer[4] >> 16) << 21) >> 21);
+        int32_t a2 = (int32_t)x1 * ((int32_t)y3 - y2) + (int32_t)x3 * ((int32_t)y2 - y1) + (int32_t)x2 * ((int32_t)y1 - y3);
+        if (a2 < 0) a2 = -a2;
+        area += (uint32_t)(a2 >> 1);
+    }
+    gpu_estimated_pixels += area;
+
+    return 1;
 }

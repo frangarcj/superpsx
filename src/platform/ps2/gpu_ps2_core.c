@@ -6,7 +6,7 @@
  * lifecycle functions: Init_Graphics, GPU_Read, GPU_ReadStatus, GPU_VBlank,
  * GPU_Flush, and Update_GS_Display.
  */
-#include "gpu_state.h"
+#include "gpu_ps2_state.h"
 #include "osd.h"
 #include "scheduler.h"
 

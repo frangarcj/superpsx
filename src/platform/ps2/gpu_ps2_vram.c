@@ -4,7 +4,7 @@
  * HOST→LOCAL / LOCAL→HOST transfers, shadow VRAM upload helpers,
  * readback for CLUT decode, and the full-VRAM dump used by tests.
  */
-#include "gpu_state.h"
+#include "gpu_ps2_state.h"
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>

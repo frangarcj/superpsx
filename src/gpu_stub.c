@@ -8,6 +8,7 @@
  */
 
 #include "gpu_state.h"
+#include "audio_backend.h"
 
 /* ── Global variable definitions (externed in gpu_state.h) ──────────── */
 
@@ -300,3 +301,12 @@ void GPU_Backend_ClearVRAM(int clip_x1, int clip_y1,
 { (void)clip_x1; (void)clip_y1; (void)clip_x2; (void)clip_y2; }
 
 void GPU_Backend_InvalidateState(void) {}
+
+int GPU_Backend_TryFastPoly(uint32_t *cmd_buffer) { (void)cmd_buffer; return 0; }
+
+/* ── Audio backend stubs ─────────────────────────────────────────── */
+int Audio_Backend_Init(void) { return 0; }
+int Audio_Backend_Configure(int sr, int bits, int ch, int vol)
+{ (void)sr; (void)bits; (void)ch; (void)vol; return 0; }
+void Audio_Backend_Play(const int16_t *buf, int sz) { (void)buf; (void)sz; }
+void Audio_Backend_Shutdown(void) {}

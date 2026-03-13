@@ -15,7 +15,7 @@
  * (format, page, clut, texwindow, vram_gen).  Per-VRAM-page dirty
  * tracking avoids false invalidations.
  */
-#include "gpu_state.h"
+#include "gpu_ps2_state.h"
 #include "fast_copy.h"
 #include <string.h> /* memcpy, memset */
 

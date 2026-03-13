@@ -2,11 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#ifdef PLATFORM_PS2
-#include <audsrv.h>
-#include <ps2_audio_driver.h>
-#endif
 
+#include "audio_backend.h"
 #include "superpsx.h"
 #include "spu.h"
 #include "profiler.h"
@@ -90,6 +87,7 @@ static const int32_t adpcm_filter[5][2] = {
 
 /* ---- Audio output ---- */
 #define SPU_SAMPLE_RATE 44100
+#define SPU_MAX_VOLUME  100
 #define SAMPLES_PER_FRAME 735                             /* 44100 / 60 ≈ 735 */
 #define SPU_MIX_BUF_SIZE ((SAMPLES_PER_FRAME + 15) & ~15) /* Align to 16-byte boundary */
 
@@ -321,31 +319,20 @@ void SPU_Init(void)
     transfer_addr = 0;
     transfer_ptr = 0;
 
-    int audio_ret = 0;
-#ifdef PLATFORM_PS2
-    audio_ret = init_audio_driver();
-#endif
+    int audio_ret = Audio_Backend_Init();
     if (audio_ret < 0)
     {
-        printf("[SPU] init_audio_driver failed: %d\n", audio_ret);
+        printf("[SPU] Audio_Backend_Init failed: %d\n", audio_ret);
         return;
     }
 
-#ifdef PLATFORM_PS2
-    /* audsrv is initialized by the audio driver; configure format */
-    struct audsrv_fmt_t fmt;
-    fmt.freq = SPU_SAMPLE_RATE;
-    fmt.bits = 16;
-    fmt.channels = 2;
-    int ret = audsrv_set_format(&fmt);
+    int ret = Audio_Backend_Configure(SPU_SAMPLE_RATE, 16, 2, SPU_MAX_VOLUME);
     if (ret != 0)
     {
-        printf("[SPU] audsrv_set_format failed: %d\n", ret);
+        printf("[SPU] Audio_Backend_Configure failed: %d\n", ret);
         return;
     }
 
-    audsrv_set_volume(MAX_VOLUME);
-#endif /* PLATFORM_PS2 */
     spu_initialized = 1;
     printf("[SPU] Initialized: %d Hz, 16-bit, stereo\n", SPU_SAMPLE_RATE);
 }
@@ -354,9 +341,7 @@ void SPU_Shutdown(void)
 {
     if (spu_initialized)
     {
-#ifdef PLATFORM_PS2
-        deinit_audio_driver();
-#endif
+        Audio_Backend_Shutdown();
         spu_initialized = 0;
         printf("[SPU] Shutdown\n");
     }
@@ -953,11 +938,7 @@ void SPU_FlushAudio(void)
      * If the ring buffer is momentarily full, samples are silently
      * dropped — acceptable trade-off for emulation speed. */
     int size = total * 2 * sizeof(int16_t);
-#ifdef PLATFORM_PS2
-    audsrv_play_audio((char *)mix_buffer, size);
-#else
-    (void)size;
-#endif
+    Audio_Backend_Play(mix_buffer, size);
 
     spu_samples_generated = 0;
     PROF_POP(PROF_SPU_FLUSH);

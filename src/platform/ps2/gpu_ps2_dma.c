@@ -5,7 +5,7 @@
  * GPU→CPU reads, and linked-list mode (the most common path used by
  * PSX games to submit display lists).
  */
-#include "gpu_state.h"
+#include "gpu_ps2_state.h"
 #include "scheduler.h"
 #include "profiler.h"
 

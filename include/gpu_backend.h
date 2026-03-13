@@ -34,4 +34,8 @@ void GPU_Backend_ClearVRAM(int clip_x1, int clip_y1,
 /* ── State management ────────────────────────────────────────────── */
 void GPU_Backend_InvalidateState(void);
 
+/* ── Fast path for platform-specific polygon emission ────────────── */
+/* Returns 1 if handled (fast path used), 0 if caller should use generic path */
+int GPU_Backend_TryFastPoly(uint32_t *cmd_buffer);
+
 #endif /* GPU_BACKEND_H */

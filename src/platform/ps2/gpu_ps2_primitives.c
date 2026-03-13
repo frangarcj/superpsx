@@ -5,7 +5,7 @@
  * into GS GIF packets.  Vertex data uses REGLIST mode (FLG=1) for
  * 2× density (2 reg values per QW).  State registers use A+D mode.
  */
-#include "gpu_state.h"
+#include "gpu_ps2_state.h"
 #include "profiler.h"
 #include <gif_tags.h>
 

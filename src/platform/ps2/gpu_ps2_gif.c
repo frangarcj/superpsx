@@ -5,7 +5,7 @@
  * commands into PS2 GS DMA transfers.  Also contains the one-time
  * GS register initialisation (Setup_GS_Environment).
  */
-#include "gpu_state.h"
+#include "gpu_ps2_state.h"
 #include "profiler.h"
 
 /* ── TEST register helpers ───────────────────────────────────────── */

@@ -7,7 +7,7 @@
  * This avoids conflicts with the texture cache (which uses 100% of GS VRAM).
  */
 #include "osd.h"
-#include "gpu_state.h"
+#include "gpu_ps2_state.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>

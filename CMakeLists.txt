@@ -83,6 +83,7 @@ set(SUPERPSX_SOURCES
     src/platform/ps2/tlb_handler_ps2.c
     src/platform/ps2/vu0_micro_ps2.c
     src/platform/ps2/platform_ps2.c
+    src/platform/ps2/audio_ps2_backend.c
 )
 
 # ============================================================================
