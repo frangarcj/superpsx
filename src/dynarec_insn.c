@@ -266,7 +266,7 @@ static void emit_interpolate_color(int sf)
  * into VF registers starting at that base.  emit_inline_mvmva skips the
  * C call + LQC2 and uses the preloaded VF registers directly.
  * Index: 0=RT, 1=Light, 2=Color. */
-#ifndef ENABLE_VU0_MICRO
+#if !defined(ENABLE_VU0_MICRO) && defined(PLATFORM_PS2)
 static int vu0_preloaded[3] = {0, 0, 0};
 
 /* Emit C call to refresh matrix cache + load into VF[vf_base..vf_base+3].
@@ -332,7 +332,7 @@ static void emit_vu0_vertex_multiply(int v, int lm, int vf_col1, int t8_valid)
     EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);
     emit_ir_sat_store(lm);
 }
-#endif /* !ENABLE_VU0_MICRO */
+#endif /* !ENABLE_VU0_MICRO && PLATFORM_PS2 */
 
 #ifdef ENABLE_VU0_MICRO
 #include "vu0_micro_ps2.h"
@@ -498,7 +498,7 @@ static void emit_inline_mvmva(int mx, int v, int cv, int sf, int lm)
             emit_vu0_micro_prepare(mx, cv);
             emit_vu0_micro_multiply(v, lm, 0);
         }
-#else
+#elif defined(PLATFORM_PS2)
         int vf_base = (mx < 3) ? vu0_preloaded[mx] : 0;
         if (vf_base) {
             /* P18: matrix already in VF[vf_base..vf_base+3], skip prepare.
@@ -510,7 +510,7 @@ static void emit_inline_mvmva(int mx, int v, int cv, int sf, int lm)
             emit_vu0_load_matrix(mx, cv, 1);
             emit_vu0_vertex_multiply(v, lm, 1, 1);
         }
-#endif /* ENABLE_VU0_MICRO */
+#endif /* ENABLE_VU0_MICRO / PLATFORM_PS2 */
         return;
     }
     /* --- Integer fallback (sf=0 — rare, e.g. standalone MVMVA) --- */
@@ -2086,7 +2086,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     emit_vu0_micro_prepare(2, 1);
                     emit_vu0_micro_multiply(3, gte_lm, 0);
                     emit_ncds_post_lighting(gte_sf, gte_lm);
-#else
+#elif defined(PLATFORM_PS2)
                     /* P18 macro: preload L(VF1-4) + LC(VF7-10) once. */
                     if (gte_sf) {
                         emit_vu0_load_matrix(1, 3, 1);
@@ -2173,7 +2173,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     emit_vu0_micro_prepare(2, 1);
                     emit_vu0_micro_multiply(3, gte_lm, 0);
                     emit_ncs_post_lighting();
-#else
+#elif defined(PLATFORM_PS2)
                     /* P18 macro: preload L(VF1-4) + LC(VF7-10) once. */
                     if (gte_sf) {
                         emit_vu0_load_matrix(1, 3, 1);
@@ -2446,7 +2446,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     /* Poll V2 completion, store results */
                     emit_vu0_micro_poll_complete(gte_lm);
                     emit_rtps_project(gte_sf, 1);
-#else
+#elif defined(PLATFORM_PS2)
                     /* Macro mode: preload matrix once, reuse for all 3 */
                     emit_vu0_load_matrix(0, 0, 1);
                     vu0_preloaded[0] = 1;
@@ -2730,7 +2730,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     emit_vu0_micro_prepare(2, 1);
                     emit_vu0_micro_multiply(3, gte_lm, 0);
                     emit_nccs_post_lighting(gte_sf, gte_lm);
-#else
+#elif defined(PLATFORM_PS2)
                     /* P18 macro: preload L(VF1-4) + LC(VF7-10) once. */
                     if (gte_sf) {
                         emit_vu0_load_matrix(1, 3, 1);

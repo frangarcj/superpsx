@@ -1,6 +1,10 @@
 #include <stdint.h>
 #include <stdio.h>
+#ifdef PLATFORM_PS2
 #include <kernel.h>
+#elif defined(PLATFORM_PSP)
+#include <pspthreadman.h>
+#endif
 #include "superpsx.h"
 
 #define LOG_TAG "EXC"
@@ -279,7 +283,11 @@ static void __attribute__((unused)) EE_ExceptionHandler(int cause)
            (unsigned)cpu.regs[29], (unsigned)cpu.regs[31]);
 
     printf("Halting.\n");
+#ifdef PLATFORM_PSP
+    sceKernelSleepThread();
+#else
     SleepThread();
+#endif
 }
 
 /* ---- Init ---- */

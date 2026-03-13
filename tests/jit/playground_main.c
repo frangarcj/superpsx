@@ -13,9 +13,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <setjmp.h>
+#ifdef PLATFORM_PS2
 #include <kernel.h>        /* FlushCache */
+#elif defined(PLATFORM_PSP)
+#include <pspkernel.h>
+#include <pspdebug.h>
+#include <psputils.h>
+PSP_MODULE_INFO("JIT_Playground", 0, 1, 0);
+PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
+#endif
 
 #include "playground.h"
+#include "platform.h"
 
 /* ================================================================
  *  Globals used by the framework
@@ -203,8 +212,8 @@ void pg_run_jit(uint32_t pc, int32_t cycles)
 
         /* Flush caches if any blocks were compiled since last execution */
         if (jit_flush_pending) {
-            FlushCache(0);
-            FlushCache(2);
+            Platform_FlushDCache(NULL, NULL);
+            Platform_FlushICache();
             jit_flush_pending = 0;
         }
 
@@ -237,8 +246,13 @@ int main(int argc, char *argv[])
     Init_CPU();
 
     /* 2b. Enable GTE fast paths (gte_use_vu0) for inline GTE tests */
+#ifdef PLATFORM_PS2
     psx_config.gte_vu0 = 1;
     gte_use_vu0 = 1;
+#else
+    psx_config.gte_vu0 = 0;
+    gte_use_vu0 = 0;
+#endif
 
     /* 3. Initialise dynarec (allocates code_buffer, builds trampolines) */
     Init_Dynarec();

@@ -1,7 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#ifdef PLATFORM_PS2
 #include <kernel.h>
+#endif
 #include "superpsx.h"
 #include "scheduler.h"
 #include "psx_dma.h"

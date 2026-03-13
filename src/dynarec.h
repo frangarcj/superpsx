@@ -13,7 +13,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <malloc.h>
-#include <kernel.h> /* FlushCache */
+#ifdef PLATFORM_PSP
+#include <psputils.h>  /* sceKernelDcacheWritebackAll, sceKernelIcacheInvalidateAll */
+#else
+#include <kernel.h>    /* FlushCache (PS2) */
+#endif
 #include "superpsx.h"
 #include "scheduler.h"
 
@@ -372,11 +376,38 @@ static inline void emit(uint32_t inst)
 #define EMIT_MFLO(rd) emit(MK_R(0, 0, 0, (rd), 0, 0x12))
 #define EMIT_MFHI(rd) emit(MK_R(0, 0, 0, (rd), 0, 0x10))
 
-/* R5900 specialized emitters */
+/* R5900 specialized emitters (MOVZ/MOVN/MADD/MADDU: same encoding on Allegrex) */
 #define EMIT_MOVZ(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x0A))
 #define EMIT_MOVN(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x0B))
 #define EMIT_MADD(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x00))
 #define EMIT_MADDU(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x01))
+
+#ifdef PLATFORM_PSP
+/* PSP (Allegrex) has only one HI/LO pipeline — redirect pipeline 1 to pipeline 0 */
+#define EMIT_MULT1(rs, rt)  EMIT_MULT((rs), (rt))
+#define EMIT_MULTU1(rs, rt) emit(MK_R(0, (rs), (rt), 0, 0, 0x19))
+#define EMIT_DIV1(rs, rt)   emit(MK_R(0, (rs), (rt), 0, 0, 0x1A))
+#define EMIT_DIVU1(rs, rt)  emit(MK_R(0, (rs), (rt), 0, 0, 0x1B))
+#define EMIT_MFLO1(rd)      EMIT_MFLO((rd))
+#define EMIT_MFHI1(rd)      EMIT_MFHI((rd))
+#define EMIT_MTLO1(rs)      emit(MK_R(0, (rs), 0, 0, 0, 0x13))
+#define EMIT_MTHI1(rs)      emit(MK_R(0, (rs), 0, 0, 0, 0x11))
+
+/* PMAXW(rd,rs,rt) = MAX(rs,rt)→rd.  All callers have rd==rs.
+ * PSP fallback: SLT AT,rs,rt; MOVN rd,rt,AT  (if rs<rt: rd=rt) */
+#define EMIT_PMAXW(rd, rs, rt) do { \
+    emit(MK_R(0, (rs), (rt), REG_AT, 0, 0x2A)); /* SLT AT, rs, rt */ \
+    emit(MK_R(0, (rt), REG_AT, (rd), 0, 0x0B)); /* MOVN rd, rt, AT */ \
+} while (0)
+
+/* PMINW(rd,rs,rt) = MIN(rs,rt)→rd.  All callers have rd==rs.
+ * PSP fallback: SLT AT,rt,rs; MOVN rd,rt,AT  (if rt<rs: rd=rt) */
+#define EMIT_PMINW(rd, rs, rt) do { \
+    emit(MK_R(0, (rt), (rs), REG_AT, 0, 0x2A)); /* SLT AT, rt, rs */ \
+    emit(MK_R(0, (rt), REG_AT, (rd), 0, 0x0B)); /* MOVN rd, rt, AT */ \
+} while (0)
+
+#else /* PLATFORM_PS2 (R5900) */
 #define EMIT_MULT1(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x18))
 #define EMIT_MULTU1(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x19))
 #define EMIT_DIV1(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x1A))
@@ -388,6 +419,7 @@ static inline void emit(uint32_t inst)
 #define EMIT_PMINW(rd, rs, rt) emit(MK_R(0x1C, (rs), (rt), (rd), 0x03, 0x28))
 #define EMIT_MTLO1(rs) emit(MK_R(0x1C, (rs), 0, 0, 0, 0x13))
 #define EMIT_MTHI1(rs) emit(MK_R(0x1C, (rs), 0, 0, 0, 0x11))
+#endif /* PLATFORM_PSP / PLATFORM_PS2 */
 
 /* COP1 FPU emitters (single-precision float) — used for GTE inline division.
  * COP1 R-type layout: 0x11 | fmt(rs) | ft(rt) | fs(rd) | fd(sa) | func
@@ -402,9 +434,10 @@ static inline void emit(uint32_t inst)
 #define EMIT_LWC1(ft, off, base) emit(MK_I(0x31, (base), (ft), (off)))
 #define EMIT_SWC1(ft, off, base) emit(MK_I(0x39, (base), (ft), (off)))
 
-/* COP2 / VU0 macro mode emitters —— matrix multiply in JIT.
+/* COP2 / VU0 macro mode emitters —— matrix multiply in JIT (PS2 only).
  * LQC2/SQC2: load/store 128-bit quadword (16-byte aligned).
  * VU0 compute: COP2 upper instructions (opcode=0x12, CO bit=1). */
+#ifdef PLATFORM_PS2
 #define EMIT_LQC2(vft, off, base) emit(MK_I(0x36, (base), (vft), (off)))
 #define EMIT_SQC2(vft, off, base) emit(MK_I(0x3E, (base), (vft), (off)))
 
@@ -432,6 +465,7 @@ static inline void emit(uint32_t inst)
 #define EMIT_VCALLMSR()   emit(0x4A000039u)
 #define EMIT_SYNC_L()     emit(0x0000000Fu)
 #endif /* ENABLE_VU0_MICRO */
+#endif /* PLATFORM_PS2 — VU0/COP2 macro emitters */
 
 /* ================================================================
  *  Function prototypes — dynarec_emit.c
