@@ -11,7 +11,7 @@
  * TDD: Tests defined FIRST, then micro programs implemented to pass.
  */
 #include "playground.h"
-#include "vu0_micro.h"
+#include "vu0_micro_ps2.h"
 
 #ifdef _EE
 

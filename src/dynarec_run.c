@@ -13,8 +13,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "dynarec.h"
+#include "platform.h"
+#include "gpu_backend.h"
 #ifdef ENABLE_VU0_MICRO
-#include "vu0_micro.h"
+#include "vu0_micro_ps2.h"
 #endif
 #include "spu.h"
 #include "scheduler.h"
@@ -419,8 +421,8 @@ void Init_Dynarec(void)
     printf("  Code buffer at %p (%u KB)\n", code_buffer, CODE_BUFFER_SIZE / 1024);
     printf("  Page Table (L1) initialized: %u + %u entries\n", JIT_L1_RAM_PAGES, JIT_L1_BIOS_PAGES);
 
-    FlushCache(0);
-    FlushCache(2);
+    Platform_FlushDCache(NULL, NULL);
+    Platform_FlushICache();
 }
 
 /* ================================================================
@@ -642,8 +644,8 @@ static inline bool handle_bios_boot_hook(uint32_t pc)
             }
 #endif
             binary_loaded = 1;
-            FlushCache(0);
-            FlushCache(2);
+            Platform_FlushDCache(NULL, NULL);
+            Platform_FlushICache();
             return true;
         }
         else
@@ -674,7 +676,7 @@ static void Sched_HBlank_Callback(void)
         uint64_t frame_psx_cycles = global_cycles - hblank_frame_start_cycle;
 
         hblank_frame_start_cycle = global_cycles;
-        GPU_VBlank();
+        GPU_Backend_VBlank();
         GTE_VBlankUpdate();
         gpu_pending_vblank_flush = 1;
         SignalInterrupt(0);
@@ -865,8 +867,8 @@ static inline int run_jit_chain(uint64_t deadline)
      * flushes when SMC triggers a recompile in the same chain call. */
     if (__builtin_expect(jit_flush_pending, 0))
     {
-        FlushCache(0);
-        FlushCache(2);
+        Platform_FlushDCache(NULL, NULL);
+        Platform_FlushICache();
         jit_flush_pending = 0;
     }
 

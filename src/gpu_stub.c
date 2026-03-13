@@ -252,3 +252,51 @@ void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count)
     (void)data_ptr;
     (void)word_count;
 }
+
+/* ── GPU_Backend_* stubs (gpu_backend.h) ────────────────────────────── */
+
+#include "gpu_backend.h"
+
+void GPU_Backend_Init(void) {}
+void GPU_Backend_Flush(void) {}
+void GPU_Backend_FlushSync(void) {}
+void GPU_Backend_SetupEnvironment(void) {}
+void GPU_Backend_UpdateDisplay(void) {}
+void GPU_Backend_VBlank(void) {}
+
+void GPU_Backend_StartVRAMTransfer(int x, int y, int w, int h)
+{ (void)x; (void)y; (void)w; (void)h; }
+
+void GPU_Backend_UploadShadowVRAM(int x, int y, int w, int h)
+{ (void)x; (void)y; (void)w; (void)h; }
+
+void GPU_Backend_UploadRegionFast(uint32_t coords, uint32_t dims,
+                                  uint32_t *data_ptr, uint32_t word_count)
+{ (void)coords; (void)dims; (void)data_ptr; (void)word_count; }
+
+void GPU_Backend_VRAMCopy(int sx, int sy, int dx, int dy, int w, int h)
+{ (void)sx; (void)sy; (void)dx; (void)dy; (void)w; (void)h; }
+
+void GPU_Backend_VRAMWrite(uint32_t word) { (void)word; }
+void GPU_Backend_VRAMFlush(void) {}
+
+void GPU_Backend_VRAMReadback(int x, int y, int w, int h)
+{ (void)x; (void)y; (void)w; (void)h; }
+
+void GPU_Backend_SetScissor(int x1, int y1, int x2, int y2)
+{ (void)x1; (void)y1; (void)x2; (void)y2; }
+
+void GPU_Backend_SetDisplayFB(int x, int y)
+{ (void)x; (void)y; }
+
+void GPU_Backend_SetResolution(int interlace, int mode)
+{ (void)interlace; (void)mode; }
+
+void GPU_Backend_SetMaskBit(int set, int check)
+{ (void)set; (void)check; }
+
+void GPU_Backend_ClearVRAM(int clip_x1, int clip_y1,
+                           int clip_x2, int clip_y2)
+{ (void)clip_x1; (void)clip_y1; (void)clip_x2; (void)clip_y2; }
+
+void GPU_Backend_InvalidateState(void) {}

@@ -10,43 +10,53 @@
 
 #include "superpsx.h"
 #include <inttypes.h>
-#include <kernel.h>
-#include <graph.h>
-#include <draw.h>
-#include <dma.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <malloc.h>
 #include <string.h>
+
+#ifdef PLATFORM_PS2
+#include <kernel.h>
+#include <graph.h>
+#include <draw.h>
+#include <dma.h>
 #include <gs_psm.h>
 #include <gs_gp.h>
 #include <gs_privileged.h>
 #include <gif_tags.h>
+#endif /* PLATFORM_PS2 */
 
 #define LOG_TAG "GPU"
 
+#ifdef PLATFORM_PS2
 /* ── DMA Channel 1 (VIF1) registers ─────────────────────────────── */
 #define D1_CHCR ((volatile uint32_t *)0x10009000)
 #define D1_MADR ((volatile uint32_t *)0x10009010)
 #define D1_QWC ((volatile uint32_t *)0x10009020)
+#endif /* PLATFORM_PS2 */
 
 /* ── PSX VRAM geometry ───────────────────────────────────────────── */
 #define PSX_VRAM_WIDTH 1024
 #define PSX_VRAM_HEIGHT 512
 #define PSX_VRAM_FBW (PSX_VRAM_WIDTH / 64) /* =16 in 64-pixel units */
 
+#ifdef PLATFORM_PS2
 /* GS pixel storage mode for PSX VRAM.  CT16S (swizzled) matches PSX 15-bit.
  * Change to GS_PSM_16 to test linear layout (debugging). */
 #define PSX_VRAM_PSM GS_PSM_16S
+#endif /* PLATFORM_PS2 */
 
+#ifdef PLATFORM_PS2
 /* ── GIF packet buffer ───────────────────────────────────────────── */
 #define GIF_BUFFER_SIZE 16384
+#endif /* PLATFORM_PS2 */
 
 /* ── GPU deferred IRQ ───────────────────────────────────────────── */
 /* Cycles after GP0(1Fh) before IRQ1 fires into I_STAT (mirrors real PSX
  * async GPU FIFO processing latency). */
 #define GPU_IRQ_DELAY 500
 
+#ifdef PLATFORM_PS2
 /* ── GIF Tag structure ───────────────────────────────────────────── */
 typedef struct
 {
@@ -65,6 +75,7 @@ typedef struct __attribute__((aligned(16)))
     uint64_t d0;
     uint64_t d1;
 } gif_qword_t;
+#endif /* PLATFORM_PS2 */
 
 /* ── GPUSTAT helper macros ───────────────────────────────────────── */
 #define disp_hres368 ((gpu_stat >> 16) & 1)
@@ -91,11 +102,13 @@ extern int fb_width;
 extern int fb_height;
 extern int fb_psm;
 
+#ifdef PLATFORM_PS2
 /* GIF double-buffered packet buffers */
 extern unsigned __int128 gif_packet_buf[2][GIF_BUFFER_SIZE];
 extern gif_qword_t *fast_gif_ptr;
 extern gif_qword_t *gif_buffer_end_safe;
 extern int current_buffer;
+#endif /* PLATFORM_PS2 */
 
 /* GS shadow drawing state */
 extern int draw_offset_x;
@@ -171,14 +184,17 @@ extern int gpu_cmd_ptr;
 extern int gpu_transfer_words;
 extern int gpu_transfer_total;
 
+#ifdef PLATFORM_PS2
 /* IMAGE transfer buffer */
 extern unsigned __int128 buf_image[1024];
 extern int buf_image_ptr;
+#endif /* PLATFORM_PS2 */
 
 /* ═══════════════════════════════════════════════════════════════════
  *  Internal functions (cross-module interface)
  * ═══════════════════════════════════════════════════════════════════ */
 
+#ifdef PLATFORM_PS2
 /* gpu_gif.c — GIF buffer management */
 void Flush_GIF(void);
 void Flush_GIF_Sync(void);
@@ -207,6 +223,8 @@ static inline void Push_GIF_Data(uint64_t d0, uint64_t d1)
 }
 
 void Setup_GS_Environment(void);
+#endif /* PLATFORM_PS2 */
+#ifdef PLATFORM_PS2
 /* ── Alpha blending register helpers ─────────────────────────────── */
 
 // Compute GS ALPHA_1 register value from PSX semi-transparency mode
@@ -277,6 +295,7 @@ uint16_t *GS_ReadbackRegion(int x, int y, int w_aligned, int h,
 void GS_UploadRegion(int x, int y, int w, int h, const uint16_t *pixels);
 void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uint32_t word_count);
 void DumpVRAM(const char *filename);
+#endif /* PLATFORM_PS2 */
 
 /* gpu_texture.c — CLUT texture decode + page-level cache */
 static inline uint32_t Apply_Tex_Window_U(uint32_t u)
@@ -341,7 +360,9 @@ extern const uint8_t gpu_cmd_size[256]; /* O(1) command size lookup */
 int GPU_GetCommandSize(uint32_t cmd);
 void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count);
 
+#ifdef PLATFORM_PS2
 /* gpu_core.c — Display update */
 void Update_GS_Display(void);
+#endif /* PLATFORM_PS2 */
 
 #endif /* GPU_STATE_H */

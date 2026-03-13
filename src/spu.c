@@ -2,8 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#ifdef PLATFORM_PS2
 #include <audsrv.h>
 #include <ps2_audio_driver.h>
+#endif
 
 #include "superpsx.h"
 #include "spu.h"
@@ -319,13 +321,17 @@ void SPU_Init(void)
     transfer_addr = 0;
     transfer_ptr = 0;
 
-    int audio_ret = init_audio_driver();
+    int audio_ret = 0;
+#ifdef PLATFORM_PS2
+    audio_ret = init_audio_driver();
+#endif
     if (audio_ret < 0)
     {
         printf("[SPU] init_audio_driver failed: %d\n", audio_ret);
         return;
     }
 
+#ifdef PLATFORM_PS2
     /* audsrv is initialized by the audio driver; configure format */
     struct audsrv_fmt_t fmt;
     fmt.freq = SPU_SAMPLE_RATE;
@@ -339,6 +345,7 @@ void SPU_Init(void)
     }
 
     audsrv_set_volume(MAX_VOLUME);
+#endif /* PLATFORM_PS2 */
     spu_initialized = 1;
     printf("[SPU] Initialized: %d Hz, 16-bit, stereo\n", SPU_SAMPLE_RATE);
 }
@@ -347,7 +354,9 @@ void SPU_Shutdown(void)
 {
     if (spu_initialized)
     {
+#ifdef PLATFORM_PS2
         deinit_audio_driver();
+#endif
         spu_initialized = 0;
         printf("[SPU] Shutdown\n");
     }
@@ -944,7 +953,11 @@ void SPU_FlushAudio(void)
      * If the ring buffer is momentarily full, samples are silently
      * dropped — acceptable trade-off for emulation speed. */
     int size = total * 2 * sizeof(int16_t);
+#ifdef PLATFORM_PS2
     audsrv_play_audio((char *)mix_buffer, size);
+#else
+    (void)size;
+#endif
 
     spu_samples_generated = 0;
     PROF_POP(PROF_SPU_FLUSH);

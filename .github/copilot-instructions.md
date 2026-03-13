@@ -161,6 +161,7 @@ Trampolines at fixed offsets in `code_buffer[]`:
 See `docs/jit_optimization_roadmap.md` for the master roadmap.
 
 Completed optimizations (P1-P15):
+
 - P1: CU2 hoist to prologue (COP2 24x → ~10x)
 - P3/P3ext: Inline MTC2/MFC2/LWC2/SWC2 data transfers (24x → ~5x)
 - P4: Branchless DIV/DIVU (15x → ~11x)
@@ -183,6 +184,7 @@ Completed optimizations (P1-P15):
 - P22: Inline ISC skip for pure RAM stores — when SMRV+aligned+block_isc_cached, replace cold-path branch with inline BNE skip. SW: 395→164 (21.9x→9.1x, -58%), SB: 355→164 (-54%), SWC2: 422→192 (-54%). Buffer -14.5%.
 
 Current expansion baselines (135/135 playground tests):
+
 - ALU: ADDU 40 (2.2x), ADDIU 39 (2.2x), SLL 39 (2.2x), LUI 38 (2.1x)
 - MulDiv: MULT 149 (8.3x), DIV 197 (10.9x), DIVU 165 (9.2x)
 - Memory: LW 133 (7.4x), SW 164 (9.1x), LB 133 (7.4x), SB 164 (9.1x)

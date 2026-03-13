@@ -335,7 +335,7 @@ static void emit_vu0_vertex_multiply(int v, int lm, int vf_col1, int t8_valid)
 #endif /* !ENABLE_VU0_MICRO */
 
 #ifdef ENABLE_VU0_MICRO
-#include "vu0_micro.h"
+#include "vu0_micro_ps2.h"
 
 /* ---- VU0 Micro Mode: matrix × vector via micro program ----
  *

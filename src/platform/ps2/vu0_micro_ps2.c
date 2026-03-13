@@ -6,7 +6,7 @@
  * Uploaded to VU0 micro memory at init.
  * Data exchange via VU0 data memory (0x11004000).
  */
-#include "vu0_micro.h"
+#include "vu0_micro_ps2.h"
 
 #if defined(_EE) && defined(ENABLE_VU0_MICRO)
 

@@ -4,11 +4,14 @@
  * Handles the PSX GPU command FIFO: accumulating multi-word commands,
  * VRAM-to-CPU/CPU-to-VRAM transfers, polyline state machine, rendering
  * environment registers (E1-E6), and GP1 display/status commands.
+ *
+ * This file is PLATFORM-AGNOSTIC. All hardware specifics are handled
+ * via the GPU_Backend_* interface defined in gpu_backend.h.
  */
 #include "gpu_state.h"
+#include "gpu_backend.h"
 #include "osd.h"
 #include "config.h"
-#include <gif_tags.h>
 #include <time.h>
 
 /* ── Command size lookup table (256 entries, O(1)) ───────────────── */
@@ -379,7 +382,7 @@ void GPU_WriteGP0(uint32_t data)
                        (unsigned long)speed_display);
         }
         osd_draw(); /* render OSD overlay before frame flush */
-        Flush_GIF();
+        GPU_Backend_Flush();
         gpu_pending_vblank_flush = 0;
     }
 
@@ -426,72 +429,19 @@ void GPU_WriteGP0(uint32_t data)
 
         // For CT16S: accumulate raw 32-bit words into 128-bit qwords
         // Set STP bit for non-zero pixels → GS alpha=0x80 for opaque, 0x00 for transparent
-        static uint32_t pending_words[4];
-        static int pending_count = 0;
-
-        {
-            uint16_t gs_p0 = (uint16_t)(data & 0xFFFF);
-            uint16_t gs_p1 = (uint16_t)(data >> 16);
-            /* Branchless STP: bit 15 = opaque for non-zero pixels */
-            gs_p0 |= (-(gs_p0 != 0)) & 0x8000;
-            gs_p1 |= (-(gs_p1 != 0)) & 0x8000;
-            pending_words[pending_count++] = (uint32_t)gs_p0 | ((uint32_t)gs_p1 << 16);
-        }
-
-        if (pending_count >= 4)
-        {
-            uint64_t lo = (uint64_t)pending_words[0] | ((uint64_t)pending_words[1] << 32);
-            uint64_t hi = (uint64_t)pending_words[2] | ((uint64_t)pending_words[3] << 32);
-            unsigned __int128 q = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
-            buf_image[buf_image_ptr++] = q;
-            pending_count = 0;
-
-            if (buf_image_ptr >= 1000)
-            {
-                Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 0, 0, 0, 2, 0), 0);
-                for (int i = 0; i < buf_image_ptr; i++)
-                {
-                    uint64_t *p = (uint64_t *)&buf_image[i];
-                    Push_GIF_Data(p[0], p[1]);
-                }
-                buf_image_ptr = 0;
-            }
-        }
+        /* Delegate GS-specific pixel packing & upload to the backend */
+        GPU_Backend_VRAMWrite(data);
 
         gpu_transfer_words--;
         if (gpu_transfer_words == 0)
         {
-            if (pending_count > 0)
-            {
-                while (pending_count < 4)
-                    pending_words[pending_count++] = 0;
-                uint64_t lo = (uint64_t)pending_words[0] | ((uint64_t)pending_words[1] << 32);
-                uint64_t hi = (uint64_t)pending_words[2] | ((uint64_t)pending_words[3] << 32);
-                unsigned __int128 q = (unsigned __int128)lo | ((unsigned __int128)hi << 64);
-                buf_image[buf_image_ptr++] = q;
-                pending_count = 0;
-            }
-            if (buf_image_ptr > 0)
-            {
-                Push_GIF_Tag(GIF_TAG_LO(buf_image_ptr, 1, 0, 0, 2, 0), 0);
-                for (int i = 0; i < buf_image_ptr; i++)
-                {
-                    uint64_t *p = (uint64_t *)&buf_image[i];
-                    Push_GIF_Data(p[0], p[1]);
-                }
-                buf_image_ptr = 0;
-            }
-            // Flush_GIF(); <-- Removed: batching primitives
-
-            // Flush GS texture cache after VRAM upload
-            Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), GIF_REG_AD);
-            Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH); // TEXFLUSH
-            Flush_GIF();                                        // Keep this one for VRAM-to-CPU sync
+            GPU_Backend_VRAMFlush(); /* pad and flush remaining VRAM words */
+            GPU_Backend_Flush(); /* sync for VRAM-to-CPU readback */
 
             if (vram_tx_x + vram_tx_w > 1024)
             {
                 int wrap_w = (vram_tx_x + vram_tx_w) - 1024;
-                Upload_Shadow_VRAM_Region(0, vram_tx_y, wrap_w, vram_tx_h);
+                GPU_Backend_UploadShadowVRAM(0, vram_tx_y, wrap_w, vram_tx_h);
             }
         }
         return;
@@ -564,7 +514,7 @@ void GPU_WriteGP0(uint32_t data)
                 vram_gen_counter++;
                 Tex_Cache_DirtyRegion(vram_tx_x, vram_tx_y, w, h);
                 gpu_frame_stats.vram_load++;
-                Start_VRAM_Transfer(vram_tx_x, vram_tx_y, w, h);
+                GPU_Backend_StartVRAMTransfer(vram_tx_x, vram_tx_y, w, h);
 #ifdef TEX_DEBUG_OVERLAY
                 if (w * h > 200)
                     printf("[C2V] (%d,%d) %dx%d\n", vram_tx_x, vram_tx_y, w, h);
@@ -588,54 +538,10 @@ void GPU_WriteGP0(uint32_t data)
 
                 gpu_stat |= 0x08000000;
 
-                /* ── GS→shadow VRAM readback ─────────────────────────────
-                 * The PSX BIOS (and some games) render primitives to offscreen
-                 * VRAM regions and then read them back via C0+DMA.  Our GS HW
-                 * renderer draws to GS VRAM but never updates psx_vram_shadow
-                 * for those primitives.  Fix: read the region back from GS VRAM
-                 * into the shadow buffer so GPU_Read() returns correct data. */
-                if (psx_vram_shadow && vram_read_w > 0 && vram_read_h > 0)
-                {
-                    /* Flush any pending GIF packets so GS VRAM is up-to-date */
-                    if (fast_gif_ptr != (gif_qword_t *)&gif_packet_buf[current_buffer][0])
-                        Flush_GIF();
-
-                    int w_aligned = (vram_read_w + 7) & ~7; /* 8-pixel alignment for GS transfer */
-                    int total_pixels = w_aligned * vram_read_h;
-                    int buf_bytes = total_pixels * 2; /* 16bpp */
-                    int buf_qwc = (buf_bytes + 15) / 16;
-                    void *rb_buf = memalign(64, buf_qwc * 16);
-                    if (rb_buf)
-                    {
-                        uint16_t *pixels = GS_ReadbackRegion(vram_read_x, vram_read_y,
-                                                             w_aligned, vram_read_h,
-                                                             rb_buf, buf_qwc);
-                        /* Copy readback data into psx_vram_shadow.
-                         * GS CT16S stores STP in bit 15 with different semantics
-                         * than PSX: our FillRect writes alpha=0x80 → STP=1 even
-                         * for black pixels, but on PSX, FillRect(000000) produces
-                         * raw 0x0000.  Strip bit 15 so the shadow matches PSX
-                         * behaviour: 0x0000 = transparent, non-zero = visible. */
-                        if (pixels)
-                        {
-                            for (int row = 0; row < vram_read_h; row++)
-                            {
-                                int dy = vram_read_y + row;
-                                if (dy >= 512)
-                                    dy -= 512;
-                                for (int col = 0; col < vram_read_w; col++)
-                                {
-                                    int dx = vram_read_x + col;
-                                    if (dx >= 1024)
-                                        dx -= 1024;
-                                    uint16_t px = pixels[row * w_aligned + col] & 0x7FFF;
-                                    psx_vram_shadow[dy * 1024 + dx] = px;
-                                }
-                            }
-                        }
-                        free(rb_buf);
-                    }
-                }
+                /* Readback GS/GPU VRAM into psx_vram_shadow so that
+                 * GPU_Read() returns correct data for C0+DMA reads. */
+                GPU_Backend_VRAMReadback(vram_read_x, vram_read_y,
+                                        vram_read_w, vram_read_h);
 
                 DLOG("GP0(C0) VRAM Read: %dx%d at (%d,%d), %d words\n",
                      vram_read_w, vram_read_h, vram_read_x, vram_read_y, vram_read_remaining);
@@ -728,13 +634,14 @@ void GPU_WriteGP0(uint32_t data)
                      *  - No BUSDIR readback (fragile on real PS2 hardware)
                      *  - No Flush_GIF_Sync stall
                      *  - Eliminates 1MB vram_copy_readback buffer */
-                    Upload_Shadow_VRAM_Region(dx, dy, w, h);
+                    GPU_Backend_UploadShadowVRAM(dx, dy, w, h);
                 }
             }
             else
             {
                 /* Fast path for common untextured flat polygons — REGLIST */
                 uint32_t cmd_byte = gpu_cmd_buffer[0] >> 24;
+#ifdef PLATFORM_PS2
                 if ((cmd_byte == 0x20 || cmd_byte == 0x28) && gs_state.valid && gs_state.dthe == 0)
                 {
                     int is_quad = (cmd_byte == 0x28);
@@ -784,6 +691,7 @@ void GPU_WriteGP0(uint32_t data)
                     gpu_estimated_pixels += area;
                 }
                 else
+#endif /* PLATFORM_PS2 */
                 {
                     Translate_GP0_to_GS(gpu_cmd_buffer);
                 }
@@ -866,7 +774,7 @@ void GPU_WriteGP0(uint32_t data)
              * always re-emitted by the next primitive via lazy gs_state
              * tracking (which checks gs_state.valid after invalidation).
              * Saves 5 QWs (tag + 4 regs) per E1 change. */
-            Prim_InvalidateGSState();
+            GPU_Backend_InvalidateState();
         }
     }
     break;
@@ -881,16 +789,8 @@ void GPU_WriteGP0(uint32_t data)
 #ifdef TEX_DEBUG_OVERLAY
             printf("[DRAW] E3 draw_area_tl=(%d,%d)\n", draw_clip_x1, draw_clip_y1);
 #endif
-            {
-                Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), GIF_REG_AD);
-                uint64_t scax0 = draw_clip_x1;
-                // PSX E4 boundary is EXCLUSIVE: area is [X1,X2) x [Y1,Y2)
-                // GS SCISSOR is inclusive, so use X2-1 and Y2-1
-                uint64_t scax1 = (draw_clip_x2 > 0) ? (draw_clip_x2 - 1) : 0;
-                uint64_t scay0 = draw_clip_y1;
-                uint64_t scay1 = (draw_clip_y2 > 0) ? (draw_clip_y2 - 1) : 0;
-                Push_GIF_Data(GS_SET_SCISSOR(scax0, scax1, scay0, scay1), GS_REG_SCISSOR_1);
-            }
+            GPU_Backend_SetScissor(draw_clip_x1, draw_clip_y1,
+                                   draw_clip_x2, draw_clip_y2);
         }
     }
     break;
@@ -905,16 +805,8 @@ void GPU_WriteGP0(uint32_t data)
 #ifdef TEX_DEBUG_OVERLAY
             printf("[DRAW] E4 draw_area_br=(%d,%d)\n", draw_clip_x2, draw_clip_y2);
 #endif
-            {
-                Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), GIF_REG_AD);
-                uint64_t scax0 = draw_clip_x1;
-                // PSX E4 boundary is EXCLUSIVE: area is [X1,X2) x [Y1,Y2)
-                // GS SCISSOR is inclusive, so use X2-1 and Y2-1
-                uint64_t scax1 = (draw_clip_x2 > 0) ? (draw_clip_x2 - 1) : 0;
-                uint64_t scay0 = draw_clip_y1;
-                uint64_t scay1 = (draw_clip_y2 > 0) ? (draw_clip_y2 - 1) : 0;
-                Push_GIF_Data(GS_SET_SCISSOR(scax0, scax1, scay0, scay1), GS_REG_SCISSOR_1);
-            }
+            GPU_Backend_SetScissor(draw_clip_x1, draw_clip_y1,
+                                   draw_clip_x2, draw_clip_y2);
         }
     }
     break;
@@ -947,12 +839,8 @@ void GPU_WriteGP0(uint32_t data)
         gpu_stat = (gpu_stat & ~0x1800) | (mask_set_bit << 11) | (mask_check_bit << 12);
         // GS: FBA_1 forces bit 15 on all written pixels (mask_set_bit)
         // GS: DATE+DATM in TEST_1 prevents writing to pixels with bit 15 set (mask_check_bit)
-        {
-            Push_GIF_Tag(GIF_TAG_LO(2, 1, 0, 0, 0, 1), GIF_REG_AD);
-            Push_GIF_Data(GS_SET_FBA(mask_set_bit), GS_REG_FBA_1); // FBA_1 via SDK macro
-            Push_GIF_Data(Get_Base_TEST(), GS_REG_TEST_1);         // TEST_1 (now composed via GS_SET_TEST)
-        }
-        Prim_InvalidateGSState();
+        GPU_Backend_SetMaskBit(mask_set_bit, mask_check_bit);
+        GPU_Backend_InvalidateState();
         break;
     case 0x1F: // GPU IRQ Request (edge-triggered)
         /* Per psx-spx: I_STAT bits are edge-triggered — they get set ONLY
@@ -1003,7 +891,7 @@ void GPU_WriteGP1(uint32_t data)
     {
     case 0x00: // Reset GPU
         clear_gpu_param_cache();
-        Prim_InvalidateGSState();
+        GPU_Backend_InvalidateState();
         Prim_InvalidateTexCache();
         gpu_stat = 0x14802000;
         gpu_read = 0;
@@ -1034,34 +922,12 @@ void GPU_WriteGP1(uint32_t data)
         raw_draw_area_br = 0;
         raw_draw_offset = 0;
 
-        // Clear GS VRAM to black (PSX GPU reset clears VRAM)
+        // Clear VRAM to black (PSX GPU reset clears VRAM)
         {
-            Flush_GIF();
-            /* Reset GS FBA (Frame Buffer Alpha) and TEST to match cleared mask bits */
-            Push_GIF_Tag(GIF_TAG_LO(2, 1, 0, 0, 0, 1), GIF_REG_AD);
-            Push_GIF_Data(GS_SET_FBA(0), GS_REG_FBA_1);
-            Push_GIF_Data(Get_Base_TEST(), GS_REG_TEST_1);
-            Flush_GIF();
-
-            Push_GIF_Tag(GIF_TAG_LO(5, 1, 0, 0, 0, 1), GIF_REG_AD);
-            // Temporarily set full VRAM scissor
-            Push_GIF_Data(GS_SET_SCISSOR(0, PSX_VRAM_WIDTH - 1, 0, PSX_VRAM_HEIGHT - 1), GS_REG_SCISSOR_1);
-            Push_GIF_Data(GS_PACK_PRIM_FROM_INT(6), GS_REG_PRIM); // PRIM = SPRITE
-            Push_GIF_Data(GS_SET_RGBAQ(0, 0, 0, 0, 0x3F800000), GS_REG_RGBAQ);
-            int32_t x1 = (0 + 2048) << 4;
-            int32_t y1 = (0 + 2048) << 4;
-            int32_t x2 = (PSX_VRAM_WIDTH + 2048) << 4;
-            int32_t y2 = (PSX_VRAM_HEIGHT + 2048) << 4;
-            Push_GIF_Data(GS_SET_XYZ(x1, y1, 0), GS_REG_XYZ2);
-            Push_GIF_Data(GS_SET_XYZ(x2, y2, 0), GS_REG_XYZ2);
-            Flush_GIF();
-
-            // Restore scissor to current drawing area (PSX E4 is exclusive)
-            Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), GIF_REG_AD);
-            uint64_t sc_x2 = (draw_clip_x2 > 0) ? (draw_clip_x2 - 1) : 0;
-            uint64_t sc_y2 = (draw_clip_y2 > 0) ? (draw_clip_y2 - 1) : 0;
-            Push_GIF_Data(GS_SET_SCISSOR(draw_clip_x1, sc_x2, draw_clip_y1, sc_y2), GS_REG_SCISSOR_1);
-            Flush_GIF();
+            GPU_Backend_Flush();
+            GPU_Backend_SetMaskBit(0, 0);
+            GPU_Backend_ClearVRAM(draw_clip_x1, draw_clip_y1,
+                                  draw_clip_x2, draw_clip_y2);
 
             // Clear shadow VRAM
             if (psx_vram_shadow)
@@ -1107,15 +973,7 @@ void GPU_WriteGP1(uint32_t data)
             printf("[DISP] GP1(05) display_start=(%u,%u)\n", x, y);
 #endif
 
-            uint64_t dispfb = 0;
-            dispfb |= (uint64_t)0 << 0;
-            dispfb |= (uint64_t)PSX_VRAM_FBW << 9;
-            dispfb |= (uint64_t)PSX_VRAM_PSM << 15;
-            dispfb |= (uint64_t)x << 32;
-            dispfb |= (uint64_t)y << 43;
-
-            *((volatile uint64_t *)0x12000070) = dispfb;
-            *((volatile uint64_t *)0x12000090) = dispfb;
+            GPU_Backend_SetDisplayFB(x, y);
         }
     }
     break;
@@ -1124,7 +982,7 @@ void GPU_WriteGP1(uint32_t data)
         if (data != cache_gp1_06)
         {
             cache_gp1_06 = data;
-            Update_GS_Display();
+            GPU_Backend_UpdateDisplay();
         }
     }
     break;
@@ -1135,7 +993,7 @@ void GPU_WriteGP1(uint32_t data)
             cache_gp1_07 = data;
             disp_range_y1 = data & 0x3FF;
             disp_range_y2 = (data >> 10) & 0x3FF;
-            Update_GS_Display();
+            GPU_Backend_UpdateDisplay();
         }
     }
     break;
@@ -1157,8 +1015,8 @@ void GPU_WriteGP1(uint32_t data)
                  pal ? "PAL" : "NTSC", interlace ? "Interlaced" : "Progressive",
                  (unsigned)(data & 3), (unsigned)((data >> 2) & 1));
 
-            SetGsCrt(interlace, pal ? 3 : 2, 0);
-            Update_GS_Display();
+            GPU_Backend_SetResolution(interlace, pal ? 3 : 2);
+            GPU_Backend_UpdateDisplay();
 
             /* Timer0 dotclock divider depends on resolution — refresh cache */
             extern void Timer0_RefreshDividerCache(void);
@@ -1249,7 +1107,7 @@ void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count)
                 uint32_t image_words = (w * h + 1) / 2;
                 if (i + 3 + image_words <= word_count)
                 {
-                    GS_UploadRegionFast(cmd_ptr[1], dims, &cmd_ptr[3], image_words);
+                    GPU_Backend_UploadRegionFast(cmd_ptr[1], dims, &cmd_ptr[3], image_words);
                     i += 3 + image_words;
                     continue;
                 }

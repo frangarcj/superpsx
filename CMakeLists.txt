@@ -40,19 +40,21 @@ if(HEADLESS)
     set(GPU_SOURCES src/gpu_stub.c)
 else()
     set(GPU_SOURCES
-        src/gpu_core.c
-        src/gpu_gif.c
-        src/gpu_vram.c
-        src/gpu_texture.c
-        src/gpu_primitives.c
+        src/platform/ps2/gpu_ps2_core.c
+        src/platform/ps2/gpu_ps2_gif.c
+        src/platform/ps2/gpu_ps2_vram.c
+        src/platform/ps2/gpu_ps2_texture.c
+        src/platform/ps2/gpu_ps2_primitives.c
         src/gpu_commands.c
-        src/gpu_dma.c
-        src/osd.c
+        src/platform/ps2/gpu_ps2_dma.c
+        src/platform/ps2/gpu_ps2_backend.c
+        src/platform/ps2/osd_ps2.c
     )
 endif()
 
 set(SUPERPSX_SOURCES
-    src/main.c
+    src/platform/ps2/main_ps2.c
+    src/init.c
     src/config.c
     src/memory.c
     src/cpu.c
@@ -72,14 +74,15 @@ set(SUPERPSX_SOURCES
     src/gte.c
     src/cdrom.c
     src/loader.c
-    src/joystick.c
+    src/platform/ps2/joystick_ps2.c
     src/spu.c
     src/scheduler.c
     src/iso_image.c
     src/iso_fs.c
     src/profiler.c
-    src/tlb_handler.c
-    src/vu0_micro.c
+    src/platform/ps2/tlb_handler_ps2.c
+    src/platform/ps2/vu0_micro_ps2.c
+    src/platform/ps2/platform_ps2.c
 )
 
 # ============================================================================
@@ -90,7 +93,7 @@ set(SUPERPSX_SOURCES
 find_program(DVP_AS dvp-as PATHS "$ENV{PS2DEV}/dvp/bin" REQUIRED)
 find_program(EE_OBJCOPY mips64r5900el-ps2-elf-objcopy PATHS "$ENV{PS2DEV}/ee/bin" REQUIRED)
 
-set(VU0_SRC_DIR "${CMAKE_SOURCE_DIR}/src/vu0")
+set(VU0_SRC_DIR "${CMAKE_SOURCE_DIR}/src/platform/ps2/vu0")
 set(VU0_GEN_DIR "${CMAKE_BINARY_DIR}/generated/vu0")
 file(MAKE_DIRECTORY ${VU0_GEN_DIR})
 
@@ -124,7 +127,11 @@ add_executable(${PROJECT_NAME}.elf ${SUPERPSX_SOURCES})
 
 target_include_directories(${PROJECT_NAME}.elf PRIVATE
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/platform/ps2
 )
+
+# Always define PLATFORM_PS2 for PS2 builds
+target_compile_definitions(${PROJECT_NAME}.elf PRIVATE PLATFORM_PS2)
 
 # ============================================================================
 # Compile definitions based on options
@@ -284,8 +291,9 @@ set(PLAYGROUND_SOURCES
     src/dynarec_compile.c
     src/dynarec_insn.c
     src/dynarec_run.c
-    src/tlb_handler.c
-    src/vu0_micro.c
+    src/platform/ps2/tlb_handler_ps2.c
+    src/platform/ps2/vu0_micro_ps2.c
+    src/platform/ps2/platform_ps2.c
     tests/jit/test_vu0_micro.c
     tests/jit/test_gte_compare.c
 )
@@ -295,11 +303,12 @@ add_executable(jit_playground.elf EXCLUDE_FROM_ALL ${PLAYGROUND_SOURCES})
 target_include_directories(jit_playground.elf PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/platform/ps2
     ${CMAKE_SOURCE_DIR}/tests/jit
 )
 
 target_compile_options(jit_playground.elf PRIVATE -O2 -G0 -Wall)
-target_compile_definitions(jit_playground.elf PRIVATE JIT_PLAYGROUND ENABLE_VU0_MICRO)
+target_compile_definitions(jit_playground.elf PRIVATE JIT_PLAYGROUND ENABLE_VU0_MICRO PLATFORM_PS2)
 add_dependencies(jit_playground.elf vu0_programs)
 
 target_link_libraries(jit_playground.elf PRIVATE
@@ -353,8 +362,8 @@ set(GPU_PLAYGROUND_SOURCES
     tests/playground_gpu/test_texcache.c
     tests/playground_gpu/mocks.c
     src/gpu_commands.c
-    src/gpu_primitives.c
-    src/gpu_texture.c
+    src/platform/ps2/gpu_ps2_primitives.c
+    src/platform/ps2/gpu_ps2_texture.c
 )
 
 add_executable(gpu_playground.elf EXCLUDE_FROM_ALL ${GPU_PLAYGROUND_SOURCES})
@@ -362,11 +371,12 @@ add_executable(gpu_playground.elf EXCLUDE_FROM_ALL ${GPU_PLAYGROUND_SOURCES})
 target_include_directories(gpu_playground.elf PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/platform/ps2
     ${CMAKE_SOURCE_DIR}/tests/gpu
 )
 
 target_compile_options(gpu_playground.elf PRIVATE -O2 -G0 -Wall)
-target_compile_definitions(gpu_playground.elf PRIVATE GPU_PLAYGROUND)
+target_compile_definitions(gpu_playground.elf PRIVATE GPU_PLAYGROUND PLATFORM_PS2)
 
 target_link_libraries(gpu_playground.elf PRIVATE
     -lpatches

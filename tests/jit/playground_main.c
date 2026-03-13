@@ -40,6 +40,7 @@ uint32_t gpu_busy_until = 0;
 int      gpu_pending_vblank_flush = 0;
 volatile uint64_t gpu_irq_delay_cycle = 0;
 void     GPU_VBlank(void)                           {}
+void     GPU_Backend_VBlank(void)                   {}
 uint32_t GPU_ReadStatus(void)                       { return gpu_stat; }
 void     GPU_DMA_Write(uint32_t a, int n)           { (void)a; (void)n; }
 void     GPU_Write_GP0(uint32_t v)                  { (void)v; }
@@ -79,6 +80,7 @@ int  Load_PSX_EXE_FromISO(const char *p, uint32_t *pc) { (void)p; (void)pc; retu
 /* --- DMA --- */
 void DMA_WriteReg(uint32_t a, uint32_t v)           { (void)a; (void)v; }
 uint32_t DMA_ReadReg(uint32_t a)                    { (void)a; return 0; }
+int  DMA_IsPending(void)                            { return 0; }
 
 /* --- Joystick --- */
 void Joystick_Init(void)                            {}

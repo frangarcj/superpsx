@@ -6,6 +6,7 @@
  * for IO/BIOS/misaligned access.
  */
 #include "dynarec.h"
+#include "platform.h"
 #include "scheduler.h"
 #include "psx_sio.h" /* SIO_Write/SIO_Read + extern sio_* vars */
 
@@ -311,8 +312,8 @@ int __attribute__((used)) TLB_Backpatch(uint32_t epc)
             *fault_p = 0x00000000;
 
             /* Flush caches so patched code takes effect */
-            FlushCache(0); /* writeback D-cache */
-            FlushCache(2); /* invalidate I-cache */
+            Platform_FlushDCache(NULL, NULL);
+            Platform_FlushICache();
 
             return 1;
         }
