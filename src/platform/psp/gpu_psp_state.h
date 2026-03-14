@@ -49,11 +49,11 @@ extern int psx_active_height;
 extern void *vram_mirror;
 
 /* ── Coordinate helper (used by both primitives and backend) ───── */
+/* In the new scheme, draws go directly to PSX VRAM in EDRAM.
+ * Vertices use PSX coordinates + draw_offset, NO scaling to PSP screen. */
 static inline void PSX_to_PSP(int16_t vx, int16_t vy, int16_t *ox, int16_t *oy) {
-    int16_t dx = (int16_t)((vx + draw_offset_x) - display_start_x);
-    int16_t dy = (int16_t)((vy + draw_offset_y) - display_start_y);
-    *ox = (int16_t)((int32_t)dx * PSP_SCREEN_W / psx_active_width);
-    *oy = (int16_t)((int32_t)dy * PSP_SCREEN_H / psx_active_height);
+    *ox = (int16_t)(vx + draw_offset_x);
+    *oy = (int16_t)(vy + draw_offset_y);
 }
 
 /* PSP GU vertex formats */

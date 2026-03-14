@@ -107,13 +107,12 @@ int psx_active_height = 240;
 void *vram_mirror = (void *)PSP_VRAM_OFFSET;
 
 static unsigned int __attribute__((aligned(16))) display_list[262144];
-static void *current_fbp = (void *)PSP_FB0_OFFSET;
 
 /* ── GPU Backend Implementation ─────────────────────────────────── */
 
 void GPU_Backend_Init(void) {
-    /* Allocate PSX VRAM shadow (1024×512 × 16bpp = 1MB).
-     * 64-byte aligned for DCache writeback + GE texture reads. */
+    /* Allocate PSX VRAM shadow in main RAM (for CPU readback via C0).
+     * 64-byte aligned for DCache writeback. */
     if (!psx_vram_shadow) {
         psx_vram_shadow = (uint16_t *)memalign(64, 1024 * 512 * sizeof(uint16_t));
         if (psx_vram_shadow)
@@ -123,45 +122,53 @@ void GPU_Backend_Init(void) {
     sceGuInit();
     sceGuStart(GU_DIRECT, display_list);
 
+    /* Standard double-buffer: draw→FB0, display→FB1.
+     * sceGuSwapBuffers() exchanges them each frame.
+     * PSX VRAM is an offscreen render target via DrawBufferList(). */
     sceGuDrawBuffer(GU_PSM_5551, (void *)PSP_FB0_OFFSET, PSP_BUF_W);
     sceGuDispBuffer(PSP_SCREEN_W, PSP_SCREEN_H, (void *)PSP_FB1_OFFSET, PSP_BUF_W);
     sceGuDepthBuffer((void *)PSP_ZBUF_OFFSET, PSP_BUF_W);
 
-    sceGuOffset(2048, 2048);
-    sceGuViewport(2048, 2048, PSP_SCREEN_W, PSP_SCREEN_H);
-    sceGuDepthRange(0xc350, 0x2710);
-    sceGuScissor(0, 0, PSP_SCREEN_W, PSP_SCREEN_H);
-    sceGuEnable(GU_SCISSOR_TEST);
     sceGuDisable(GU_CULL_FACE);
     sceGuDisable(GU_DEPTH_TEST);
     sceGuDisable(GU_TEXTURE_2D);
-    sceGuEnable(GU_BLEND);
-    sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+    sceGuDisable(GU_BLEND);
 
     sceGuFinish();
     sceGuSync(0, 0);
+
+    /* Clear PSX VRAM region in EDRAM */
+    memset((void *)((uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET),
+           0, 1024 * 512 * 2);
+
     sceDisplayWaitVblankStart();
     sceGuDisplay(GU_TRUE);
 
-    /* Start the first display list so GP0 commands arriving before
-     * the first VBlank have an active list to draw into. */
+    /* Start first display list — redirect to PSX VRAM (offscreen RTT) */
     sceGuStart(GU_DIRECT, display_list);
-    sceGuClearColor(0xFF000000); /* black */
-    sceGuClear(GU_COLOR_BUFFER_BIT);
-
-    current_fbp = (void *)PSP_FB0_OFFSET;
+    sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
+    sceGuScissor(draw_clip_x1, draw_clip_y1,
+                 draw_clip_x2 + 1, draw_clip_y2 + 1);
+    sceGuEnable(GU_SCISSOR_TEST);
+    sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_CULL_FACE);
+    sceGuDisable(GU_TEXTURE_2D);
+    sceGuOffset(0, 0);
+    sceGuViewport(0, 0, 1024, 512);
 }
 
 void GPU_Backend_Flush(void) {
     sceGuFinish();
     sceGuSync(0, 0);
-    sceGuStart(GU_DIRECT, display_list); /* re-open list for further draws */
+    sceGuStart(GU_DIRECT, display_list);
+    sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
 }
 
 void GPU_Backend_FlushSync(void) {
     sceGuFinish();
     sceGuSync(0, 0);
-    sceGuStart(GU_DIRECT, display_list); /* re-open list for further draws */
+    sceGuStart(GU_DIRECT, display_list);
+    sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
 }
 
 void GPU_Backend_SetupEnvironment(void) {
@@ -169,18 +176,86 @@ void GPU_Backend_SetupEnvironment(void) {
 }
 
 void GPU_Backend_UpdateDisplay(void) {
-    /* All GP0 drawing commands already issued sceGu draw calls via
-     * Translate_GP0_to_GS.  Just finish/sync/swap the display list. */
+    /* ── Phase 1: Finish GP0 draws to offscreen PSX VRAM ───────── */
+    sceGuFinish();
+    sceGuSync(0, 0);
+
+    /* ── Phase 2: Blit PSX FB → screen back buffer (RTT) ──────── */
+    /* sceGuStart auto-sets draw buffer to current back buffer (FB0/FB1)
+     * from the context stored by sceGuDrawBuffer/sceGuSwapBuffers. */
+    sceGuStart(GU_DIRECT, display_list);
+
+    sceGuScissor(0, 0, PSP_SCREEN_W, PSP_SCREEN_H);
+    sceGuEnable(GU_SCISSOR_TEST);
+    sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_BLEND);
+
+    /* Black letterbox borders */
+    sceGuClearColor(0xFF000000);
+    sceGuClear(GU_COLOR_BUFFER_BIT);
+
+    /* Use offscreen PSX VRAM as texture source (render-to-texture) */
+    sceGuTexFlush();
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuTexMode(GU_PSM_5551, 0, 0, 0);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+    sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+    sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+    sceGuTexScale(1.0f, 1.0f);
+    sceGuTexOffset(0.0f, 0.0f);
+
+    /* 4:3 output region */
+    int out_h = PSP_SCREEN_H;
+    int out_w = (out_h * 4) / 3;
+    if (out_w > PSP_SCREEN_W) { out_w = PSP_SCREEN_W; out_h = (out_w * 3) / 4; }
+    int pad_x = (PSP_SCREEN_W - out_w) / 2;
+    int pad_y = (PSP_SCREEN_H - out_h) / 2;
+
+    int src_w = psx_active_width;
+    int src_h = psx_active_height;
+
+    /* Textured sprite strips (tiled for modes > 512 wide) */
+    int col = 0;
+    while (col < src_w) {
+        int strip_w = src_w - col;
+        if (strip_w > 512) strip_w = 512;
+
+        uintptr_t tex_base = (uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET
+                           + (display_start_x + col) * 2;
+        int tex_pw = 1; while (tex_pw < strip_w) tex_pw <<= 1;
+        int tex_ph = 1; while (tex_ph < (display_start_y + src_h)) tex_ph <<= 1;
+        if (tex_pw > 512) tex_pw = 512;
+        if (tex_ph > 512) tex_ph = 512;
+        sceGuTexImage(0, tex_pw, tex_ph, 1024, (void *)tex_base);
+
+        int scr_x0 = pad_x + (col * out_w) / src_w;
+        int scr_x1 = pad_x + ((col + strip_w) * out_w) / src_w;
+
+        typedef struct { float u, v; int16_t x, y, z; } BlitVert;
+        BlitVert *bv = (BlitVert *)sceGuGetMemory(2 * sizeof(BlitVert));
+        bv[0].u = 0.0f;                         bv[0].v = (float)display_start_y;
+        bv[0].x = (int16_t)scr_x0;              bv[0].y = (int16_t)pad_y;         bv[0].z = 0;
+        bv[1].u = (float)strip_w;               bv[1].v = (float)(display_start_y + src_h);
+        bv[1].x = (int16_t)scr_x1;              bv[1].y = (int16_t)(pad_y + out_h); bv[1].z = 0;
+        sceGuDrawArray(GU_SPRITES,
+                       GU_TEXTURE_32BITF | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+                       2, NULL, bv);
+        col += strip_w;
+    }
+
     sceGuFinish();
     sceGuSync(0, 0);
     sceGuSwapBuffers();
 
-    /* Clear back buffer for next frame */
+    /* ── Phase 3: Restart offscreen PSX VRAM draw list ─────────── */
     sceGuStart(GU_DIRECT, display_list);
-    sceGuClearColor(0xFF000000); /* black */
-    sceGuClear(GU_COLOR_BUFFER_BIT);
+    sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
+    sceGuScissor(draw_clip_x1, draw_clip_y1,
+                 draw_clip_x2 + 1, draw_clip_y2 + 1);
+    sceGuEnable(GU_SCISSOR_TEST);
+    sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_TEXTURE_2D);
 
-    /* Reset per-frame draw stats */
     memset(&gpu_frame_stats, 0, sizeof(gpu_frame_stats));
 }
 
@@ -220,19 +295,30 @@ void GPU_Backend_UploadRegionFast(uint32_t coords, uint32_t dims,
     if (w <= 0 || h <= 0) return;
     (void)word_count;
 
+    uint16_t *edram_vram = (uint16_t *)VRAM_BASE_PTR;
     for (int row = 0; row < h; row++) {
-        memcpy((uint16_t *)VRAM_BASE_PTR + (y + row) * 1024 + x,
-               (uint16_t *)data_ptr + row * w,
-               w * 2);
+        int ry = (y + row) & 511;
+        memcpy(&edram_vram[ry * 1024 + x], (uint16_t *)data_ptr + row * w, w * 2);
+        if (psx_vram_shadow)
+            memcpy(&psx_vram_shadow[ry * 1024 + x], (uint16_t *)data_ptr + row * w, w * 2);
     }
 }
 
 void GPU_Backend_VRAMCopy(int sx, int sy, int dx, int dy, int w, int h) {
     if (w <= 0 || h <= 0) return;
+    /* Copy within EDRAM PSX VRAM (GE render target) */
     for (int row = 0; row < h; row++) {
-        uint16_t *src = (uint16_t *)VRAM_BASE_PTR + (sy + row) * 1024 + sx;
-        uint16_t *dst = (uint16_t *)VRAM_BASE_PTR + (dy + row) * 1024 + dx;
+        uint16_t *src = (uint16_t *)VRAM_BASE_PTR + ((sy + row) & 511) * 1024 + (sx & 1023);
+        uint16_t *dst = (uint16_t *)VRAM_BASE_PTR + ((dy + row) & 511) * 1024 + (dx & 1023);
         memmove(dst, src, w * 2);
+    }
+    /* Keep shadow in sync */
+    if (psx_vram_shadow) {
+        for (int row = 0; row < h; row++) {
+            uint16_t *src = &psx_vram_shadow[((sy + row) & 511) * 1024 + (sx & 1023)];
+            uint16_t *dst = &psx_vram_shadow[((dy + row) & 511) * 1024 + (dx & 1023)];
+            memmove(dst, src, w * 2);
+        }
     }
 }
 
@@ -241,80 +327,79 @@ void GPU_Backend_VRAMWrite(uint32_t word) {
 
     uint16_t p0 = word & 0xFFFF;
     uint16_t p1 = word >> 16;
+    uint16_t *edram_vram = (uint16_t *)VRAM_BASE_PTR;
 
     int px0 = vram_tx_x + (vram_tx_pixel % vram_tx_w);
     int py0 = vram_tx_y + (vram_tx_pixel / vram_tx_w);
-    if (px0 < 1024 && py0 < 512) psx_vram_shadow[py0 * 1024 + px0] = p0;
+    if (px0 < 1024 && py0 < 512) {
+        psx_vram_shadow[py0 * 1024 + px0] = p0;
+        edram_vram[py0 * 1024 + px0] = p0;
+    }
     vram_tx_pixel++;
 
     int px1 = vram_tx_x + (vram_tx_pixel % vram_tx_w);
     int py1 = vram_tx_y + (vram_tx_pixel / vram_tx_w);
-    if (px1 < 1024 && py1 < 512) psx_vram_shadow[py1 * 1024 + px1] = p1;
+    if (px1 < 1024 && py1 < 512) {
+        psx_vram_shadow[py1 * 1024 + px1] = p1;
+        edram_vram[py1 * 1024 + px1] = p1;
+    }
     vram_tx_pixel++;
 }
 
 void GPU_Backend_VRAMFlush(void) {
-    /* After A0 VRAM transfer completes, upload the written region
-     * to the sceGu framebuffer as a textured sprite so it becomes
-     * visible.  The data is already in psx_vram_shadow. */
+    /* After A0 VRAM transfer completes, sync shadow RAM → EDRAM
+     * so the data is available as a texture source for GE draws. */
     if (!psx_vram_shadow || vram_tx_w <= 0 || vram_tx_h <= 0) return;
 
-    /* Flush dcache so GE can read the shadow VRAM data */
     int tx = vram_tx_x, ty = vram_tx_y;
     int tw = vram_tx_w, th = vram_tx_h;
+
+    /* Copy dirty region from shadow to EDRAM VRAM */
+    uint16_t *edram_vram = (uint16_t *)VRAM_BASE_PTR;
+    for (int row = 0; row < th; row++) {
+        int y = (ty + row) & 511;
+        memcpy(&edram_vram[y * 1024 + tx],
+               &psx_vram_shadow[y * 1024 + tx],
+               tw * 2);
+    }
+
+    /* Flush dcache so GE can read the updated data */
     sceKernelDcacheWritebackRange(
-        &psx_vram_shadow[ty * 1024 + tx],
+        &edram_vram[ty * 1024 + tx],
         (uint32_t)(tw * 2 + (th - 1) * 1024 * 2));
-
-    /* sceGu texture: stride=1024 (shadow VRAM width), PSM_5551, uncached ptr.
-     * Texture dimensions must be power-of-2 for sceGuTexImage.
-     * Use 512×512 which covers the max PSX VRAM area. */
-    sceGuEnable(GU_TEXTURE_2D);
-    sceGuDisable(GU_BLEND);
-    sceGuTexMode(GU_PSM_5551, 0, 0, 0);
-    sceGuTexImage(0, 512, 512, 1024,
-                  (void *)((uintptr_t)psx_vram_shadow | 0x40000000));
-    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
-    sceGuTexFilter(GU_NEAREST, GU_NEAREST);
-    sceGuTexScale(1.0f, 1.0f);
-    sceGuTexOffset(0.0f, 0.0f);
-
-    /* Draw sprite mapping VRAM region to corresponding screen position.
-     * VRAM coordinates are absolute (not draw-offset relative), so
-     * map them relative to the display window. */
-    typedef struct { float u, v; uint32_t color; int16_t x, y, z; } TVert;
-    TVert *v = (TVert *)sceGuGetMemory(2 * sizeof(TVert));
-    int16_t sx0 = (int16_t)((int32_t)(tx - display_start_x) * PSP_SCREEN_W / psx_active_width);
-    int16_t sy0 = (int16_t)((int32_t)(ty - display_start_y) * PSP_SCREEN_H / psx_active_height);
-    int16_t sx1 = (int16_t)((int32_t)(tx + tw - display_start_x) * PSP_SCREEN_W / psx_active_width);
-    int16_t sy1 = (int16_t)((int32_t)(ty + th - display_start_y) * PSP_SCREEN_H / psx_active_height);
-
-    v[0].u = (float)tx;       v[0].v = (float)ty;
-    v[0].color = 0xFFFFFFFF;
-    v[0].x = sx0; v[0].y = sy0; v[0].z = 0;
-    v[1].u = (float)(tx + tw); v[1].v = (float)(ty + th);
-    v[1].color = 0xFFFFFFFF;
-    v[1].x = sx1; v[1].y = sy1; v[1].z = 0;
-
-    sceGuDrawArray(GU_SPRITES,
-        GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
-        2, 0, v);
-
-    sceGuDisable(GU_TEXTURE_2D);
-    sceGuEnable(GU_BLEND);
 }
 
 void GPU_Backend_VRAMReadback(int x, int y, int w, int h) {
-    (void)x; (void)y; (void)w; (void)h;
-    /* TODO: Read from GE EDRAM mirror back to shadow VRAM */
+    /* Read from EDRAM PSX VRAM back to shadow for CPU access (C0 StoreImage).
+     * GE draws go to EDRAM, so shadow may be stale for rendered pixels. */
+    if (!psx_vram_shadow || w <= 0 || h <= 0) return;
+
+    /* Need to finish pending GE draws first */
+    sceGuFinish();
+    sceGuSync(0, 0);
+
+    uint16_t *edram_vram = (uint16_t *)VRAM_BASE_PTR;
+    for (int row = 0; row < h; row++) {
+        int ry = (y + row) & 511;
+        int rx = x & 1023;
+        memcpy(&psx_vram_shadow[ry * 1024 + rx],
+               &edram_vram[ry * 1024 + rx],
+               w * 2);
+    }
+
+    /* Re-open display list for further draws (context defaults to VRAM) */
+    sceGuStart(GU_DIRECT, display_list);
+    sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
+    sceGuScissor(draw_clip_x1, draw_clip_y1,
+                 draw_clip_x2 + 1, draw_clip_y2 + 1);
+    sceGuEnable(GU_SCISSOR_TEST);
 }
 
 /* ── Drawing Environment ───────────────────────────────────────── */
 
 void GPU_Backend_SetScissor(int x1, int y1, int x2, int y2) {
-    (void)x1; (void)y1; (void)x2; (void)y2;
-    /* PSP scissor is in screen coordinates; PSX uses VRAM coordinates.
-     * The coordinate transform happens in the primitives layer. */
+    /* Scissor in PSX VRAM coordinates — GE renders directly to 1024×512 EDRAM */
+    sceGuScissor(x1, y1, x2 + 1, y2 + 1);
 }
 
 void GPU_Backend_SetDisplayFB(int x, int y) {
@@ -347,8 +432,11 @@ void GPU_Backend_SetMaskBit(int set, int check) {
 
 void GPU_Backend_ClearVRAM(int clip_x1, int clip_y1, int clip_x2, int clip_y2) {
     (void)clip_x1; (void)clip_y1; (void)clip_x2; (void)clip_y2;
-    sceGuClearColor(0);
-    sceGuClear(GU_COLOR_BUFFER_BIT);
+    /* Clear PSX VRAM region in EDRAM */
+    memset((void *)((uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET),
+           0, 1024 * 512 * 2);
+    if (psx_vram_shadow)
+        memset(psx_vram_shadow, 0, 1024 * 512 * 2);
 }
 
 void GPU_Backend_InvalidateState(void) {

@@ -5,6 +5,7 @@
 #include "gpu_psp_state.h"
 #include "profiler.h"
 #include <pspgu.h>
+#include <pspge.h>
 #include <string.h>
 
 extern uint64_t gpu_estimated_pixels;
@@ -15,6 +16,50 @@ extern uint64_t gpu_estimated_pixels;
 static inline uint32_t PSX_to_ABGR(uint32_t c)
 {
     return (c & 0x00FFFFFF) | 0xFF000000;
+}
+
+/* ── Texture Setup ──────────────────────────────────────────────── */
+
+/* Set up GE texture from PSX VRAM for the current tex_page/CLUT.
+ * PSX texture page is 256×256 at (tex_page_x*64, tex_page_y*256).
+ * CLUT is at (clut_x*16, clut_y) in VRAM. */
+static void setup_psx_texture(uint32_t clut_word)
+{
+    /* tex_page_x, tex_page_y, tex_page_format set by GP0(E1) */
+    int tpx = tex_page_x * 64;     /* pixel offset in VRAM */
+    int tpy = tex_page_y * 256;
+    void *edram_base = (void *)((uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET);
+
+    /* CLUT coordinates from the first textured vertex's CLUT field */
+    int clut_x = ((clut_word >> 16) & 0x3F) * 16;
+    int clut_y = (clut_word >> 22) & 0x1FF;
+    uint16_t *clut_ptr = (uint16_t *)edram_base + clut_y * 1024 + clut_x;
+
+    if (tex_page_format == 0) {
+        /* 4-bit indexed (T4): 16 CLUT entries, 2 pixels per byte */
+        sceGuTexMode(GU_PSM_T4, 0, 0, 0);
+        sceGuClutMode(GU_PSM_5551, 0, 0xFF, 0);
+        sceGuClutLoad(2, clut_ptr);  /* 2 blocks × 8 entries = 16 */
+        /* Texture source: raw 4bpp data from VRAM.
+         * tpx is in 16bpp pixels; for T4, each 16bit pixel = 4 T4 pixels.
+         * Stride in T4 pixels = 1024 * 4 = 4096, but GE stride is in pixels. */
+        sceGuTexImage(0, 256, 256, 1024 * 4, (uint8_t *)edram_base + tpy * 1024 * 2 + tpx * 2);
+    } else if (tex_page_format == 1) {
+        /* 8-bit indexed (T8): 256 CLUT entries, 1 pixel per byte */
+        sceGuTexMode(GU_PSM_T8, 0, 0, 0);
+        sceGuClutMode(GU_PSM_5551, 0, 0xFF, 0);
+        sceGuClutLoad(32, clut_ptr); /* 32 blocks × 8 entries = 256 */
+        sceGuTexImage(0, 256, 256, 1024 * 2, (uint8_t *)edram_base + tpy * 1024 * 2 + tpx * 2);
+    } else {
+        /* 15-bit direct color: use 5551 directly from VRAM */
+        sceGuTexMode(GU_PSM_5551, 0, 0, 0);
+        sceGuTexImage(0, 256, 256, 1024, (uint16_t *)edram_base + tpy * 1024 + tpx);
+    }
+
+    sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+    sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+    sceGuTexScale(1.0f, 1.0f);
+    sceGuTexOffset(0.0f, 0.0f);
 }
 
 /* ── State Management ───────────────────────────────────────────── */
@@ -84,37 +129,38 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         if (fw == 0 || fh == 0)
             return 3;
 
-        /* Update psx_vram_shadow for CPU readback / texture use */
-        if (psx_vram_shadow)
+        /* Update both shadow RAM and EDRAM directly */
         {
             uint16_t r5 = (uint16_t)((cmd_word >> 3) & 0x1F);
             uint16_t g5 = (uint16_t)((cmd_word >> 11) & 0x1F);
             uint16_t b5 = (uint16_t)((cmd_word >> 19) & 0x1F);
             uint16_t col16 = r5 | (g5 << 5) | (b5 << 10);
+            uint16_t *edram_vram = (uint16_t *)((uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET);
             for (int y = fy; y < fy + fh && y < 512; y++)
-                for (int x = fx; x < fx + fw && x < 1024; x++)
-                    psx_vram_shadow[y * 1024 + x] = col16;
+                for (int x = fx; x < fx + fw && x < 1024; x++) {
+                    if (psx_vram_shadow)
+                        psx_vram_shadow[y * 1024 + x] = col16;
+                    edram_vram[y * 1024 + x] = col16;
+                }
         }
 
-        /* Draw via sceGu — FillRect uses absolute VRAM coords, not draw-offset */
+        /* Draw via sceGu — FillRect uses absolute VRAM coords (no draw offset) */
         sceGuDisable(GU_TEXTURE_2D);
         sceGuDisable(GU_BLEND);
-        int16_t sx0 = (int16_t)((int32_t)(fx - display_start_x) * PSP_SCREEN_W / psx_active_width);
-        int16_t sy0 = (int16_t)((int32_t)(fy - display_start_y) * PSP_SCREEN_H / psx_active_height);
-        int16_t sx1 = (int16_t)((int32_t)(fx + fw - display_start_x) * PSP_SCREEN_W / psx_active_width);
-        int16_t sy1 = (int16_t)((int32_t)(fy + fh - display_start_y) * PSP_SCREEN_H / psx_active_height);
         PspVertFlat *v = (PspVertFlat *)sceGuGetMemory(2 * sizeof(PspVertFlat));
         v[0].color = color;
-        v[0].x = sx0;
-        v[0].y = sy0;
-        v[0].z = 0;
+        v[0].x = fx; v[0].y = fy; v[0].z = 0;
         v[1].color = color;
-        v[1].x = sx1;
-        v[1].y = sy1;
-        v[1].z = 0;
+        v[1].x = fx + fw; v[1].y = fy + fh; v[1].z = 0;
+
+        /* Temporarily expand scissor — FillRect ignores draw area */
+        sceGuScissor(0, 0, 1024, 512);
         sceGuDrawArray(GU_SPRITES,
                        GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
                        2, NULL, v);
+        /* Restore draw area scissor */
+        sceGuScissor(draw_clip_x1, draw_clip_y1,
+                     draw_clip_x2 + 1, draw_clip_y2 + 1);
         gpu_frame_stats.fill++;
         return 3;
     }
@@ -169,6 +215,11 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         else
         {
             sceGuEnable(GU_TEXTURE_2D);
+            /* Extract CLUT word from the first textured vertex (word after first xy) */
+            int clut_src_p = is_shaded ? 2 : 2; /* first vertex: [cmd+color][xy][uv+clut]... */
+            uint32_t clut_word = psx_cmd[clut_src_p];
+            setup_psx_texture(clut_word);
+
             PspVertTex *v = (PspVertTex *)sceGuGetMemory(nv * sizeof(PspVertTex));
             uint32_t base_color = PSX_to_ABGR(psx_cmd[0]);
             int p = 1; /* skip cmd+color word */
@@ -201,6 +252,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             sceGuDrawArray(is_quad ? GU_TRIANGLE_STRIP : GU_TRIANGLES,
                            GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
                            nv, NULL, v);
+            sceGuDisable(GU_TEXTURE_2D);
             gpu_frame_stats.poly_tex++;
             return p;
         }
