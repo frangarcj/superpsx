@@ -224,6 +224,7 @@ void Prim_InvalidateGSState(void) {}
 void Prim_InvalidateTexCache(void) {}
 void Prim_InvalidateTexCache_Page(int tex_page_x, int tex_page_y) { (void)tex_page_x; (void)tex_page_y; }
 void Prim_InvalidateTexCache_Region(int x, int y, int w, int h) { (void)x; (void)y; (void)w; (void)h; }
+void Prim_FlushBatch(void) {}
 
 void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
                           int16_t x1, int16_t y1, uint32_t color1,

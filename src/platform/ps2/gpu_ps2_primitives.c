@@ -114,6 +114,8 @@ void Prim_InvalidateTexCache_Region(int x, int y, int w, int h)
     prim_tex_cache_last = -1;
 }
 
+void Prim_FlushBatch(void) {} /* PS2 does not use batching */
+
 /* Targeted invalidation: entries referencing a specific texture page.
  * Called when a page is re-uploaded (format change or VRAM dirty).
  * Direct-mapped: invalidate all 3 format slots for this (x,y). */

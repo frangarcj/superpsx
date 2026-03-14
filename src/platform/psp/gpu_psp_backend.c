@@ -170,6 +170,7 @@ void GPU_Backend_Init(void) {
 }
 
 void GPU_Backend_Flush(void) {
+    Prim_FlushBatch();
     sceGuFinish();
     sceGuSync(0, 0);
     sceGuStart(GU_DIRECT, display_list);
@@ -177,6 +178,7 @@ void GPU_Backend_Flush(void) {
 }
 
 void GPU_Backend_FlushSync(void) {
+    Prim_FlushBatch();
     sceGuFinish();
     sceGuSync(0, 0);
     sceGuStart(GU_DIRECT, display_list);
@@ -189,6 +191,7 @@ void GPU_Backend_SetupEnvironment(void) {
 
 void GPU_Backend_UpdateDisplay(void) {
     /* ── Phase 1: Finish GP0 draws to offscreen PSX VRAM ───────── */
+    Prim_FlushBatch();
     sceGuFinish();
     sceGuSync(0, 0);
 
@@ -390,6 +393,7 @@ void GPU_Backend_VRAMReadback(int x, int y, int w, int h) {
     if (!psx_vram_shadow || w <= 0 || h <= 0) return;
 
     /* Need to finish pending GE draws first */
+    Prim_FlushBatch();
     sceGuFinish();
     sceGuSync(0, 0);
 

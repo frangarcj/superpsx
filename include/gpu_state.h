@@ -188,6 +188,7 @@ void Prim_InvalidateGSState(void);
 void Prim_InvalidateTexCache(void);
 void Prim_InvalidateTexCache_Page(int tex_page_x, int tex_page_y);
 void Prim_InvalidateTexCache_Region(int x, int y, int w, int h);
+void Prim_FlushBatch(void);
 
 /* gpu_commands.c — GP0/GP1 command processing */
 extern const uint8_t gpu_cmd_size[256]; /* O(1) command size lookup */
