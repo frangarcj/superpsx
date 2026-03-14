@@ -24,8 +24,8 @@ static inline uint32_t PSX_to_ABGR(uint32_t c)
  * Scale vertex colors by 2x to match PSX brightness. */
 static inline uint32_t PSX_to_ABGR_texblend(uint32_t c)
 {
-    uint32_t r = (c >>  0) & 0xFF;
-    uint32_t g = (c >>  8) & 0xFF;
+    uint32_t r = (c >> 0) & 0xFF;
+    uint32_t g = (c >> 8) & 0xFF;
     uint32_t b = (c >> 16) & 0xFF;
     r = r < 128 ? r * 2 : 255;
     g = g < 128 ? g * 2 : 255;
@@ -35,104 +35,146 @@ static inline uint32_t PSX_to_ABGR_texblend(uint32_t c)
 
 /* ── Texture Setup ──────────────────────────────────────────────── */
 
-/* Texture decode buffer in main RAM (256×256 × 16bpp = 128KB).
- * T4/T8 are decoded to 16bpp via software CLUT lookup — avoids:
- *  - PSP GE TEX_BUF_WIDTH 11-bit overflow (stride 4096/2048 → 0)
- *  - CLUT pointer async race (GE reads pointer after CPU overwrites)
- * Cached by (tpx, tpy, format, clut_word): skip decode when unchanged. */
-static uint16_t __attribute__((aligned(16))) tex_decoded[256 * 256]; /* 128KB */
-static int cached_tpx = -1, cached_tpy = -1, cached_fmt = -1;
+/* ── EDRAM Texture Page Cache ────────────────────────────────────
+ *  7 slots × 64KB in EDRAM (at PSP_TCACHE_OFFSET).  Stores raw T4/T8
+ *  index data as contiguous 256×256 pages.  GE reads from EDRAM local
+ *  memory (fast) + does CLUT lookup in hardware.
+ *  15bpp reads directly from the PSX VRAM mirror (TBW=1024, no cache).
+ * ─────────────────────────────────────────────────────────────────── */
+#define TCACHE_SLOTS     7
+#define TCACHE_SLOT_SIZE 0x10000  /* 64KB — fits T8 (64KB) or T4 (32KB) */
+
+static struct {
+    int tpx, tpy, fmt;   /* page key (-1 = empty) */
+    int lru;              /* higher = more recent */
+} tcache[TCACHE_SLOTS];
+
+static int tcache_lru_tick = 0;
+
+static uint16_t __attribute__((aligned(16))) clut_buf[256]; /* CLUT scratch */
 static uint32_t cached_clut_word = 0xFFFFFFFF;
 
-/* Set up GE texture from PSX VRAM for the current tex_page/CLUT.
- * T4/T8: decoded to 16bpp GU_PSM_5551, cached by (tpx,tpy,fmt,clut).
- * 15bpp: always re-read from shadow (no cache) to stay up-to-date. */
+/* Return EDRAM pointer for cache slot N */
+static inline void *tcache_slot_ptr(int slot)
+{
+    return (void *)((uintptr_t)sceGeEdramGetAddr()
+                    + PSP_TCACHE_OFFSET + slot * TCACHE_SLOT_SIZE);
+}
+
+/* Find or allocate a cache slot for (tpx, tpy, fmt).
+ * Returns slot index.  Sets *hit = 1 on cache hit. */
+static int tcache_lookup(int tpx, int tpy, int fmt, int *hit)
+{
+    int best = 0, best_lru = tcache[0].lru;
+
+    for (int i = 0; i < TCACHE_SLOTS; i++) {
+        if (tcache[i].tpx == tpx && tcache[i].tpy == tpy &&
+            tcache[i].fmt == fmt) {
+            tcache[i].lru = ++tcache_lru_tick;
+            *hit = 1;
+            return i;
+        }
+        if (tcache[i].lru < best_lru) {
+            best_lru = tcache[i].lru;
+            best = i;
+        }
+    }
+
+    /* Miss — evict LRU slot */
+    tcache[best].tpx = tpx;
+    tcache[best].tpy = tpy;
+    tcache[best].fmt = fmt;
+    tcache[best].lru = ++tcache_lru_tick;
+    *hit = 0;
+    return best;
+}
+
+/* Set up GE texture from PSX VRAM.
+ * T4/T8: raw index data in EDRAM cache slot + GE CLUT hardware.
+ * 15bpp:  GE reads directly from EDRAM VRAM (zero CPU work). */
 static void setup_psx_texture(uint32_t clut_word)
 {
     int tpx = tex_page_x;
     int tpy = tex_page_y;
 
-    /* For T4/T8 indexed formats, use decode cache */
-    if (tex_page_format < 2) {
-        int dirty = (tpx != cached_tpx || tpy != cached_tpy ||
-                     tex_page_format != cached_fmt || clut_word != cached_clut_word);
-        if (!dirty) {
-            sceGuTexFlush();
-            sceGuTexMode(GU_PSM_5551, 0, 0, 0);
-            sceGuTexImage(0, 256, 256, 256, tex_decoded);
-            sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
-            sceGuTexFilter(GU_NEAREST, GU_NEAREST);
-            sceGuTexScale(1.0f, 1.0f);
-            sceGuTexOffset(0.0f, 0.0f);
-            return;
-        }
-    }
-
-    int clut_x = ((clut_word >> 16) & 0x3F) * 16;
-    int clut_y = (clut_word >> 22) & 0x1FF;
-
-    if (tex_page_format == 0) {
-        /* 4-bit indexed → 16bpp: lookup each nibble in CLUT */
-        uint16_t clut[16];
-        uint16_t *csrc = &psx_vram_shadow[clut_y * 1024 + clut_x];
-        for (int i = 0; i < 16; i++)
-            clut[i] = csrc[i] ? (csrc[i] | 0x8000) : 0;
-
-        for (int row = 0; row < 256; row++) {
-            int vy = (tpy + row) & 511;
-            uint16_t *src = &psx_vram_shadow[vy * 1024 + tpx];
-            uint16_t *dst = &tex_decoded[row * 256];
-            for (int col = 0; col < 64; col++) {
-                uint16_t w = src[col];
-                dst[col * 4 + 0] = clut[(w >>  0) & 0xF];
-                dst[col * 4 + 1] = clut[(w >>  4) & 0xF];
-                dst[col * 4 + 2] = clut[(w >>  8) & 0xF];
-                dst[col * 4 + 3] = clut[(w >> 12) & 0xF];
-            }
-        }
-    } else if (tex_page_format == 1) {
-        /* 8-bit indexed → 16bpp: lookup each byte in CLUT */
-        uint16_t clut[256];
-        uint16_t *csrc = &psx_vram_shadow[clut_y * 1024 + clut_x];
-        for (int i = 0; i < 256; i++)
-            clut[i] = csrc[i] ? (csrc[i] | 0x8000) : 0;
-
-        for (int row = 0; row < 256; row++) {
-            int vy = (tpy + row) & 511;
-            uint16_t *src = &psx_vram_shadow[vy * 1024 + tpx];
-            uint16_t *dst = &tex_decoded[row * 256];
-            for (int col = 0; col < 128; col++) {
-                uint16_t w = src[col];
-                dst[col * 2 + 0] = clut[w & 0xFF];
-                dst[col * 2 + 1] = clut[(w >> 8) & 0xFF];
-            }
-        }
-    } else {
-        /* 15-bit direct color → copy with alpha fixup.
-         * Always re-decoded (no cache) so GE sees latest VRAM content.
-         * PSX: 0x0000 = transparent, non-zero = opaque (set bit 15). */
-        for (int row = 0; row < 256; row++) {
-            int vy = (tpy + row) & 511;
-            uint16_t *src = &psx_vram_shadow[vy * 1024 + tpx];
-            uint16_t *dst = &tex_decoded[row * 256];
-            for (int i = 0; i < 256; i++)
-                dst[i] = src[i] ? (src[i] | 0x8000) : 0;
-        }
-    }
-
-    sceKernelDcacheWritebackRange(tex_decoded, sizeof(tex_decoded));
-
-    /* Only cache T4/T8 — 15bpp always re-decodes */
-    if (tex_page_format < 2) {
-        cached_tpx = tpx;
-        cached_tpy = tpy;
-        cached_fmt = tex_page_format;
-        cached_clut_word = clut_word;
-    }
-
     sceGuTexFlush();
-    sceGuTexMode(GU_PSM_5551, 0, 0, 0);
-    sceGuTexImage(0, 256, 256, 256, tex_decoded);
+
+    if (tex_page_format == 0)
+    {
+        /* 4bpp T4: 256×256 = 32KB in cache slot */
+        int hit;
+        int slot = tcache_lookup(tpx, tpy, 0, &hit);
+        void *slot_ptr = tcache_slot_ptr(slot);
+
+        if (!hit) {
+            uint8_t *dst = (uint8_t *)slot_ptr;
+            for (int row = 0; row < 256; row++) {
+                int vy = (tpy + row) & 511;
+                memcpy(dst + row * 128,
+                       &psx_vram_shadow[vy * 1024 + tpx], 128);
+            }
+            sceKernelDcacheWritebackRange(slot_ptr, 256 * 128);
+        }
+
+        /* CLUT: update if clut_word changed */
+        if (clut_word != cached_clut_word) {
+            int clut_x = ((clut_word >> 16) & 0x3F) * 16;
+            int clut_y = (clut_word >> 22) & 0x1FF;
+            uint16_t *csrc = &psx_vram_shadow[clut_y * 1024 + clut_x];
+            for (int i = 0; i < 16; i++)
+                clut_buf[i] = csrc[i] ? (csrc[i] | 0x8000) : 0;
+            sceKernelDcacheWritebackRange(clut_buf, 32);
+            cached_clut_word = clut_word;
+        }
+
+        sceGuClutMode(GU_PSM_5551, 0, 0xFF, 0);
+        sceGuClutLoad(2, clut_buf);
+        sceGuTexMode(GU_PSM_T4, 0, 0, 0);
+        sceGuTexImage(0, 256, 256, 256, slot_ptr);
+    }
+    else if (tex_page_format == 1)
+    {
+        /* 8bpp T8: 256×256 = 64KB in cache slot */
+        int hit;
+        int slot = tcache_lookup(tpx, tpy, 1, &hit);
+        void *slot_ptr = tcache_slot_ptr(slot);
+
+        if (!hit) {
+            uint8_t *dst = (uint8_t *)slot_ptr;
+            for (int row = 0; row < 256; row++) {
+                int vy = (tpy + row) & 511;
+                memcpy(dst + row * 256,
+                       &psx_vram_shadow[vy * 1024 + tpx], 256);
+            }
+            sceKernelDcacheWritebackRange(slot_ptr, 256 * 256);
+        }
+
+        /* CLUT: update if clut_word changed */
+        if (clut_word != cached_clut_word) {
+            int clut_x = ((clut_word >> 16) & 0x3F) * 16;
+            int clut_y = (clut_word >> 22) & 0x1FF;
+            uint16_t *csrc = &psx_vram_shadow[clut_y * 1024 + clut_x];
+            for (int i = 0; i < 256; i++)
+                clut_buf[i] = csrc[i] ? (csrc[i] | 0x8000) : 0;
+            sceKernelDcacheWritebackRange(clut_buf, 512);
+            cached_clut_word = clut_word;
+        }
+
+        sceGuClutMode(GU_PSM_5551, 0, 0xFF, 0);
+        sceGuClutLoad(32, clut_buf);
+        sceGuTexMode(GU_PSM_T8, 0, 0, 0);
+        sceGuTexImage(0, 256, 256, 256, slot_ptr);
+    }
+    else
+    {
+        /* 15bpp: GE reads directly from EDRAM VRAM (stride = 1024). */
+        uint16_t *edram_vram = (uint16_t *)((uintptr_t)sceGeEdramGetAddr()
+                                            + PSP_VRAM_OFFSET);
+        sceGuTexMode(GU_PSM_5551, 0, 0, 0);
+        sceGuTexImage(0, 256, 256, 1024,
+                      &edram_vram[tpy * 1024 + tpx]);
+    }
+
     sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
     sceGuTexFilter(GU_NEAREST, GU_NEAREST);
     sceGuTexScale(1.0f, 1.0f);
@@ -149,7 +191,8 @@ static void apply_blend(int is_semi_trans)
         switch (semi_trans_mode)
         {
         case 0:
-            sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+            /* PSX: (Fc + Bc) / 2 — half foreground + half background */
+            sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0x80808080, 0x80808080);
             break;
         case 1:
             sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFFFF, 0xFFFFFFFF);
@@ -173,11 +216,31 @@ void Prim_InvalidateGSState(void)
     gs_state.valid = 0;
 }
 
-void Prim_InvalidateTexCache(void) { cached_tpx = -1; }
+void Prim_InvalidateTexCache(void)
+{
+    for (int i = 0; i < TCACHE_SLOTS; i++)
+        tcache[i].tpx = -1;
+    cached_clut_word = 0xFFFFFFFF;
+}
 void Prim_InvalidateTexCache_Page(int tpx, int tpy)
 {
-    if (tpx == cached_tpx && tpy == cached_tpy)
-        cached_tpx = -1;
+    for (int i = 0; i < TCACHE_SLOTS; i++)
+        if (tcache[i].tpx == tpx && tcache[i].tpy == tpy)
+            tcache[i].tpx = -1;
+}
+/* Invalidate only cache slots whose page overlaps (x, y, w, h) in VRAM */
+void Prim_InvalidateTexCache_Region(int rx, int ry, int rw, int rh)
+{
+    int rx2 = rx + rw, ry2 = ry + rh;
+    for (int i = 0; i < TCACHE_SLOTS; i++) {
+        if (tcache[i].tpx < 0) continue;
+        int pw = (tcache[i].fmt == 0) ? 64 : 128; /* halfword width */
+        int px1 = tcache[i].tpx, py1 = tcache[i].tpy;
+        int px2 = px1 + pw, py2 = py1 + 256;
+        if (rx < px2 && rx2 > px1 && ry < py2 && ry2 > py1)
+            tcache[i].tpx = -1;
+    }
+    cached_clut_word = 0xFFFFFFFF; /* CLUT may live in written region */
 }
 
 /* ── Primary Dispatch ───────────────────────────────────────────── */
@@ -214,7 +277,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             uint16_t col16 = r5 | (g5 << 5) | (b5 << 10);
             uint16_t *edram_vram = (uint16_t *)((uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET);
             for (int y = fy; y < fy + fh && y < 512; y++)
-                for (int x = fx; x < fx + fw && x < 1024; x++) {
+                for (int x = fx; x < fx + fw && x < 1024; x++)
+                {
                     if (psx_vram_shadow)
                         psx_vram_shadow[y * 1024 + x] = col16;
                     edram_vram[y * 1024 + x] = col16;
@@ -230,9 +294,13 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         sceGuDisable(GU_BLEND);
         PspVertFlat *v = (PspVertFlat *)sceGuGetMemory(2 * sizeof(PspVertFlat));
         v[0].color = color;
-        v[0].x = fx; v[0].y = fy; v[0].z = 0;
+        v[0].x = fx;
+        v[0].y = fy;
+        v[0].z = 0;
         v[1].color = color;
-        v[1].x = fx + fw; v[1].y = fy + fh; v[1].z = 0;
+        v[1].x = fx + fw;
+        v[1].y = fy + fh;
+        v[1].z = 0;
 
         /* Temporarily expand scissor — FillRect ignores draw area */
         sceGuScissor(0, 0, 1024, 512);
@@ -296,8 +364,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         else
         {
             sceGuEnable(GU_TEXTURE_2D);
-            sceGuEnable(GU_ALPHA_TEST);
-            sceGuAlphaFunc(GU_GREATER, 0, 0xFF);
+            sceGuEnable(GU_COLOR_TEST);
+            sceGuColorFunc(GU_NOTEQUAL, 0x00000000, 0x00FFFFFF);
             /* Extract texpage from vertex 1's UV word (upper 16 bits) */
             {
                 int tpage_idx = is_shaded ? 5 : 4; /* vertex1 UV+texpage position */
@@ -341,8 +409,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 PSX_to_PSP((int16_t)(psx_cmd[p] & 0xFFFF), (int16_t)(psx_cmd[p] >> 16), &x, &y);
                 p++;
                 uint32_t uv_clut = psx_cmd[p++];
-                v[i].u = (float)(uv_clut & 0xFF);
-                v[i].v = (float)((uv_clut >> 8) & 0xFF);
+                v[i].u = (float)Apply_Tex_Window_U(uv_clut & 0xFF);
+                v[i].v = (float)Apply_Tex_Window_V((uv_clut >> 8) & 0xFF);
                 v[i].color = color;
                 v[i].x = x;
                 v[i].y = y;
@@ -352,7 +420,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                            GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
                            nv, NULL, v);
             sceGuDisable(GU_TEXTURE_2D);
-            sceGuDisable(GU_ALPHA_TEST);
+            sceGuDisable(GU_COLOR_TEST);
             gpu_frame_stats.poly_tex++;
             return p;
         }
@@ -397,8 +465,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         int is_semi = (cmd & 0x02) != 0;
         int is_raw_rect = is_textured && (cmd & 0x01);
         uint32_t color = (is_textured && !is_raw_rect)
-                         ? PSX_to_ABGR_texblend(psx_cmd[0])
-                         : PSX_to_ABGR(psx_cmd[0]);
+                             ? PSX_to_ABGR_texblend(psx_cmd[0])
+                             : PSX_to_ABGR(psx_cmd[0]);
 
         int16_t x0, y0;
         int p = 1;
@@ -408,7 +476,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         /* Extract texcoord + CLUT for textured sprites */
         uint8_t u0 = 0, v0 = 0;
         uint32_t clut_word = 0;
-        if (is_textured) {
+        if (is_textured)
+        {
             clut_word = psx_cmd[p];
             u0 = (uint8_t)(clut_word & 0xFF);
             v0 = (uint8_t)((clut_word >> 8) & 0xFF);
@@ -437,9 +506,13 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             sceGuDisable(GU_TEXTURE_2D);
             PspVertFlat *v = (PspVertFlat *)sceGuGetMemory(2 * sizeof(PspVertFlat));
             v[0].color = color;
-            v[0].x = x0;        v[0].y = y0;        v[0].z = 0;
+            v[0].x = x0;
+            v[0].y = y0;
+            v[0].z = 0;
             v[1].color = color;
-            v[1].x = x0 + w;    v[1].y = y0 + h;    v[1].z = 0;
+            v[1].x = x0 + w;
+            v[1].y = y0 + h;
+            v[1].z = 0;
             sceGuDrawArray(GU_SPRITES,
                            GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
                            2, NULL, v);
@@ -448,8 +521,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         else
         {
             sceGuEnable(GU_TEXTURE_2D);
-            sceGuEnable(GU_ALPHA_TEST);
-            sceGuAlphaFunc(GU_GREATER, 0, 0xFF);
+            sceGuEnable(GU_COLOR_TEST);
+            sceGuColorFunc(GU_NOTEQUAL, 0x00000000, 0x00FFFFFF);
             setup_psx_texture(clut_word);
 
             /* Raw-texture: use texture color directly, ignore vertex color */
@@ -457,17 +530,23 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
 
             PspVertTex *v = (PspVertTex *)sceGuGetMemory(2 * sizeof(PspVertTex));
-            v[0].u = (float)u0;         v[0].v = (float)v0;
+            v[0].u = (float)Apply_Tex_Window_U(u0);
+            v[0].v = (float)Apply_Tex_Window_V(v0);
             v[0].color = color;
-            v[0].x = x0;                v[0].y = y0;                v[0].z = 0;
-            v[1].u = (float)(u0 + w);   v[1].v = (float)(v0 + h);
+            v[0].x = x0;
+            v[0].y = y0;
+            v[0].z = 0;
+            v[1].u = (float)Apply_Tex_Window_U(u0 + w);
+            v[1].v = (float)Apply_Tex_Window_V(v0 + h);
             v[1].color = color;
-            v[1].x = x0 + w;            v[1].y = y0 + h;            v[1].z = 0;
+            v[1].x = x0 + w;
+            v[1].y = y0 + h;
+            v[1].z = 0;
             sceGuDrawArray(GU_SPRITES,
                            GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
                            2, NULL, v);
             sceGuDisable(GU_TEXTURE_2D);
-            sceGuDisable(GU_ALPHA_TEST);
+            sceGuDisable(GU_COLOR_TEST);
             gpu_frame_stats.rect_tex++;
         }
         return p;

@@ -30,14 +30,14 @@ extern gs_state_t gs_state;
 /* PSP VRAM layout (2MB GE EDRAM):
  * 0x000000 - 0x043FFF: FB0 (272KB)
  * 0x044000 - 0x087FFF: FB1 (272KB)
- * 0x088000 - 0x0CBFFF: ZBUF (272KB)
- * 0x0CC000 - 0x1CBFFF: PSX VRAM Mirror (1MB)
- * 0x1CC000 - 0x1FFFFF: Spare/CLUTs (208KB)
+ * 0x088000 - 0x187FFF: PSX VRAM Mirror (1MB)
+ * 0x188000 - 0x1FFFFF: Tex Cache (480KB)
  */
-#define PSP_FB0_OFFSET   0x000000
-#define PSP_FB1_OFFSET   0x044000
-#define PSP_ZBUF_OFFSET  0x088000
-#define PSP_VRAM_OFFSET  0x0CC000
+#define PSP_FB0_OFFSET    0x000000
+#define PSP_FB1_OFFSET    0x044000
+#define PSP_VRAM_OFFSET   0x088000
+#define PSP_TCACHE_OFFSET 0x188000
+#define PSP_TCACHE_SIZE   0x078000  /* 480KB */
 
 /* PSP native resolution */
 #define PSP_SCREEN_W 480

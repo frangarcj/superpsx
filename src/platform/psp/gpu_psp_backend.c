@@ -127,7 +127,6 @@ void GPU_Backend_Init(void) {
      * PSX VRAM is an offscreen render target via DrawBufferList(). */
     sceGuDrawBuffer(GU_PSM_5551, (void *)PSP_FB0_OFFSET, PSP_BUF_W);
     sceGuDispBuffer(PSP_SCREEN_W, PSP_SCREEN_H, (void *)PSP_FB1_OFFSET, PSP_BUF_W);
-    sceGuDepthBuffer((void *)PSP_ZBUF_OFFSET, PSP_BUF_W);
 
     sceGuDisable(GU_CULL_FACE);
     sceGuDisable(GU_DEPTH_TEST);
@@ -315,7 +314,7 @@ void GPU_Backend_UploadRegionFast(uint32_t coords, uint32_t dims,
         (uint32_t)(w * 2 + (h - 1) * 1024 * 2));
 
     /* Invalidate software texture cache — VRAM content changed */
-    Prim_InvalidateTexCache();
+    Prim_InvalidateTexCache_Region(x, y, w, h);
 }
 
 void GPU_Backend_VRAMCopy(int sx, int sy, int dx, int dy, int w, int h) {
@@ -339,7 +338,7 @@ void GPU_Backend_VRAMCopy(int sx, int sy, int dx, int dy, int w, int h) {
     sceKernelDcacheWritebackRange(edram_dst,
         (uint32_t)(w * 2 + (h - 1) * 1024 * 2));
 
-    Prim_InvalidateTexCache();
+    Prim_InvalidateTexCache_Region(dx, dy, w, h);
 }
 
 void GPU_Backend_VRAMWrite(uint32_t word) {
@@ -370,7 +369,7 @@ void GPU_Backend_VRAMFlush(void) {
         &edram_vram[ty * 1024 + tx],
         (uint32_t)(tw * 2 + (th - 1) * 1024 * 2));
 
-    Prim_InvalidateTexCache();
+    Prim_InvalidateTexCache_Region(tx, ty, tw, th);
 }
 
 void GPU_Backend_VRAMReadback(int x, int y, int w, int h) {

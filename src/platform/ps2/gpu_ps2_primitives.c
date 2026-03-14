@@ -102,6 +102,18 @@ void Prim_InvalidateTexCache(void)
     prim_tex_cache_last = -1;
 }
 
+/* Region-based invalidation: invalidate cache entries whose pages overlap
+ * the given VRAM region (x,y,w,h in halfword coords). */
+void Prim_InvalidateTexCache_Region(int x, int y, int w, int h)
+{
+    /* Delegate to the fine-grained texture cache dirty tracking */
+    Tex_Cache_DirtyRegion(x, y, w, h);
+    /* Also invalidate prim-level cache entries that may overlap */
+    for (int i = 0; i < PRIM_TEX_CACHE_SIZE; i++)
+        prim_tex_cache[i].valid = 0;
+    prim_tex_cache_last = -1;
+}
+
 /* Targeted invalidation: entries referencing a specific texture page.
  * Called when a page is re-uploaded (format change or VRAM dirty).
  * Direct-mapped: invalidate all 3 format slots for this (x,y). */
