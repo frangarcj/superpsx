@@ -284,6 +284,11 @@ void GPU_Backend_UploadShadowVRAM(int x, int y, int w, int h) {
         uint16_t *dst = (uint16_t *)VRAM_BASE_PTR + (y + row) * 1024 + x;
         memcpy(dst, src, w * 2);
     }
+    /* Flush dcache so GE sees shadow→EDRAM copy */
+    uint16_t *edram_vram = (uint16_t *)VRAM_BASE_PTR;
+    sceKernelDcacheWritebackRange(
+        &edram_vram[y * 1024 + x],
+        (uint32_t)(w * 2 + (h - 1) * 1024 * 2));
 }
 
 void GPU_Backend_UploadRegionFast(uint32_t coords, uint32_t dims,
@@ -302,6 +307,14 @@ void GPU_Backend_UploadRegionFast(uint32_t coords, uint32_t dims,
         if (psx_vram_shadow)
             memcpy(&psx_vram_shadow[ry * 1024 + x], (uint16_t *)data_ptr + row * w, w * 2);
     }
+
+    /* Flush dcache so GE can see CPU-written texture/CLUT data */
+    sceKernelDcacheWritebackRange(
+        &edram_vram[(y & 511) * 1024 + x],
+        (uint32_t)(w * 2 + (h - 1) * 1024 * 2));
+
+    /* Invalidate software texture cache — VRAM content changed */
+    Prim_InvalidateTexCache();
 }
 
 void GPU_Backend_VRAMCopy(int sx, int sy, int dx, int dy, int w, int h) {
@@ -320,30 +333,18 @@ void GPU_Backend_VRAMCopy(int sx, int sy, int dx, int dy, int w, int h) {
             memmove(dst, src, w * 2);
         }
     }
+    /* Flush dcache for destination region */
+    uint16_t *edram_dst = (uint16_t *)VRAM_BASE_PTR + ((dy & 511) * 1024 + (dx & 1023));
+    sceKernelDcacheWritebackRange(edram_dst,
+        (uint32_t)(w * 2 + (h - 1) * 1024 * 2));
+
+    Prim_InvalidateTexCache();
 }
 
 void GPU_Backend_VRAMWrite(uint32_t word) {
-    if (!psx_vram_shadow) return;
-
-    uint16_t p0 = word & 0xFFFF;
-    uint16_t p1 = word >> 16;
-    uint16_t *edram_vram = (uint16_t *)VRAM_BASE_PTR;
-
-    int px0 = vram_tx_x + (vram_tx_pixel % vram_tx_w);
-    int py0 = vram_tx_y + (vram_tx_pixel / vram_tx_w);
-    if (px0 < 1024 && py0 < 512) {
-        psx_vram_shadow[py0 * 1024 + px0] = p0;
-        edram_vram[py0 * 1024 + px0] = p0;
-    }
-    vram_tx_pixel++;
-
-    int px1 = vram_tx_x + (vram_tx_pixel % vram_tx_w);
-    int py1 = vram_tx_y + (vram_tx_pixel / vram_tx_w);
-    if (px1 < 1024 && py1 < 512) {
-        psx_vram_shadow[py1 * 1024 + px1] = p1;
-        edram_vram[py1 * 1024 + px1] = p1;
-    }
-    vram_tx_pixel++;
+    /* No-op: gpu_commands.c already writes to psx_vram_shadow and increments
+     * vram_tx_pixel.  GPU_Backend_VRAMFlush() will copy shadow → EDRAM. */
+    (void)word;
 }
 
 void GPU_Backend_VRAMFlush(void) {
@@ -367,6 +368,8 @@ void GPU_Backend_VRAMFlush(void) {
     sceKernelDcacheWritebackRange(
         &edram_vram[ty * 1024 + tx],
         (uint32_t)(tw * 2 + (th - 1) * 1024 * 2));
+
+    Prim_InvalidateTexCache();
 }
 
 void GPU_Backend_VRAMReadback(int x, int y, int w, int h) {
@@ -555,6 +558,7 @@ int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr) {
 }
 
 void DumpVRAM(const char *filename) { (void)filename; }
+void DumpShadowVRAM(const char *filename) { (void)filename; }
 
 /* ── Texture cache stubs (PSP version) ─────────────────────────── */
 
