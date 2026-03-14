@@ -429,8 +429,25 @@ void GPU_Backend_SetResolution(int interlace, int mode) {
 }
 
 void GPU_Backend_SetMaskBit(int set, int check) {
-    (void)set; (void)check;
-    /* TODO: Implement via alpha test or stencil */
+    /* PSP GE stencil on GU_PSM_5551: bit 15 (alpha) = stencil bit.
+     * mask_set_bit:   force STP=1 on written pixels  → stencil REPLACE ref=1
+     * mask_check_bit: skip pixels where STP=1        → stencil NOTEQUAL ref=1 */
+    if (set || check) {
+        sceGuEnable(GU_STENCIL_TEST);
+        if (check) {
+            /* Block writes where dest STP=1 */
+            sceGuStencilFunc(GU_NOTEQUAL, 1, 0xFF);
+            /* On pass: force STP=1 if set, else keep dest STP (which is 0) */
+            sceGuStencilOp(GU_KEEP, GU_KEEP,
+                           set ? GU_REPLACE : GU_KEEP);
+        } else {
+            /* set only: always write, force STP=1 */
+            sceGuStencilFunc(GU_ALWAYS, 1, 0xFF);
+            sceGuStencilOp(GU_REPLACE, GU_REPLACE, GU_REPLACE);
+        }
+    } else {
+        sceGuDisable(GU_STENCIL_TEST);
+    }
 }
 
 void GPU_Backend_ClearVRAM(int clip_x1, int clip_y1, int clip_x2, int clip_y2) {

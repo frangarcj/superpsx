@@ -16,7 +16,10 @@ extern uint64_t gpu_estimated_pixels;
 
 static inline uint32_t PSX_to_ABGR(uint32_t c)
 {
-    return (c & 0x00FFFFFF) | 0xFF000000;
+    /* Alpha = 0x00: non-textured PSX pixels have STP=0 by default.
+     * In GU_PSM_5551, alpha >= 0x80 → bit15=1 (STP set).
+     * mask_set_bit forces STP=1 via stencil, not vertex alpha. */
+    return (c & 0x00FFFFFF);
 }
 
 /* PSX texture blending: output = tex * vc / 128 (0x80 = 1.0)
@@ -275,13 +278,17 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             uint16_t g5 = (uint16_t)((cmd_word >> 11) & 0x1F);
             uint16_t b5 = (uint16_t)((cmd_word >> 19) & 0x1F);
             uint16_t col16 = r5 | (g5 << 5) | (b5 << 10);
+            if (mask_set_bit) col16 |= 0x8000;
             uint16_t *edram_vram = (uint16_t *)((uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET);
             for (int y = fy; y < fy + fh && y < 512; y++)
                 for (int x = fx; x < fx + fw && x < 1024; x++)
                 {
+                    int idx = y * 1024 + x;
+                    if (mask_check_bit && (edram_vram[idx] & 0x8000))
+                        continue;
                     if (psx_vram_shadow)
-                        psx_vram_shadow[y * 1024 + x] = col16;
-                    edram_vram[y * 1024 + x] = col16;
+                        psx_vram_shadow[idx] = col16;
+                    edram_vram[idx] = col16;
                 }
             /* Flush dcache so GE sees CPU-written EDRAM data */
             sceKernelDcacheWritebackRange(
