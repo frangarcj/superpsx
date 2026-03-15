@@ -68,6 +68,29 @@ typedef struct {
     int16_t x, y, z;
 } PspVertTex;
 
+/* ── Vertex pool for GU_SEND mode ──────────────────────────────── */
+/* Replaces sceGuGetMemory (which doesn't work in non-DIRECT mode).
+ * CPU writes to cached pool, one dcache writeback before sceGuSendList. */
+#define VPOOL_SIZE (256 * 1024)
+extern uint8_t vpool_buf[];
+extern int vpool_offset;
+
+/* Forward declare flush — implemented in gpu_psp_backend.c */
+void GPU_Backend_Flush(void);
+
+static inline void *vpool_alloc(int size) {
+    size = (size + 3) & ~3;  /* 4-byte align */
+    if (vpool_offset + size > VPOOL_SIZE) {
+        /* Pool exhausted — wrap to avoid memory corruption.
+         * This overwrites stale data from earlier in the same list;
+         * correctness depends on the GE executing list commands in order. */
+        vpool_offset = 0;
+    }
+    void *ptr = &vpool_buf[vpool_offset];
+    vpool_offset += size;
+    return ptr;
+}
+
 /* ── GIF packet stub types for code that references them ───────── */
 /* PSP doesn't use GIF. These satisfy extern declarations in shared code. */
 typedef struct { uint64_t lo, hi; } gif_qword_t;

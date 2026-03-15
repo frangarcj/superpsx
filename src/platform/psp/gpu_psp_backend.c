@@ -16,7 +16,6 @@
 #include <psputils.h>
 #include <malloc.h>
 #include <string.h>
-#include <stdio.h>
 
 extern uint8_t *psx_ram;
 
@@ -120,6 +119,10 @@ static int back_fb_offset = PSP_FB0_OFFSET;
 
 static unsigned int __attribute__((aligned(16))) display_list[262144];
 
+/* ── Vertex Pool (for GU_SEND mode) ─────────────────────────────── */
+uint8_t __attribute__((aligned(64))) vpool_buf[VPOOL_SIZE];
+int vpool_offset;
+
 /* ── GPU Backend Implementation ─────────────────────────────────── */
 
 void GPU_Backend_Init(void) {
@@ -168,8 +171,11 @@ void GPU_Backend_Init(void) {
     sceDisplayWaitVblankStart();
     sceGuDisplay(GU_TRUE);
 
-    /* Start first display list — redirect to PSX VRAM (offscreen RTT) */
-    sceGuStart(GU_DIRECT, display_list);
+    /* Start first display list in SEND mode — render to PSX VRAM (offscreen RTT).
+     * GU_SEND builds the list offline (no per-command stall updates).
+     * Submitted as one batch via sceGuSendList at frame end / Flush. */
+    vpool_offset = 0;
+    sceGuStart(GU_SEND, display_list);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
     sceGuScissor(draw_clip_x1, draw_clip_y1,
                  draw_clip_x2 + 1, draw_clip_y2 + 1);
@@ -183,25 +189,33 @@ void GPU_Backend_Init(void) {
 
 void GPU_Backend_Flush(void) {
     Prim_FlushBatch();
+    sceKernelDcacheWritebackRange(vpool_buf, vpool_offset);
     sceGuFinish();
-    /* Non-blocking poll: skip expensive blocking sync when GE already idle */
+
+    sceGuSendList(GU_TAIL, display_list, NULL);
     if (sceGuSync(0, 1))
         sceGuSync(0, 0);
-    sceGuStart(GU_DIRECT, display_list);
+    vpool_offset = 0;
+    sceGuStart(GU_SEND, display_list);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
+    Prim_InvalidateGSState();
 }
 
 void GPU_Backend_FlushSync(void) {
     Prim_FlushBatch();
+    sceKernelDcacheWritebackRange(vpool_buf, vpool_offset);
     sceGuFinish();
+    sceGuSendList(GU_TAIL, display_list, NULL);
     if (sceGuSync(0, 1))
         sceGuSync(0, 0);
-    sceGuStart(GU_DIRECT, display_list);
+    vpool_offset = 0;
+    sceGuStart(GU_SEND, display_list);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
+    Prim_InvalidateGSState();
 }
 
 void GPU_Backend_SetupEnvironment(void) {
-    sceGuStart(GU_DIRECT, display_list);
+    sceGuStart(GU_SEND, display_list);
 }
 
 void GPU_Backend_UpdateDisplay(void)
@@ -314,19 +328,22 @@ void GPU_Backend_UpdateDisplay(void)
         int scr_x1 = pad_x + ((col + strip_w) * out_w) / src_w;
 
         typedef struct { float u, v; int16_t x, y, z; } BlitVert;
-        BlitVert *bv = (BlitVert *)sceGuGetMemory(2 * sizeof(BlitVert));
+        BlitVert *bv = (BlitVert *)vpool_alloc(2 * sizeof(BlitVert));
         bv[0].u = 0.0f;                         bv[0].v = (float)display_start_y;
         bv[0].x = (int16_t)scr_x0;              bv[0].y = (int16_t)pad_y;         bv[0].z = 0;
         bv[1].u = (float)strip_w;               bv[1].v = (float)(display_start_y + src_h);
         bv[1].x = (int16_t)scr_x1;              bv[1].y = (int16_t)(pad_y + out_h); bv[1].z = 0;
         sceGuDrawArray(GU_SPRITES,
                        GU_TEXTURE_32BITF | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
-                       2, NULL, bv);
+                       2, NULL, (void *)((uintptr_t)bv | 0x40000000));
         col += strip_w;
     }
 
+    /* Writeback vertex pool so GE can read it, then submit entire list */
+    sceKernelDcacheWritebackRange(vpool_buf, vpool_offset);
     sceGuFinish();
-    /* Non-blocking poll: avoid blocking syscall when GE already idle */
+
+    sceGuSendList(GU_TAIL, display_list, NULL);
     if (sceGuSync(0, 1))
         sceGuSync(0, 0);
     sceGuSwapBuffers();
@@ -334,8 +351,9 @@ void GPU_Backend_UpdateDisplay(void)
     /* Toggle back buffer for next frame */
     back_fb_offset = (back_fb_offset == PSP_FB0_OFFSET) ? PSP_FB1_OFFSET : PSP_FB0_OFFSET;
 
-    /* ── Restart offscreen PSX VRAM draw list ──────────────────── */
-    sceGuStart(GU_DIRECT, display_list);
+    /* ── Restart offscreen PSX VRAM draw list (SEND mode) ──────── */
+    vpool_offset = 0;
+    sceGuStart(GU_SEND, display_list);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
     sceGuScissor(draw_clip_x1, draw_clip_y1,
                  draw_clip_x2 + 1, draw_clip_y2 + 1);
@@ -371,6 +389,9 @@ void GPU_Backend_StartVRAMTransfer(int x, int y, int w, int h) {
 
 void GPU_Backend_UploadShadowVRAM(int x, int y, int w, int h) {
     if (!psx_vram_shadow || w <= 0 || h <= 0) return;
+    /* In SEND mode, flush pending GE draws before CPU EDRAM write.
+     * Otherwise deferred GE draws overwrite this data when executed. */
+    GPU_Backend_Flush();
     for (int row = 0; row < h; row++) {
         uint16_t *src = &psx_vram_shadow[(y + row) * 1024 + x];
         uint16_t *dst = (uint16_t *)VRAM_BASE_PTR + (y + row) * 1024 + x;
@@ -381,6 +402,9 @@ void GPU_Backend_UploadShadowVRAM(int x, int y, int w, int h) {
     sceKernelDcacheWritebackRange(
         &edram_vram[y * 1024 + x],
         (uint32_t)(w * 2 + (h - 1) * 1024 * 2));
+
+    /* Invalidate texture cache — shadow data changed in this region */
+    Prim_InvalidateTexCache_Region(x, y, w, h);
 }
 
 void GPU_Backend_UploadRegionFast(uint32_t coords, uint32_t dims,
@@ -391,6 +415,7 @@ void GPU_Backend_UploadRegionFast(uint32_t coords, uint32_t dims,
     int h = dims >> 16;
     if (w <= 0 || h <= 0) return;
     (void)word_count;
+    GPU_Backend_Flush();
 
     uint16_t *edram_vram = (uint16_t *)VRAM_BASE_PTR;
     for (int row = 0; row < h; row++) {
@@ -411,6 +436,7 @@ void GPU_Backend_UploadRegionFast(uint32_t coords, uint32_t dims,
 
 void GPU_Backend_VRAMCopy(int sx, int sy, int dx, int dy, int w, int h) {
     if (w <= 0 || h <= 0) return;
+    GPU_Backend_Flush();
     /* Copy within EDRAM PSX VRAM (GE render target) */
     for (int row = 0; row < h; row++) {
         uint16_t *src = (uint16_t *)VRAM_BASE_PTR + ((sy + row) & 511) * 1024 + (sx & 1023);
@@ -444,6 +470,8 @@ void GPU_Backend_VRAMFlush(void) {
      * so the data is available as a texture source for GE draws. */
     if (!psx_vram_shadow || vram_tx_w <= 0 || vram_tx_h <= 0) return;
 
+    GPU_Backend_Flush();
+
     int tx = vram_tx_x, ty = vram_tx_y;
     int tw = vram_tx_w, th = vram_tx_h;
 
@@ -471,7 +499,9 @@ void GPU_Backend_VRAMReadback(int x, int y, int w, int h) {
 
     /* Need to finish pending GE draws first */
     Prim_FlushBatch();
+    sceKernelDcacheWritebackRange(vpool_buf, vpool_offset);
     sceGuFinish();
+    sceGuSendList(GU_TAIL, display_list, NULL);
     sceGuSync(0, 0);
 
     uint16_t *edram_vram = (uint16_t *)VRAM_BASE_PTR;
@@ -483,8 +513,9 @@ void GPU_Backend_VRAMReadback(int x, int y, int w, int h) {
                w * 2);
     }
 
-    /* Re-open display list for further draws (context defaults to VRAM) */
-    sceGuStart(GU_DIRECT, display_list);
+    /* Re-open display list for further draws (SEND mode) */
+    vpool_offset = 0;
+    sceGuStart(GU_SEND, display_list);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
     sceGuScissor(draw_clip_x1, draw_clip_y1,
                  draw_clip_x2 + 1, draw_clip_y2 + 1);

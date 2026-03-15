@@ -39,13 +39,16 @@ static inline uint32_t PSX_to_ABGR_texblend(uint32_t c)
 /* ── Texture Setup ──────────────────────────────────────────────── */
 
 /* ── EDRAM Texture Page Cache ────────────────────────────────────
- *  7 slots × 64KB in EDRAM (at PSP_TCACHE_OFFSET).  Stores raw T4/T8
- *  index data as contiguous 256×256 pages.  GE reads from EDRAM local
- *  memory (fast) + does CLUT lookup in hardware.
+ *  64 slots × 64KB in main RAM (static array).  GE reads from uncached
+ *  main memory via TexImage.  Avoids PPSSPP EDRAM framebuffer tracking
+ *  issues with sceGuCopyImage in SEND mode.
  *  15bpp reads directly from the PSX VRAM mirror (TBW=1024, no cache).
  * ─────────────────────────────────────────────────────────────────── */
-#define TCACHE_SLOTS     7
+#define TCACHE_SLOTS     64
 #define TCACHE_SLOT_SIZE 0x10000  /* 64KB — fits T8 (64KB) or T4 (32KB) */
+
+static uint8_t __attribute__((aligned(64)))
+    tcache_data[TCACHE_SLOTS][TCACHE_SLOT_SIZE];
 
 static struct {
     int tpx, tpy, fmt;   /* page key (-1 = empty) */
@@ -61,7 +64,7 @@ static uint32_t cached_clut_word = 0xFFFFFFFF;
  *  Avoids re-running the transform loop + dcache writeback when the
  *  same palette is reused (common in fight scenes with multiple sprites).
  * ─────────────────────────────────────────────────────────────────── */
-#define CLUT_CACHE_SIZE 64
+#define CLUT_CACHE_SIZE 256
 
 static struct {
     uint32_t clut_word;
@@ -95,7 +98,8 @@ static uint16_t *clut_cache_get(uint32_t cword, const uint16_t *src,
         }
     }
     int slot = clut_cache_rr;
-    clut_cache_rr = (clut_cache_rr + 1) & (CLUT_CACHE_SIZE - 1);    clut_cache[slot].clut_word = cword;
+    clut_cache_rr = (clut_cache_rr + 1) & (CLUT_CACHE_SIZE - 1);
+    clut_cache[slot].clut_word = cword;
     clut_cache[slot].src_hash = hash;
     *hit = 0;
     return clut_cache[slot].data;
@@ -112,11 +116,10 @@ static const uint16_t *cached_ge_clut_ptr = NULL; /* last sceGuClutLoad pointer 
 static int cached_tex_tpx = -1, cached_tex_tpy = -1, cached_tex_fmt = -1;
 static uint32_t cached_tex_clut_key = 0xFFFFFFFF;
 
-/* Return EDRAM pointer for cache slot N */
+/* Return RAM pointer for cache slot N */
 static inline void *tcache_slot_ptr(int slot)
 {
-    return (void *)((uintptr_t)sceGeEdramGetAddr()
-                    + PSP_TCACHE_OFFSET + slot * TCACHE_SLOT_SIZE);
+    return (void *)tcache_data[slot];
 }
 
 /* Find or allocate a cache slot for (tpx, tpy, fmt).
@@ -147,6 +150,9 @@ static int tcache_lookup(int tpx, int tpy, int fmt, int *hit)
     return best;
 }
 
+/* Forward declarations — needed by setup_psx_texture's flush-on-overflow */
+static void vbatch_flush(void);
+
 /* Set up GE texture from PSX VRAM.
  * T4/T8: raw index data in EDRAM cache slot + GE CLUT hardware.
  * 15bpp:  GE reads directly from EDRAM VRAM (zero CPU work). */
@@ -167,23 +173,27 @@ static void setup_psx_texture(uint32_t clut_word)
         else     gpu_frame_stats.texcache_miss++;
 
         if (!hit) {
-            /* GE hardware copy: EDRAM PSX VRAM → EDRAM cache slot.
-             * T4: 256 texels wide = 64 pixels at 16bpp (4 texels per pixel). */
-            void *edram_base = (void *)((uintptr_t)sceGeEdramGetAddr()
-                                        + PSP_VRAM_OFFSET);
+            /* CPU copy: shadow VRAM → EDRAM cache slot.
+             * Avoids sceGuCopyImage which reads from the DrawBufferList region —
+             * PPSSPP's framebuffer tracking may serve stale GPU-cached data
+             * instead of CPU-written VRAM data in SEND mode. */
             int copy_h = 256;
             if (tpy + 256 > 512) copy_h = 512 - tpy;
-            sceGuCopyImage(GU_PSM_5551,
-                           tpx, tpy, 64, copy_h, 1024, edram_base,
-                           0, 0, 64, slot_ptr);
+            for (int row = 0; row < copy_h; row++) {
+                memcpy((uint8_t *)slot_ptr + row * 128,
+                       &psx_vram_shadow[(tpy + row) * 1024 + tpx],
+                       128);  /* 64 halfwords = 128 bytes */
+            }
             if (copy_h < 256) {
                 /* Wrap: remaining rows from top of VRAM */
                 int rem = 256 - copy_h;
-                void *dst2 = (void *)((uintptr_t)slot_ptr + copy_h * 128);
-                sceGuCopyImage(GU_PSM_5551,
-                               tpx, 0, 64, rem, 1024, edram_base,
-                               0, 0, 64, dst2);
+                for (int row = 0; row < rem; row++) {
+                    memcpy((uint8_t *)slot_ptr + (copy_h + row) * 128,
+                           &psx_vram_shadow[row * 1024 + tpx],
+                           128);
+                }
             }
+            sceKernelDcacheWritebackRange(slot_ptr, 256 * 128);
             need_flush = 1;
         } else if (slot_ptr != cached_tex_base) {
             need_flush = 1;
@@ -207,8 +217,10 @@ static void setup_psx_texture(uint32_t clut_word)
                     if ((c & 0x7FFF) == 0) c |= 0x0001;
                     cd[i] = c;
                 }
-                sceKernelDcacheWritebackRange(cd, 32);
             }
+            /* Point directly at clut_cache — 256 slots is enough to
+             * avoid recycling within a single GE list. */
+            sceKernelDcacheWritebackRange(cd, 32);
             active_clut_ptr = cd;
             cached_clut_word = clut_word;
         }
@@ -237,22 +249,24 @@ static void setup_psx_texture(uint32_t clut_word)
         else     gpu_frame_stats.texcache_miss++;
 
         if (!hit) {
-            /* GE hardware copy: EDRAM PSX VRAM → EDRAM cache slot.
-             * T8: 256 texels wide = 128 pixels at 16bpp (2 texels per pixel). */
-            void *edram_base = (void *)((uintptr_t)sceGeEdramGetAddr()
-                                        + PSP_VRAM_OFFSET);
+            /* CPU copy: shadow VRAM → EDRAM cache slot (T8).
+             * Same PPSSPP workaround as T4 path above. */
             int copy_h = 256;
             if (tpy + 256 > 512) copy_h = 512 - tpy;
-            sceGuCopyImage(GU_PSM_5551,
-                           tpx, tpy, 128, copy_h, 1024, edram_base,
-                           0, 0, 128, slot_ptr);
+            for (int row = 0; row < copy_h; row++) {
+                memcpy((uint8_t *)slot_ptr + row * 256,
+                       &psx_vram_shadow[(tpy + row) * 1024 + tpx],
+                       256);  /* 128 halfwords = 256 bytes */
+            }
             if (copy_h < 256) {
                 int rem = 256 - copy_h;
-                void *dst2 = (void *)((uintptr_t)slot_ptr + copy_h * 256);
-                sceGuCopyImage(GU_PSM_5551,
-                               tpx, 0, 128, rem, 1024, edram_base,
-                               0, 0, 128, dst2);
+                for (int row = 0; row < rem; row++) {
+                    memcpy((uint8_t *)slot_ptr + (copy_h + row) * 256,
+                           &psx_vram_shadow[row * 1024 + tpx],
+                           256);
+                }
             }
+            sceKernelDcacheWritebackRange(slot_ptr, 256 * 256);
             need_flush = 1;
         } else if (slot_ptr != cached_tex_base) {
             need_flush = 1;
@@ -276,8 +290,9 @@ static void setup_psx_texture(uint32_t clut_word)
                     if ((c & 0x7FFF) == 0) c |= 0x0001;
                     cd[i] = c;
                 }
-                sceKernelDcacheWritebackRange(cd, 512);
             }
+            /* Point directly at clut_cache — same logic as T4 path. */
+            sceKernelDcacheWritebackRange(cd, 512);
             active_clut_ptr = cd;
             cached_clut_word = clut_word;
         }
@@ -323,10 +338,8 @@ static void setup_psx_texture(uint32_t clut_word)
         sceGuTexOffset(0.0f, 0.0f);
         cached_tex_const = 1;
     }
-}
 
-/* Forward declaration — defined in Vertex Batch section below */
-static void vbatch_flush(void);
+}
 
 /* Batch-aware texture setup: only call setup_psx_texture if tex key changed.
  * When it changes, flush pending batch first. */
@@ -337,6 +350,7 @@ static void setup_texture_if_changed(uint32_t clut_word)
         gpu_frame_stats.tex_key_change++;
         vbatch_flush();
         setup_psx_texture(clut_word);
+
         cached_tex_tpx = tex_page_x;
         cached_tex_tpy = tex_page_y;
         cached_tex_fmt = tex_page_format;
@@ -376,10 +390,10 @@ static void vbatch_flush(void)
     gpu_frame_stats.vbatch_flushes++;
     gpu_frame_stats.vbatch_verts += vbatch.count;
     int bytes = vbatch.count * vbatch.vsize;
-    void *dst = sceGuGetMemory(bytes);
+    void *dst = vpool_alloc(bytes);
     memcpy(dst, &vbatch.v, bytes);
     sceGuDrawArray(vbatch.prim, vbatch.vfmt | GU_TRANSFORM_2D,
-                   vbatch.count, NULL, dst);
+                   vbatch.count, NULL, (void *)((uintptr_t)dst | 0x40000000));
     vbatch.count = 0;
 }
 
@@ -512,6 +526,10 @@ void Prim_InvalidateGSState(void)
     cached_tex_clut_key = 0xFFFFFFFF;
     cached_ge_tex_mode = -1;
     cached_ge_clut_ptr = NULL;
+    /* Must reset CLUT word so setup_psx_texture re-copies CLUT data
+     * to the new vpool epoch (vpool resets after each list submit). */
+    cached_clut_word = 0xFFFFFFFF;
+    active_clut_ptr = NULL;
 }
 
 void Prim_InvalidateTexCache(void)
@@ -565,6 +583,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
     if (cmd == 0x02)
     {
         vbatch_flush();
+        /* Flush pending GE list before CPU EDRAM write (SEND mode). */
+        GPU_Backend_Flush();
         uint32_t color = PSX_to_ABGR(psx_cmd[0]);
         uint32_t xy = psx_cmd[1];
         uint32_t wh = psx_cmd[2];
@@ -615,17 +635,19 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
 
         /* Draw via sceGu — direct DrawArray (not batched) */
         gu_disable_texture();
+        gu_disable_color_test();
         apply_blend(0);
-        PspVertFlat *v = (PspVertFlat *)sceGuGetMemory(2 * sizeof(PspVertFlat));
+        PspVertFlat *v = (PspVertFlat *)vpool_alloc(2 * sizeof(PspVertFlat));
         v[0].color = color; v[0].x = fx;      v[0].y = fy;      v[0].z = 0;
         v[1].color = color; v[1].x = fx + fw; v[1].y = fy + fh; v[1].z = 0;
         sceGuScissor(0, 0, 1024, 512);
         sceGuDrawArray(GU_SPRITES,
                        GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
-                       2, NULL, v);
+                       2, NULL, (void *)((uintptr_t)v | 0x40000000));
         sceGuScissor(draw_clip_x1, draw_clip_y1,
                      draw_clip_x2 + 1, draw_clip_y2 + 1);
         gpu_frame_stats.fill++;
+
         return 3;
     }
 
@@ -646,6 +668,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         if (!is_textured)
         {
             gu_disable_texture();
+            gu_disable_color_test();
             /* Triangles: 3 verts. Quads: decompose to 2 triangles = 6 verts. */
             int batch_nv = is_quad ? 6 : 3;
             vbatch_prepare(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_16BIT,
@@ -687,7 +710,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 semi_trans_mode = (tpage >> 5) & 3;
             }
             int clut_src_p = 2;
-            uint32_t clut_word = psx_cmd[clut_src_p];
+            uint32_t clut_word = psx_cmd[clut_src_p] & 0xFFFF0000;
             setup_texture_if_changed(clut_word);
 
             if (is_raw_tex)
@@ -724,6 +747,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             }
             vbatch.count += batch_nv;
             gpu_frame_stats.poly_tex++;
+
             return p;
         }
     }
@@ -733,6 +757,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         int is_semi = (cmd & 0x02) != 0;
         int is_shaded = (cmd & 0x10) != 0;
         gu_disable_texture();
+        gu_disable_color_test();
         apply_blend(is_semi);
         apply_dither(is_shaded, 0, 0);
 
@@ -773,9 +798,10 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         uint8_t u0 = 0, v0 = 0;
         uint32_t clut_word = 0;
         if (is_textured) {
-            clut_word = psx_cmd[p];
-            u0 = (uint8_t)(clut_word & 0xFF);
-            v0 = (uint8_t)((clut_word >> 8) & 0xFF);
+            uint32_t uv_clut = psx_cmd[p];
+            clut_word = uv_clut & 0xFFFF0000;
+            u0 = (uint8_t)(uv_clut & 0xFF);
+            v0 = (uint8_t)((uv_clut >> 8) & 0xFF);
             p++;
         }
 
@@ -796,6 +822,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         if (!is_textured)
         {
             gu_disable_texture();
+            gu_disable_color_test();
             vbatch_prepare(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT,
                            sizeof(PspVertFlat), 2);
             PspVertFlat *v = &vbatch.v.flat[vbatch.count];
