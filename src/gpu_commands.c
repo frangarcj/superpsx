@@ -381,8 +381,7 @@ void GPU_WriteGP0(uint32_t data)
                        (unsigned long)fps_display,
                        (unsigned long)speed_display);
         }
-        osd_draw(); /* render OSD overlay before frame flush */
-        GPU_Backend_Flush();
+        osd_draw(); /* render OSD overlay — stays in current GE list */
         gpu_pending_vblank_flush = 0;
     }
 
