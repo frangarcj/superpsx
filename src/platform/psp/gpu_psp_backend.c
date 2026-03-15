@@ -106,6 +106,14 @@ int psx_active_width = 320;
 int psx_active_height = 240;
 void *vram_mirror = (void *)PSP_VRAM_OFFSET;
 
+/* Pre-calculated display blit parameters (recalc on resolution change) */
+static struct {
+    int out_w, out_h, pad_x, pad_y;
+    int src_w, src_h;
+    int start_x, start_y;
+    int valid;
+} blit_cache;
+
 static unsigned int __attribute__((aligned(16))) display_list[262144];
 
 /* ── GPU Backend Implementation ─────────────────────────────────── */
@@ -219,31 +227,50 @@ void GPU_Backend_UpdateDisplay(void) {
     sceGuTexScale(1.0f, 1.0f);
     sceGuTexOffset(0.0f, 0.0f);
 
-    int src_w = psx_active_width;
-    int src_h = psx_active_height;
+    /* Recalculate blit params only when resolution or display offset changed */
+    if (!blit_cache.valid ||
+        blit_cache.src_w != psx_active_width ||
+        blit_cache.src_h != psx_active_height ||
+        blit_cache.start_x != display_start_x ||
+        blit_cache.start_y != display_start_y) {
 
-    int out_w, out_h, pad_x, pad_y;
-    if (src_w > 0 && src_h > 0 && src_w <= PSP_SCREEN_W && src_h <= PSP_SCREEN_H) {
-        /* Integer upscale: largest NxN factor that fits */
-        int scale = 1;
-        while ((src_w * (scale + 1)) <= PSP_SCREEN_W &&
-               (src_h * (scale + 1)) <= PSP_SCREEN_H)
-            scale++;
-        out_w = src_w * scale;
-        out_h = src_h * scale;
-    } else if (src_w > 0 && src_h > 0) {
-        /* Integer downscale: smallest divisor that fits */
-        int div = 2;
-        while ((src_w / div) > PSP_SCREEN_W || (src_h / div) > PSP_SCREEN_H)
-            div++;
-        out_w = src_w / div;
-        out_h = src_h / div;
-    } else {
-        out_w = PSP_SCREEN_W;
-        out_h = PSP_SCREEN_H;
+        int src_w = psx_active_width;
+        int src_h = psx_active_height;
+
+        if (src_w > 0 && src_h > 0 && src_w <= PSP_SCREEN_W && src_h <= PSP_SCREEN_H) {
+            /* Integer upscale: largest NxN factor that fits */
+            int scale = 1;
+            while ((src_w * (scale + 1)) <= PSP_SCREEN_W &&
+                   (src_h * (scale + 1)) <= PSP_SCREEN_H)
+                scale++;
+            blit_cache.out_w = src_w * scale;
+            blit_cache.out_h = src_h * scale;
+        } else if (src_w > 0 && src_h > 0) {
+            /* Integer downscale: smallest divisor that fits */
+            int div = 2;
+            while ((src_w / div) > PSP_SCREEN_W || (src_h / div) > PSP_SCREEN_H)
+                div++;
+            blit_cache.out_w = src_w / div;
+            blit_cache.out_h = src_h / div;
+        } else {
+            blit_cache.out_w = PSP_SCREEN_W;
+            blit_cache.out_h = PSP_SCREEN_H;
+        }
+        blit_cache.pad_x = (PSP_SCREEN_W - blit_cache.out_w) / 2;
+        blit_cache.pad_y = (PSP_SCREEN_H - blit_cache.out_h) / 2;
+        blit_cache.src_w = src_w;
+        blit_cache.src_h = src_h;
+        blit_cache.start_x = display_start_x;
+        blit_cache.start_y = display_start_y;
+        blit_cache.valid = 1;
     }
-    pad_x = (PSP_SCREEN_W - out_w) / 2;
-    pad_y = (PSP_SCREEN_H - out_h) / 2;
+
+    int src_w  = blit_cache.src_w;
+    int src_h  = blit_cache.src_h;
+    int out_w  = blit_cache.out_w;
+    int out_h  = blit_cache.out_h;
+    int pad_x  = blit_cache.pad_x;
+    int pad_y  = blit_cache.pad_y;
 
     /* Textured sprite strips (tiled for modes > 512 wide) */
     int col = 0;
