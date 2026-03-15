@@ -12,6 +12,7 @@
 #include "config.h"
 #include "platform.h"
 #include "spu.h"
+#include "joystick.h"
 
 PSP_MODULE_INFO("SuperPSX", 0, 1, 1);
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
@@ -75,6 +76,8 @@ int main(int argc, char *argv[]) {
      * the startup jingle to finish.  Without SPU voice advancement, the
      * BIOS hangs forever even when audio output is disabled. */
     SPU_Init();
+
+    Joystick_Init();
 
     Init_SuperPSX();
 
