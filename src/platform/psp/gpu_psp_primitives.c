@@ -134,8 +134,13 @@ static void setup_psx_texture(uint32_t clut_word)
             int clut_x = ((clut_word >> 16) & 0x3F) * 16;
             int clut_y = (clut_word >> 22) & 0x1FF;
             uint16_t *csrc = &psx_vram_shadow[clut_y * 1024 + clut_x];
-            for (int i = 0; i < 16; i++)
-                clut_buf[i] = csrc[i] ? (csrc[i] | 0x8000) : 0;
+            for (int i = 0; i < 16; i++) {
+                uint16_t c = csrc[i];
+                if (c == 0) { clut_buf[i] = 0; continue; }
+                c |= 0x8000;
+                if ((c & 0x7FFF) == 0) c |= 0x0001; /* shift black → near-black */
+                clut_buf[i] = c;
+            }
             sceKernelDcacheWritebackRange(clut_buf, 32);
             cached_clut_word = clut_word;
         }
@@ -172,8 +177,13 @@ static void setup_psx_texture(uint32_t clut_word)
             int clut_x = ((clut_word >> 16) & 0x3F) * 16;
             int clut_y = (clut_word >> 22) & 0x1FF;
             uint16_t *csrc = &psx_vram_shadow[clut_y * 1024 + clut_x];
-            for (int i = 0; i < 256; i++)
-                clut_buf[i] = csrc[i] ? (csrc[i] | 0x8000) : 0;
+            for (int i = 0; i < 256; i++) {
+                uint16_t c = csrc[i];
+                if (c == 0) { clut_buf[i] = 0; continue; }
+                c |= 0x8000;
+                if ((c & 0x7FFF) == 0) c |= 0x0001; /* shift black → near-black */
+                clut_buf[i] = c;
+            }
             sceKernelDcacheWritebackRange(clut_buf, 512);
             cached_clut_word = clut_word;
         }
