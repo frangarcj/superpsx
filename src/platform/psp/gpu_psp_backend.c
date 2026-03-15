@@ -114,6 +114,9 @@ static struct {
     int valid;
 } blit_cache;
 
+/* Track which FB is the current back buffer for merged display blit */
+static int back_fb_offset = PSP_FB0_OFFSET;
+
 static unsigned int __attribute__((aligned(16))) display_list[262144];
 
 /* ── GPU Backend Implementation ─────────────────────────────────── */
@@ -197,21 +200,20 @@ void GPU_Backend_SetupEnvironment(void) {
     sceGuStart(GU_DIRECT, display_list);
 }
 
-void GPU_Backend_UpdateDisplay(void) {
-    /* ── Phase 1: Finish GP0 draws to offscreen PSX VRAM ───────── */
+void GPU_Backend_UpdateDisplay(void)
+{
+    /* Merged GP0 draws + display blit in same GE list (no mid-frame sync).
+     * The GE executes commands in order, so the blit sees completed GP0 draws. */
     Prim_FlushBatch();
-    sceGuFinish();
-    sceGuSync(0, 0);
 
-    /* ── Phase 2: Blit PSX FB → screen back buffer (RTT) ──────── */
-    /* sceGuStart auto-sets draw buffer to current back buffer (FB0/FB1)
-     * from the context stored by sceGuDrawBuffer/sceGuSwapBuffers. */
-    sceGuStart(GU_DIRECT, display_list);
+    /* Switch draw target from PSX VRAM to screen back buffer */
+    sceGuDrawBufferList(GU_PSM_5551, (void *)(uintptr_t)back_fb_offset, PSP_BUF_W);
 
     sceGuScissor(0, 0, PSP_SCREEN_W, PSP_SCREEN_H);
     sceGuEnable(GU_SCISSOR_TEST);
     sceGuDisable(GU_DEPTH_TEST);
     sceGuDisable(GU_BLEND);
+    sceGuDisable(GU_STENCIL_TEST);
 
     /* Black letterbox borders */
     sceGuClearColor(0xFF000000);
@@ -305,7 +307,10 @@ void GPU_Backend_UpdateDisplay(void) {
     sceGuSync(0, 0);
     sceGuSwapBuffers();
 
-    /* ── Phase 3: Restart offscreen PSX VRAM draw list ─────────── */
+    /* Toggle back buffer for next frame */
+    back_fb_offset = (back_fb_offset == PSP_FB0_OFFSET) ? PSP_FB1_OFFSET : PSP_FB0_OFFSET;
+
+    /* ── Restart offscreen PSX VRAM draw list ──────────────────── */
     sceGuStart(GU_DIRECT, display_list);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
     sceGuScissor(draw_clip_x1, draw_clip_y1,
@@ -313,6 +318,10 @@ void GPU_Backend_UpdateDisplay(void) {
     sceGuEnable(GU_SCISSOR_TEST);
     sceGuDisable(GU_DEPTH_TEST);
     sceGuDisable(GU_TEXTURE_2D);
+
+    /* Blit changed GE state — invalidate all cached state so next GP0
+     * primitives re-apply blend/dither/texture/color_test properly. */
+    Prim_InvalidateGSState();
 
     memset(&gpu_frame_stats, 0, sizeof(gpu_frame_stats));
 }
