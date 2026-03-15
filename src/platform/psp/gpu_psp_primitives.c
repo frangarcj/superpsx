@@ -61,7 +61,7 @@ static uint32_t cached_clut_word = 0xFFFFFFFF;
  *  Avoids re-running the transform loop + dcache writeback when the
  *  same palette is reused (common in fight scenes with multiple sprites).
  * ─────────────────────────────────────────────────────────────────── */
-#define CLUT_CACHE_SIZE 8
+#define CLUT_CACHE_SIZE 64
 
 static struct {
     uint32_t clut_word;
@@ -95,8 +95,7 @@ static uint16_t *clut_cache_get(uint32_t cword, const uint16_t *src,
         }
     }
     int slot = clut_cache_rr;
-    clut_cache_rr = (clut_cache_rr + 1) & (CLUT_CACHE_SIZE - 1);
-    clut_cache[slot].clut_word = cword;
+    clut_cache_rr = (clut_cache_rr + 1) & (CLUT_CACHE_SIZE - 1);    clut_cache[slot].clut_word = cword;
     clut_cache[slot].src_hash = hash;
     *hit = 0;
     return clut_cache[slot].data;
@@ -106,6 +105,8 @@ static uint16_t *active_clut_ptr = NULL;
 static const void *cached_tex_base = NULL;  /* last tex ptr for sceGuTexFlush skip */
 static int cached_tex_func = -1;  /* 0=MODULATE, 1=REPLACE */
 static int cached_tex_const = 0;  /* 1=filter/scale/offset already set */
+static int cached_ge_tex_mode = -1; /* last sceGuTexMode psm (-1=unknown) */
+static const uint16_t *cached_ge_clut_ptr = NULL; /* last sceGuClutLoad pointer */
 
 /* Texture key — skip setup_psx_texture when unchanged */
 static int cached_tex_tpx = -1, cached_tex_tpy = -1, cached_tex_fmt = -1;
@@ -162,6 +163,8 @@ static void setup_psx_texture(uint32_t clut_word)
         int hit;
         int slot = tcache_lookup(tpx, tpy, 0, &hit);
         void *slot_ptr = tcache_slot_ptr(slot);
+        if (hit) gpu_frame_stats.texcache_hit++;
+        else     gpu_frame_stats.texcache_miss++;
 
         if (!hit) {
             /* GE hardware copy: EDRAM PSX VRAM → EDRAM cache slot.
@@ -193,6 +196,9 @@ static void setup_psx_texture(uint32_t clut_word)
             uint16_t *csrc = &psx_vram_shadow[clut_y * 1024 + clut_x];
             int clut_hit;
             uint16_t *cd = clut_cache_get(clut_word, csrc, 16, &clut_hit);
+            if (clut_hit) gpu_frame_stats.clut_cache_hit++;
+            else          gpu_frame_stats.clut_cache_miss++;
+            gpu_frame_stats.clut_change++;
             if (!clut_hit) {
                 for (int i = 0; i < 16; i++) {
                     uint16_t c = csrc[i];
@@ -207,10 +213,17 @@ static void setup_psx_texture(uint32_t clut_word)
             cached_clut_word = clut_word;
         }
 
-        sceGuClutMode(GU_PSM_5551, 0, 0xFF, 0);
-        sceGuClutLoad(2, active_clut_ptr);
+        /* Emit GE commands — skip if state already matches */
+        if (cached_ge_clut_ptr != active_clut_ptr) {
+            sceGuClutMode(GU_PSM_5551, 0, 0xFF, 0);
+            sceGuClutLoad(2, active_clut_ptr);
+            cached_ge_clut_ptr = active_clut_ptr;
+        }
         if (need_flush) sceGuTexFlush();
-        sceGuTexMode(GU_PSM_T4, 0, 0, 0);
+        if (cached_ge_tex_mode != GU_PSM_T4) {
+            sceGuTexMode(GU_PSM_T4, 0, 0, 0);
+            cached_ge_tex_mode = GU_PSM_T4;
+        }
         sceGuTexImage(0, 256, 256, 256, slot_ptr);
         cached_tex_base = slot_ptr;
     }
@@ -220,6 +233,8 @@ static void setup_psx_texture(uint32_t clut_word)
         int hit;
         int slot = tcache_lookup(tpx, tpy, 1, &hit);
         void *slot_ptr = tcache_slot_ptr(slot);
+        if (hit) gpu_frame_stats.texcache_hit++;
+        else     gpu_frame_stats.texcache_miss++;
 
         if (!hit) {
             /* GE hardware copy: EDRAM PSX VRAM → EDRAM cache slot.
@@ -250,6 +265,9 @@ static void setup_psx_texture(uint32_t clut_word)
             uint16_t *csrc = &psx_vram_shadow[clut_y * 1024 + clut_x];
             int clut_hit;
             uint16_t *cd = clut_cache_get(clut_word, csrc, 256, &clut_hit);
+            if (clut_hit) gpu_frame_stats.clut_cache_hit++;
+            else          gpu_frame_stats.clut_cache_miss++;
+            gpu_frame_stats.clut_change++;
             if (!clut_hit) {
                 for (int i = 0; i < 256; i++) {
                     uint16_t c = csrc[i];
@@ -264,10 +282,16 @@ static void setup_psx_texture(uint32_t clut_word)
             cached_clut_word = clut_word;
         }
 
-        sceGuClutMode(GU_PSM_5551, 0, 0xFF, 0);
-        sceGuClutLoad(32, active_clut_ptr);
+        if (cached_ge_clut_ptr != active_clut_ptr) {
+            sceGuClutMode(GU_PSM_5551, 0, 0xFF, 0);
+            sceGuClutLoad(32, active_clut_ptr);
+            cached_ge_clut_ptr = active_clut_ptr;
+        }
         if (need_flush) sceGuTexFlush();
-        sceGuTexMode(GU_PSM_T8, 0, 0, 0);
+        if (cached_ge_tex_mode != GU_PSM_T8) {
+            sceGuTexMode(GU_PSM_T8, 0, 0, 0);
+            cached_ge_tex_mode = GU_PSM_T8;
+        }
         sceGuTexImage(0, 256, 256, 256, slot_ptr);
         cached_tex_base = slot_ptr;
     }
@@ -281,7 +305,11 @@ static void setup_psx_texture(uint32_t clut_word)
             sceGuTexFlush();
             cached_tex_base = tex_ptr;
         }
-        sceGuTexMode(GU_PSM_5551, 0, 0, 0);
+        if (cached_ge_tex_mode != GU_PSM_5551) {
+            sceGuTexMode(GU_PSM_5551, 0, 0, 0);
+            cached_ge_tex_mode = GU_PSM_5551;
+        }
+        cached_ge_clut_ptr = NULL;
         sceGuTexImage(0, 256, 256, 1024, tex_ptr);
     }
 
@@ -306,6 +334,7 @@ static void setup_texture_if_changed(uint32_t clut_word)
 {
     if (tex_page_x != cached_tex_tpx || tex_page_y != cached_tex_tpy ||
         tex_page_format != cached_tex_fmt || clut_word != cached_tex_clut_key) {
+        gpu_frame_stats.tex_key_change++;
         vbatch_flush();
         setup_psx_texture(clut_word);
         cached_tex_tpx = tex_page_x;
@@ -344,6 +373,8 @@ static struct {
 static void vbatch_flush(void)
 {
     if (vbatch.count == 0) return;
+    gpu_frame_stats.vbatch_flushes++;
+    gpu_frame_stats.vbatch_verts += vbatch.count;
     int bytes = vbatch.count * vbatch.vsize;
     void *dst = sceGuGetMemory(bytes);
     memcpy(dst, &vbatch.v, bytes);
@@ -479,6 +510,8 @@ void Prim_InvalidateGSState(void)
     cached_tex_tpy = -1;
     cached_tex_fmt = -1;
     cached_tex_clut_key = 0xFFFFFFFF;
+    cached_ge_tex_mode = -1;
+    cached_ge_clut_ptr = NULL;
 }
 
 void Prim_InvalidateTexCache(void)

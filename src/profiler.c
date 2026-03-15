@@ -226,6 +226,27 @@ void profiler_frame_end(uint64_t psx_cycles_this_frame)
                 printf(" Other=%.1f%%", opct);
             }
             printf("\n");
+
+            /* GPU breakdown (per-frame averages) */
+            if (gpu_frame_stats.poly_tex > 0 || gpu_frame_stats.poly_flat > 0)
+            {
+                double nf = (double)prof.frames;
+                printf("[GPU ] tex=%.0f flat=%.0f rect_t=%.0f rect_f=%.0f fill=%.0f"
+                       " | tc h/m=%.0f/%.0f clut h/m=%.0f/%.0f"
+                       " | key=%.0f batch=%.0f verts=%.0f\n",
+                       gpu_frame_stats.poly_tex / nf,
+                       gpu_frame_stats.poly_flat / nf,
+                       gpu_frame_stats.rect_tex / nf,
+                       gpu_frame_stats.rect_flat / nf,
+                       gpu_frame_stats.fill / nf,
+                       gpu_frame_stats.texcache_hit / nf,
+                       gpu_frame_stats.texcache_miss / nf,
+                       gpu_frame_stats.clut_cache_hit / nf,
+                       gpu_frame_stats.clut_cache_miss / nf,
+                       gpu_frame_stats.tex_key_change / nf,
+                       gpu_frame_stats.vbatch_flushes / nf,
+                       gpu_frame_stats.vbatch_verts / nf);
+            }
         }
 
         /* ---- Detailed file report ---- */

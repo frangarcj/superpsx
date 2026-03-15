@@ -347,7 +347,8 @@ void GPU_Backend_UpdateDisplay(void)
      * primitives re-apply blend/dither/texture/color_test properly. */
     Prim_InvalidateGSState();
 
-    memset(&gpu_frame_stats, 0, sizeof(gpu_frame_stats));
+    /* gpu_frame_stats accumulates over profiler interval (60 frames).
+     * Reset is handled by profiler_frame_end, not here. */
 }
 
 void GPU_Backend_VBlank(void) {

@@ -167,6 +167,13 @@ typedef struct {
     uint32_t tex_upload_4bpp;    /* 4BPP page uploads */
     uint32_t tex_upload_8bpp;    /* 8BPP page uploads */
     uint32_t tex_upload_rows;    /* total rows actually uploaded */
+    /* PSP-specific counters */
+    uint32_t clut_change;       /* CLUT word changes (triggers cache lookup) */
+    uint32_t clut_cache_hit;    /* CLUT cache hits (skip transform+dcache) */
+    uint32_t clut_cache_miss;   /* CLUT cache misses (full transform) */
+    uint32_t tex_key_change;    /* texture key changes (triggers setup) */
+    uint32_t vbatch_flushes;    /* vertex batch flushes (sceGuDrawArray calls) */
+    uint32_t vbatch_verts;      /* total vertices submitted */
 } gpu_frame_stats_t;
 extern gpu_frame_stats_t gpu_frame_stats;
 int Decode_TexPage_Cached(int tex_format,
