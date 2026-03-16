@@ -48,15 +48,22 @@ static inline uint32_t PSX_to_ABGR_texblend(uint32_t c)
 /* ── Vertex Batch ────────────────────────────────────────────────── */
 #define VBATCH_MAX 256  /* max verts per batch */
 
+/* Index buffer for quad→triangle decomposition: 4 unique verts + 6 indices
+ * per quad instead of 6 duplicated verts.  Used when prim == GU_TRIANGLES. */
+#define IBATCH_MAX (VBATCH_MAX * 3 / 2)
+
 static struct {
     union {
         PspVertFlat flat[VBATCH_MAX];
         PspVertTex  tex[VBATCH_MAX];
     } v;
-    int count;
-    int vsize;  /* sizeof per vertex */
-    int vfmt;   /* GU format flags (without GU_TRANSFORM_2D) */
-    int prim;   /* GU_TRIANGLES, GU_LINES, GU_SPRITES */
+    uint16_t idx[IBATCH_MAX];
+    int count;   /* unique vertices */
+    int icount;  /* index count (0 = non-indexed) */
+    int vsize;   /* sizeof per vertex */
+    int vfmt;    /* GU format flags (without GU_TRANSFORM_2D) */
+    int prim;    /* GU_TRIANGLES, GU_LINES, GU_SPRITES */
+    int full_scissor; /* 1 = full VRAM scissor (FillRect), 0 = draw area */
 } vbatch;
 
 static void vbatch_flush(void)
@@ -64,24 +71,73 @@ static void vbatch_flush(void)
     if (vbatch.count == 0) return;
     gpu_frame_stats.vbatch_flushes++;
     gpu_frame_stats.vbatch_verts += vbatch.count;
-    int bytes = vbatch.count * vbatch.vsize;
-    void *dst = vpool_alloc(bytes);
-    memcpy(dst, &vbatch.v, bytes);
-    sceGuDrawArray(vbatch.prim, vbatch.vfmt | GU_TRANSFORM_2D,
-                   vbatch.count, NULL, (void *)((uintptr_t)dst | 0x40000000));
+    int vbytes = vbatch.count * vbatch.vsize;
+    void *vdst = vpool_alloc(vbytes);
+    memcpy(vdst, &vbatch.v, vbytes);
+
+    if (vbatch.full_scissor)
+        sceGuScissor(0, 0, 1024, 512);
+
+    if (vbatch.icount > 0) {
+        /* Indexed draw: quads decomposed via index buffer */
+        int ibytes = vbatch.icount * sizeof(uint16_t);
+        void *idst = vpool_alloc(ibytes);
+        memcpy(idst, vbatch.idx, ibytes);
+        sceGuDrawArray(vbatch.prim,
+                       vbatch.vfmt | GU_INDEX_16BIT | GU_TRANSFORM_2D,
+                       vbatch.icount, (void *)((uintptr_t)idst | 0x40000000),
+                       (void *)((uintptr_t)vdst | 0x40000000));
+    } else {
+        sceGuDrawArray(vbatch.prim, vbatch.vfmt | GU_TRANSFORM_2D,
+                       vbatch.count, NULL, (void *)((uintptr_t)vdst | 0x40000000));
+    }
+
+    if (vbatch.full_scissor)
+        sceGuScissor(draw_clip_x1, draw_clip_y1,
+                     draw_clip_x2 - draw_clip_x1 + 1,
+                     draw_clip_y2 - draw_clip_y1 + 1);
+
     vbatch.count = 0;
+    vbatch.icount = 0;
+    vbatch.full_scissor = 0;
 }
 
-/* Ensure batch is compatible; flush if not. Returns write offset. */
-static inline void vbatch_prepare(int prim, int vfmt, int vsize, int nverts)
+/* Ensure batch is compatible; flush if not.
+ * nverts = unique vertices to add, nidx = indices to add (0 for non-indexed). */
+static inline void vbatch_prepare_idx(int prim, int vfmt, int vsize,
+                                      int nverts, int nidx)
 {
     if (vbatch.count > 0 &&
         (vbatch.prim != prim || vbatch.vfmt != vfmt ||
+         vbatch.full_scissor != 0 ||
+         vbatch.count + nverts > VBATCH_MAX ||
+         vbatch.icount + nidx > IBATCH_MAX))
+        vbatch_flush();
+    vbatch.prim = prim;
+    vbatch.vfmt = vfmt;
+    vbatch.vsize = vsize;
+}
+
+static inline void vbatch_prepare(int prim, int vfmt, int vsize, int nverts)
+{
+    vbatch_prepare_idx(prim, vfmt, vsize, nverts, 0);
+}
+
+/* Prepare for FillRect sprites (full VRAM scissor). */
+static inline void vbatch_prepare_fill(int nverts)
+{
+    int prim = GU_SPRITES;
+    int vfmt = GU_COLOR_8888 | GU_VERTEX_16BIT;
+    int vsize = (int)sizeof(PspVertFlat);
+    if (vbatch.count > 0 &&
+        (vbatch.prim != prim || vbatch.vfmt != vfmt ||
+         vbatch.full_scissor != 1 ||
          vbatch.count + nverts > VBATCH_MAX))
         vbatch_flush();
     vbatch.prim = prim;
     vbatch.vfmt = vfmt;
     vbatch.vsize = vsize;
+    vbatch.full_scissor = 1;
 }
 
 void Prim_FlushBatch(void) { vbatch_flush(); }
@@ -211,7 +267,6 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
     /* FillRect (GP0 0x02) — GU sprite in current list, no flush needed. */
     if (cmd == 0x02)
     {
-        vbatch_flush();
         uint32_t color = PSX_to_ABGR(psx_cmd[0]);
         uint32_t xy = psx_cmd[1];
         uint32_t wh = psx_cmd[2];
@@ -239,19 +294,15 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             }
         }
 
-        /* GU sprite — stays in current display list, no flush */
+        /* Batched FillRect — full VRAM scissor, no texture */
         gu_disable_texture();
         gu_disable_color_test();
         apply_blend(0);
-        PspVertFlat *v = (PspVertFlat *)vpool_alloc(2 * sizeof(PspVertFlat));
-        v[0].color = color; v[0].x = fx;      v[0].y = fy;      v[0].z = 0;
-        v[1].color = color; v[1].x = fx + fw; v[1].y = fy + fh; v[1].z = 0;
-        sceGuScissor(0, 0, 1024, 512);
-        sceGuDrawArray(GU_SPRITES,
-                       GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
-                       2, NULL, (void *)((uintptr_t)v | 0x40000000));
-        sceGuScissor(draw_clip_x1, draw_clip_y1,
-                     draw_clip_x2 - draw_clip_x1 + 1, draw_clip_y2 - draw_clip_y1 + 1);
+        vbatch_prepare_fill(2);
+        PspVertFlat *dst = &vbatch.v.flat[vbatch.count];
+        dst[0].color = color; dst[0].x = fx;      dst[0].y = fy;      dst[0].z = 0;
+        dst[1].color = color; dst[1].x = fx + fw; dst[1].y = fy + fh; dst[1].z = 0;
+        vbatch.count += 2;
         gpu_frame_stats.fill++;
 
         return 3;
@@ -275,12 +326,14 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         {
             gu_disable_texture();
             gu_disable_color_test();
-            /* Triangles: 3 verts. Quads: decompose to 2 triangles = 6 verts. */
-            int batch_nv = is_quad ? 6 : 3;
-            vbatch_prepare(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_16BIT,
-                           sizeof(PspVertFlat), batch_nv);
+            /* Quads: 4 unique verts + 6 indices.  Tris: 3 verts + 3 indices. */
+            int unique_nv = nv;
+            int nidx = is_quad ? 6 : 3;
+            vbatch_prepare_idx(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_16BIT,
+                               sizeof(PspVertFlat), unique_nv, nidx);
 
-            PspVertFlat tmp[4];
+            uint16_t base = (uint16_t)vbatch.count;
+            PspVertFlat *dst = &vbatch.v.flat[vbatch.count];
             uint32_t base_color = PSX_to_ABGR(psx_cmd[0]);
             int p = 1;
             for (int i = 0; i < nv; i++)
@@ -290,15 +343,16 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 int16_t x, y;
                 PSX_to_PSP((int16_t)(psx_cmd[p] & 0xFFFF), (int16_t)(psx_cmd[p] >> 16), &x, &y);
                 p++;
-                tmp[i].color = color; tmp[i].x = x; tmp[i].y = y; tmp[i].z = 0;
+                dst[i].color = color; dst[i].x = x; dst[i].y = y; dst[i].z = 0;
             }
+            vbatch.count += unique_nv;
 
-            PspVertFlat *dst = &vbatch.v.flat[vbatch.count];
-            dst[0] = tmp[0]; dst[1] = tmp[1]; dst[2] = tmp[2];
+            uint16_t *ix = &vbatch.idx[vbatch.icount];
+            ix[0] = base; ix[1] = base+1; ix[2] = base+2;
             if (is_quad) {
-                dst[3] = tmp[2]; dst[4] = tmp[1]; dst[5] = tmp[3];
+                ix[3] = base+2; ix[4] = base+1; ix[5] = base+3;
             }
-            vbatch.count += batch_nv;
+            vbatch.icount += nidx;
             gpu_frame_stats.poly_flat++;
             return p;
         }
@@ -322,12 +376,14 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             if (is_raw_tex)
                 Tex_ApplyFuncReplace();
 
-            int batch_nv = is_quad ? 6 : 3;
-            vbatch_prepare(GU_TRIANGLES,
-                           GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT,
-                           sizeof(PspVertTex), batch_nv);
+            int unique_nv = nv;
+            int nidx = is_quad ? 6 : 3;
+            vbatch_prepare_idx(GU_TRIANGLES,
+                               GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT,
+                               sizeof(PspVertTex), unique_nv, nidx);
 
-            PspVertTex tmp[4];
+            uint16_t base = (uint16_t)vbatch.count;
+            PspVertTex *dst = &vbatch.v.tex[vbatch.count];
             uint32_t base_color = is_raw_tex ? PSX_to_ABGR(psx_cmd[0])
                                              : PSX_to_ABGR_texblend(psx_cmd[0]);
             int p = 1;
@@ -341,17 +397,18 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 PSX_to_PSP((int16_t)(psx_cmd[p] & 0xFFFF), (int16_t)(psx_cmd[p] >> 16), &x, &y);
                 p++;
                 uint32_t uv_clut = psx_cmd[p++];
-                tmp[i].u = (float)Apply_Tex_Window_U(uv_clut & 0xFF);
-                tmp[i].v = (float)Apply_Tex_Window_V((uv_clut >> 8) & 0xFF);
-                tmp[i].color = color; tmp[i].x = x; tmp[i].y = y; tmp[i].z = 0;
+                dst[i].u = (float)Apply_Tex_Window_U(uv_clut & 0xFF);
+                dst[i].v = (float)Apply_Tex_Window_V((uv_clut >> 8) & 0xFF);
+                dst[i].color = color; dst[i].x = x; dst[i].y = y; dst[i].z = 0;
             }
+            vbatch.count += unique_nv;
 
-            PspVertTex *dst = &vbatch.v.tex[vbatch.count];
-            dst[0] = tmp[0]; dst[1] = tmp[1]; dst[2] = tmp[2];
+            uint16_t *ix = &vbatch.idx[vbatch.icount];
+            ix[0] = base; ix[1] = base+1; ix[2] = base+2;
             if (is_quad) {
-                dst[3] = tmp[2]; dst[4] = tmp[1]; dst[5] = tmp[3];
+                ix[3] = base+2; ix[4] = base+1; ix[5] = base+3;
             }
-            vbatch.count += batch_nv;
+            vbatch.icount += nidx;
             gpu_frame_stats.poly_tex++;
 
             return p;
