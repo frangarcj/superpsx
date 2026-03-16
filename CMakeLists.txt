@@ -272,6 +272,7 @@ if(TARGET_PSP)
         -lpspaudio
         -lpspctrl
         -lpspdebug
+        -lpsppower
         -lpspkernel
     )
 

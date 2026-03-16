@@ -4,9 +4,11 @@
 #include "platform.h"
 #include <pspkernel.h>
 #include <psputils.h>
+#include <psppower.h>
 
 void Platform_Init(void) {
-    /* PSP kernel setup is done in main_psp.c (callbacks, threads) */
+    /* Max clock: CPU 333MHz, bus 166MHz (default is 222/111) */
+    scePowerSetClockFrequency(333, 333, 166);
 }
 
 void Platform_Halt(void) {
