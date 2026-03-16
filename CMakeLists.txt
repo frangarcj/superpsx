@@ -56,8 +56,12 @@ if(HEADLESS)
     set(GPU_SOURCES src/gpu_stub.c)
 elseif(TARGET_PSP)
     set(GPU_SOURCES
-        src/platform/psp/gpu_psp_backend.c
+        src/platform/psp/gpu_psp_core.c
+        src/platform/psp/gpu_psp_vram.c
+        src/platform/psp/gpu_psp_texture.c
         src/platform/psp/gpu_psp_primitives.c
+        src/platform/psp/gpu_psp_dma.c
+        src/platform/psp/gpu_psp_backend.c
         src/gpu_commands.c
         src/platform/psp/osd_psp.c
     )

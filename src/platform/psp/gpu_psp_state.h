@@ -75,8 +75,16 @@ typedef struct {
 extern uint8_t vpool_buf[];
 extern int vpool_offset;
 
-/* Forward declare flush — implemented in gpu_psp_backend.c */
+/* Forward declare flush — implemented in gpu_psp_core.c */
 void GPU_Backend_Flush(void);
+
+/* Display list (defined in gpu_psp_core.c, used by vram.c too) */
+extern unsigned int display_list[];
+
+/* Texture API (implemented in gpu_psp_texture.c) */
+void Tex_SetupIfChanged(uint32_t clut_word);
+void Tex_ApplyFuncReplace(void);
+void Tex_InvalidateState(void);
 
 static inline void *vpool_alloc(int size) {
     size = (size + 3) & ~3;  /* 4-byte align */
