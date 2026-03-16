@@ -114,11 +114,12 @@ static struct
 /* Track which FB is the current back buffer for merged display blit */
 static int back_fb_offset = PSP_FB0_OFFSET;
 
-unsigned int __attribute__((aligned(16))) display_list[262144];
+unsigned int __attribute__((aligned(16))) display_list[2][262144];
 
 /* ── Vertex Pool (for GU_SEND mode) ─────────────────────────────── */
-uint8_t __attribute__((aligned(64))) vpool_buf[VPOOL_SIZE];
+uint8_t __attribute__((aligned(64))) vpool_buf[2][VPOOL_SIZE];
 int vpool_offset;
+int dl_active = 0;
 
 /* ── GPU Core Implementation ────────────────────────────────────── */
 
@@ -134,7 +135,7 @@ void GPU_Backend_Init(void)
     }
 
     sceGuInit();
-    sceGuStart(GU_DIRECT, display_list);
+    sceGuStart(GU_DIRECT, display_list[0]);
 
     /* Double-buffer: draw→FB0, display→FB1.
      * sceGuSwapBuffers() exchanges them after each blit.
@@ -173,7 +174,8 @@ void GPU_Backend_Init(void)
      * GU_SEND builds the list offline (no per-command stall updates).
      * Submitted as one batch via sceGuSendList at frame end / Flush. */
     vpool_offset = 0;
-    sceGuStart(GU_SEND, display_list);
+    dl_active = 0;
+    sceGuStart(GU_SEND, display_list[dl_active]);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
     sceGuScissor(0, 0, 1024, 512);
     sceGuEnable(GU_SCISSOR_TEST);
@@ -190,14 +192,13 @@ void GPU_Backend_Init(void)
 void GPU_Backend_Flush(void)
 {
     Prim_FlushBatch();
-    sceKernelDcacheWritebackRange(vpool_buf, vpool_offset);
+    sceKernelDcacheWritebackRange(vpool_buf[dl_active], vpool_offset);
     sceGuFinish();
 
-    sceGuSendList(GU_TAIL, display_list, NULL);
-    if (sceGuSync(0, 1))
-        sceGuSync(0, 0);
+    sceGuSendList(GU_TAIL, display_list[dl_active], NULL);
+    sceGuSync(0, 0);  /* must sync — CPU VRAM access follows */
     vpool_offset = 0;
-    sceGuStart(GU_SEND, display_list);
+    sceGuStart(GU_SEND, display_list[dl_active]);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
     Prim_InvalidateGSState();
 }
@@ -205,20 +206,19 @@ void GPU_Backend_Flush(void)
 void GPU_Backend_FlushSync(void)
 {
     Prim_FlushBatch();
-    sceKernelDcacheWritebackRange(vpool_buf, vpool_offset);
+    sceKernelDcacheWritebackRange(vpool_buf[dl_active], vpool_offset);
     sceGuFinish();
-    sceGuSendList(GU_TAIL, display_list, NULL);
-    if (sceGuSync(0, 1))
-        sceGuSync(0, 0);
+    sceGuSendList(GU_TAIL, display_list[dl_active], NULL);
+    sceGuSync(0, 0);
     vpool_offset = 0;
-    sceGuStart(GU_SEND, display_list);
+    sceGuStart(GU_SEND, display_list[dl_active]);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
     Prim_InvalidateGSState();
 }
 
 void GPU_Backend_SetupEnvironment(void)
 {
-    sceGuStart(GU_SEND, display_list);
+    sceGuStart(GU_SEND, display_list[dl_active]);
 }
 
 void GPU_Backend_UpdateDisplay(void)
@@ -388,20 +388,23 @@ void GPU_Backend_UpdateDisplay(void)
     }
 #endif /* DEBUG_SHOW_FULL_VRAM */
 
-    sceKernelDcacheWritebackRange(vpool_buf, vpool_offset);
+    sceKernelDcacheWritebackRange(vpool_buf[dl_active], vpool_offset);
     sceGuFinish();
 
-    sceGuSendList(GU_TAIL, display_list, NULL);
-    if (sceGuSync(0, 1))
-        sceGuSync(0, 0);
+    sceGuSendList(GU_TAIL, display_list[dl_active], NULL);
+    /* No sync — GE processes blit while CPU starts next frame.
+     * Double-buffered DL+vpool: CPU writes to [dl_active^1],
+     * GE reads from [dl_active]. Safe because the buffer we switch
+     * TO was last sent 2+ UpdateDisplay calls ago (already finished). */
     sceGuSwapBuffers();
 
     /* Toggle back buffer for next frame */
     back_fb_offset = (back_fb_offset == PSP_FB0_OFFSET) ? PSP_FB1_OFFSET : PSP_FB0_OFFSET;
 
-    /* ── Restart offscreen PSX VRAM draw list (SEND mode) ──────── */
+    /* ── Switch to other DL+vpool and restart PSX VRAM list ────── */
+    dl_active ^= 1;
     vpool_offset = 0;
-    sceGuStart(GU_SEND, display_list);
+    sceGuStart(GU_SEND, display_list[dl_active]);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
     sceGuScissor(draw_clip_x1, draw_clip_y1,
                  draw_clip_x2 - draw_clip_x1 + 1, draw_clip_y2 - draw_clip_y1 + 1);

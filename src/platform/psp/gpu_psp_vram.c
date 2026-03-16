@@ -133,9 +133,9 @@ void GPU_Backend_VRAMReadback(int x, int y, int w, int h) {
 
     /* Need to finish pending GE draws first */
     Prim_FlushBatch();
-    sceKernelDcacheWritebackRange(vpool_buf, vpool_offset);
+    sceKernelDcacheWritebackRange(vpool_buf[dl_active], vpool_offset);
     sceGuFinish();
-    sceGuSendList(GU_TAIL, display_list, NULL);
+    sceGuSendList(GU_TAIL, display_list[dl_active], NULL);
     sceGuSync(0, 0);
 
     uint16_t *edram_vram = (uint16_t *)VRAM_BASE_PTR;
@@ -149,7 +149,7 @@ void GPU_Backend_VRAMReadback(int x, int y, int w, int h) {
 
     /* Re-open display list for further draws (SEND mode) */
     vpool_offset = 0;
-    sceGuStart(GU_SEND, display_list);
+    sceGuStart(GU_SEND, display_list[dl_active]);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
     sceGuScissor(draw_clip_x1, draw_clip_y1,
                  draw_clip_x2 - draw_clip_x1 + 1, draw_clip_y2 - draw_clip_y1 + 1);

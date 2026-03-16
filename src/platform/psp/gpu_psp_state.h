@@ -69,16 +69,19 @@ typedef struct {
 
 /* ── Vertex pool for GU_SEND mode ──────────────────────────────── */
 /* Replaces sceGuGetMemory (which doesn't work in non-DIRECT mode).
- * CPU writes to cached pool, one dcache writeback before sceGuSendList. */
+ * CPU writes to cached pool, one dcache writeback before sceGuSendList.
+ * Double-buffered: CPU writes to [dl_active], GE reads from [1-dl_active]. */
 #define VPOOL_SIZE (256 * 1024)
-extern uint8_t vpool_buf[];
+extern uint8_t vpool_buf[2][VPOOL_SIZE];
 extern int vpool_offset;
+extern int dl_active;
 
 /* Forward declare flush — implemented in gpu_psp_core.c */
 void GPU_Backend_Flush(void);
 
-/* Display list (defined in gpu_psp_core.c, used by vram.c too) */
-extern unsigned int display_list[];
+/* Display list (defined in gpu_psp_core.c, used by vram.c too)
+ * Double-buffered: indexed by dl_active. */
+extern unsigned int display_list[2][262144];
 
 /* Texture API (implemented in gpu_psp_texture.c) */
 void Tex_SetupIfChanged(uint32_t clut_word);
@@ -96,7 +99,7 @@ static inline void *vpool_alloc(int size) {
          * correctness depends on the GE executing list commands in order. */
         vpool_offset = 0;
     }
-    void *ptr = &vpool_buf[vpool_offset];
+    void *ptr = &vpool_buf[dl_active][vpool_offset];
     vpool_offset += size;
     return ptr;
 }
