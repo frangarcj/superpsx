@@ -55,6 +55,21 @@ static uint32_t clut_fast_hash(const uint16_t *src, int count)
     return h;
 }
 
+/* Quick scan: does the CLUT need STP fixup?
+ * Returns 0 if all non-zero entries already have STP=1 (bit 15)
+ * and no entry is exactly 0x8000 (black+STP needs color tweak).
+ * When 0, the raw VRAM data can be used directly (zero-copy). */
+static int clut_needs_fixup(const uint16_t *src, int count)
+{
+    for (int i = 0; i < count; i++) {
+        uint16_t c = src[i];
+        if (c == 0) continue;
+        if (!(c & 0x8000)) return 1;     /* non-zero, missing STP */
+        if ((c & 0x7FFF) == 0) return 1;  /* 0x8000: needs color tweak */
+    }
+    return 0;
+}
+
 static uint16_t *clut_cache_get(uint32_t cword, const uint16_t *src,
                                 int count, int *hit)
 {
@@ -161,22 +176,30 @@ static void setup_psx_texture(uint32_t clut_word)
             int clut_x = ((clut_word >> 16) & 0x3F) * 16;
             int clut_y = (clut_word >> 22) & 0x1FF;
             uint16_t *csrc = &psx_vram_shadow[clut_y * 1024 + clut_x];
-            int clut_hit;
-            uint16_t *cd = clut_cache_get(clut_word, csrc, 16, &clut_hit);
-            if (clut_hit) gpu_frame_stats.clut_cache_hit++;
-            else          gpu_frame_stats.clut_cache_miss++;
             gpu_frame_stats.clut_change++;
-            if (!clut_hit) {
-                for (int i = 0; i < 16; i++) {
-                    uint16_t c = csrc[i];
-                    if (c == 0) { cd[i] = 0; continue; }
-                    c |= 0x8000;
-                    if ((c & 0x7FFF) == 0) c |= 0x0001;
-                    cd[i] = c;
+            if (!clut_needs_fixup(csrc, 16)) {
+                /* Zero-copy: CLUT in EDRAM already correct */
+                uint16_t *edram_vram = (uint16_t *)((uintptr_t)sceGeEdramGetAddr()
+                                                    + PSP_VRAM_OFFSET);
+                active_clut_ptr = &edram_vram[clut_y * 1024 + clut_x];
+                gpu_frame_stats.clut_cache_hit++;
+            } else {
+                int clut_hit;
+                uint16_t *cd = clut_cache_get(clut_word, csrc, 16, &clut_hit);
+                if (clut_hit) gpu_frame_stats.clut_cache_hit++;
+                else          gpu_frame_stats.clut_cache_miss++;
+                if (!clut_hit) {
+                    for (int i = 0; i < 16; i++) {
+                        uint16_t c = csrc[i];
+                        if (c == 0) { cd[i] = 0; continue; }
+                        c |= 0x8000;
+                        if ((c & 0x7FFF) == 0) c |= 0x0001;
+                        cd[i] = c;
+                    }
                 }
+                sceKernelDcacheWritebackRange(cd, 32);
+                active_clut_ptr = cd;
             }
-            sceKernelDcacheWritebackRange(cd, 32);
-            active_clut_ptr = cd;
             cached_clut_word = clut_word;
         }
 
@@ -228,22 +251,30 @@ static void setup_psx_texture(uint32_t clut_word)
             int clut_x = ((clut_word >> 16) & 0x3F) * 16;
             int clut_y = (clut_word >> 22) & 0x1FF;
             uint16_t *csrc = &psx_vram_shadow[clut_y * 1024 + clut_x];
-            int clut_hit;
-            uint16_t *cd = clut_cache_get(clut_word, csrc, 256, &clut_hit);
-            if (clut_hit) gpu_frame_stats.clut_cache_hit++;
-            else          gpu_frame_stats.clut_cache_miss++;
             gpu_frame_stats.clut_change++;
-            if (!clut_hit) {
-                for (int i = 0; i < 256; i++) {
-                    uint16_t c = csrc[i];
-                    if (c == 0) { cd[i] = 0; continue; }
-                    c |= 0x8000;
-                    if ((c & 0x7FFF) == 0) c |= 0x0001;
-                    cd[i] = c;
+            if (!clut_needs_fixup(csrc, 256)) {
+                /* Zero-copy: CLUT in EDRAM already correct */
+                uint16_t *edram_vram = (uint16_t *)((uintptr_t)sceGeEdramGetAddr()
+                                                    + PSP_VRAM_OFFSET);
+                active_clut_ptr = &edram_vram[clut_y * 1024 + clut_x];
+                gpu_frame_stats.clut_cache_hit++;
+            } else {
+                int clut_hit;
+                uint16_t *cd = clut_cache_get(clut_word, csrc, 256, &clut_hit);
+                if (clut_hit) gpu_frame_stats.clut_cache_hit++;
+                else          gpu_frame_stats.clut_cache_miss++;
+                if (!clut_hit) {
+                    for (int i = 0; i < 256; i++) {
+                        uint16_t c = csrc[i];
+                        if (c == 0) { cd[i] = 0; continue; }
+                        c |= 0x8000;
+                        if ((c & 0x7FFF) == 0) c |= 0x0001;
+                        cd[i] = c;
+                    }
                 }
+                sceKernelDcacheWritebackRange(cd, 512);
+                active_clut_ptr = cd;
             }
-            sceKernelDcacheWritebackRange(cd, 512);
-            active_clut_ptr = cd;
             cached_clut_word = clut_word;
         }
 
