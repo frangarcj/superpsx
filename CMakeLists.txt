@@ -390,6 +390,7 @@ if(TARGET_PSP)
     list(APPEND PLAYGROUND_SOURCES
         src/platform/psp/platform_psp.c
         src/platform/psp/vu0_micro_psp.c
+        src/platform/psp/gte_vfpu.c
     )
 else()
     list(APPEND PLAYGROUND_SOURCES

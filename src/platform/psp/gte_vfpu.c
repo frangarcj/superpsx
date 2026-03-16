@@ -360,3 +360,44 @@ void gte_mvmva_vfpu(R3000CPU *cpu, int lm, int mx, int v, int cv)
     D(vd_IR2) = (uint32_t)vfpu_saturate_ir(mac2, 2, lm);
     D(vd_IR3) = (uint32_t)vfpu_saturate_ir(mac3, 3, lm);
 }
+
+/* ================================================================
+ * VFPU RT multiply: RT_matrix × vertex + TR → mac1/mac2/mac3
+ *
+ * Used by RTPS/RTPT in gte.c. The post-multiply logic (IR saturation,
+ * push_sz, perspective divide, push_sxy, depth cue) stays in gte.c
+ * because it needs static helpers (push_sz, push_sxy, gte_divide, etc.)
+ * ================================================================ */
+void vfpu_rt_multiply(R3000CPU *cpu, int v, int32_t *out_mac1, int32_t *out_mac2, int32_t *out_mac3)
+{
+    int16_t vx = get_vector_vfpu(cpu, v, 0);
+    int16_t vy = get_vector_vfpu(cpu, v, 1);
+    int16_t vz = get_vector_vfpu(cpu, v, 2);
+
+    float vert[4] __attribute__((aligned(16)));
+    vert[0] = (float)vx;
+    vert[1] = (float)vy;
+    vert[2] = (float)vz;
+    vert[3] = 0.0f;
+
+    float result[4] __attribute__((aligned(16)));
+
+    __asm__ volatile (
+        "lv.q C000, 0(%[r1])\n"
+        "lv.q C010, 0(%[r2])\n"
+        "lv.q C020, 0(%[r3])\n"
+        "lv.q C100, 0(%[vt])\n"
+        "lv.q C200, 0(%[tr])\n"
+        "vtfm3.t C300, M000, C100\n"
+        "vadd.t C300, C300, C200\n"
+        "sv.q C300, 0(%[rs])\n"
+        :
+        : [r1] "r"(vfpu_rt_row1), [r2] "r"(vfpu_rt_row2), [r3] "r"(vfpu_rt_row3),
+          [vt] "r"(vert), [tr] "r"(vfpu_rt_trans), [rs] "r"(result)
+        : "memory"
+    );
+
+    *out_mac1 = (int32_t)result[0];
+    *out_mac2 = (int32_t)result[1];
+    *out_mac3 = (int32_t)result[2];
+}

@@ -1843,6 +1843,84 @@ void vu0_prepare_mvmva(R3000CPU *cpu, uint32_t mx_cv)
 #endif /* _EE */
 
 /* ================================================================
+ * VFPU RTPS/RTPT Fast Path (PSP)
+ *
+ * Uses VFPU vtfm3.t for the RT matrix × vertex + TR multiply,
+ * then C code for IR saturation, SZ push, perspective division,
+ * screen projection, and depth cueing (same as VU0 path).
+ * ================================================================ */
+#ifdef PLATFORM_PSP
+static void gte_rtps_core_vfpu(R3000CPU *cpu, int v, int lm, int last)
+{
+    int32_t mac1, mac2, mac3;
+    vfpu_rt_multiply(cpu, v, &mac1, &mac2, &mac3);
+
+    D(d_MAC1) = (uint32_t)mac1;
+    D(d_MAC2) = (uint32_t)mac2;
+    D(d_MAC3) = (uint32_t)mac3;
+
+    /* IR1/IR2 saturation (flags computed exactly) */
+    D(d_IR1) = (uint32_t)saturate_ir(mac1, 1, lm);
+    D(d_IR2) = (uint32_t)saturate_ir(mac2, 2, lm);
+
+    /* IR3 special RTPS handling:
+     * Flag bit 22 always checked against ±0x8000.
+     * mac3 IS already the >>12 result (sf=1 VFPU path). */
+    {
+        int32_t lo = lm ? 0 : -0x8000;
+        if (mac3 < -0x8000 || mac3 > 0x7FFF)
+            flag_set(22);
+        if (mac3 < lo)
+            D(d_IR3) = (uint32_t)lo;
+        else if (mac3 > 0x7FFF)
+            D(d_IR3) = 0x7FFF;
+        else
+            D(d_IR3) = (uint32_t)mac3;
+    }
+
+    /* Push SZ FIFO */
+    push_sz(cpu, (int64_t)mac3);
+
+    /* Perspective division */
+    uint32_t div_result = gte_divide((uint16_t)(int16_t)(int32_t)C(c_H), D(d_SZ3));
+
+    /* Screen projection */
+    int64_t sx_mac = (int64_t)(int32_t)div_result * (int16_t)(int32_t)D(d_IR1) + (int32_t)C(c_OFX);
+    int64_t sy_mac = (int64_t)(int32_t)div_result * (int16_t)(int32_t)D(d_IR2) + (int32_t)C(c_OFY);
+    check_mac0_overflow(sx_mac);
+    check_mac0_overflow(sy_mac);
+    push_sxy(cpu, (int32_t)(sx_mac >> 16), (int32_t)(sy_mac >> 16));
+
+    if (last)
+    {
+        /* Depth cueing: MAC0 = DQA * div + DQB */
+        int64_t dq_mac = (int64_t)(int16_t)(int32_t)C(c_DQA) * (int32_t)div_result + (int32_t)C(c_DQB);
+        check_mac0_overflow(dq_mac);
+        D(d_MAC0) = (uint32_t)(int32_t)dq_mac;
+        D(d_IR0) = (uint32_t)saturate_ir0(dq_mac >> 12);
+    }
+}
+
+static void gte_cmd_rtps_vfpu(R3000CPU *cpu, int lm)
+{
+    if (vfpu_rt_is_dirty(cpu))
+        vfpu_refresh_rt_matrix(cpu);
+
+    gte_rtps_core_vfpu(cpu, 0, lm, 1);
+}
+
+static void gte_cmd_rtpt_vfpu(R3000CPU *cpu, int lm)
+{
+    if (vfpu_rt_is_dirty(cpu))
+        vfpu_refresh_rt_matrix(cpu);
+
+    gte_rtps_core_vfpu(cpu, 0, lm, 0);
+    gte_rtps_core_vfpu(cpu, 1, lm, 0);
+    gte_rtps_core_vfpu(cpu, 2, lm, 1);
+}
+#endif /* PLATFORM_PSP */
+
+/* ================================================================
  * RTPS projection helper for JIT inline path.
  * Called after matrix multiply + SZ push are done inline in the JIT.
  * Performs: UNR division, screen projection, SXY FIFO push,
@@ -1883,6 +1961,13 @@ void GTE_Inline_RTPS(R3000CPU *cpu, int sf, int lm)
     if (gte_use_vu0 && sf)
     {
         gte_cmd_rtps_vu0(cpu, lm);
+    }
+    else
+#endif
+#ifdef PLATFORM_PSP
+    if (gte_use_vfpu && sf)
+    {
+        gte_cmd_rtps_vfpu(cpu, lm);
     }
     else
 #endif
@@ -2042,6 +2127,13 @@ void GTE_Inline_RTPT(R3000CPU *cpu, int sf, int lm)
     if (gte_use_vu0 && sf)
     {
         gte_cmd_rtpt_vu0(cpu, lm);
+    }
+    else
+#endif
+#ifdef PLATFORM_PSP
+    if (gte_use_vfpu && sf)
+    {
+        gte_cmd_rtpt_vfpu(cpu, lm);
     }
     else
 #endif

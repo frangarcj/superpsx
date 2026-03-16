@@ -9,6 +9,10 @@
 /* VFPU MVMVA: Matrix x Vector + Translation (sf=1, mx!=3, cv!=2 only) */
 void gte_mvmva_vfpu(R3000CPU *cpu, int lm, int mx, int v, int cv);
 
+/* VFPU RT multiply: RT_matrix × vertex + TR → mac1/mac2/mac3
+ * Used by RTPS/RTPT in gte.c for the matrix multiply portion only. */
+void vfpu_rt_multiply(R3000CPU *cpu, int v, int32_t *out_mac1, int32_t *out_mac2, int32_t *out_mac3);
+
 /* Matrix cache management */
 void vfpu_refresh_rt_matrix(R3000CPU *cpu);
 void vfpu_refresh_lt_matrix(R3000CPU *cpu);
