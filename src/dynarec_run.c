@@ -685,7 +685,10 @@ static void Sched_HBlank_Callback(void)
         SPU_GenerateSamples(); /* Generate all audio + submit to audio hw */
 
         /* Frame limiter: busy-wait until the wall-clock frame budget is met.
-         * clock() on PS2 gives microsecond resolution via EE timer. */
+         * On PSP, GPU_Backend_UpdateDisplay() already syncs via sceGuSync +
+         * sceGuSwapBuffers (vsync-latched), so the busy-wait is unnecessary
+         * and would double the frame delay. */
+#ifndef PLATFORM_PSP
         if (psx_config.frame_limit)
         {
             uint32_t frame_us = psx_config.region_pal ? FRAME_TIME_PAL_US : FRAME_TIME_NTSC_US;
@@ -704,6 +707,7 @@ static void Sched_HBlank_Callback(void)
                     frame_limit_next_ms += frame_us;
             }
         }
+#endif
 
         perf_frame_count++;
         check_profiling_exit(perf_frame_count);

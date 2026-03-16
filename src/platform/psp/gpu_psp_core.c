@@ -97,7 +97,7 @@ uint32_t raw_draw_area_br = 0;
 uint32_t raw_draw_offset = 0;
 
 /* PSP-specific state */
-#define DEBUG_SHOW_FULL_VRAM 0  /* TEMP: show all 1024x512 PSX VRAM */
+#define DEBUG_SHOW_FULL_VRAM 0 /* 1 = show all 1024x512 PSX VRAM */
 int psx_active_width = 320;
 int psx_active_height = 240;
 void *vram_mirror = (void *)PSP_VRAM_OFFSET;
@@ -259,7 +259,11 @@ void GPU_Backend_UpdateDisplay(void)
             uintptr_t tex_base = (uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET + strip * 512 * 2;
             sceGuTexImage(0, 512, 512, 1024, (void *)tex_base);
 
-            typedef struct { float u, v; int16_t x, y, z; } BlitVert;
+            typedef struct
+            {
+                float u, v;
+                int16_t x, y, z;
+            } BlitVert;
             BlitVert *bv = (BlitVert *)vpool_alloc(2 * sizeof(BlitVert));
             bv[0].u = 0.0f;
             bv[0].v = 0.0f;
@@ -360,7 +364,11 @@ void GPU_Backend_UpdateDisplay(void)
             int scr_x0 = pad_x + (col * out_w) / src_w;
             int scr_x1 = pad_x + ((col + strip_w) * out_w) / src_w;
 
-            typedef struct { float u, v; int16_t x, y, z; } BlitVert;
+            typedef struct
+            {
+                float u, v;
+                int16_t x, y, z;
+            } BlitVert;
             BlitVert *bv = (BlitVert *)vpool_alloc(2 * sizeof(BlitVert));
             bv[0].u = 0.0f;
             bv[0].v = (float)display_start_y;
@@ -409,9 +417,10 @@ void GPU_Backend_VBlank(void)
     gpu_pending_vblank_flush = 1;
     gpu_stat ^= 0x80000000; /* Toggle GPUSTAT bit 31 (LCF) */
     osd_vblank_count++;
-#if DEBUG_SHOW_FULL_VRAM
-    GPU_Backend_UpdateDisplay();  /* Debug: blit every VBlank */
-#endif
+
+    /* PSP cannot scan EDRAM directly like the PS2 GS — we must actively
+     * blit the PSX VRAM region to the screen framebuffer every VBlank. */
+    GPU_Backend_UpdateDisplay();
 }
 
 /* ── Drawing Environment ───────────────────────────────────────── */
@@ -425,9 +434,9 @@ void GPU_Backend_SetScissor(int x1, int y1, int x2, int y2)
 
 void GPU_Backend_SetDisplayFB(int x, int y)
 {
-    /* Equivalent to PS2 writing DISPFB registers — trigger blit + swap */
+    /* Just invalidate blit cache — VBlank will pick up new coordinates.
+     * No immediate blit needed since VBlank drives display on PSP. */
     blit_cache.valid = 0;
-    GPU_Backend_UpdateDisplay();
 }
 
 void GPU_Backend_SetResolution(int interlace, int mode)
