@@ -35,20 +35,24 @@ static int tcache_lru_tick = 0;
 
 static uint32_t cached_clut_word = 0xFFFFFFFF;
 
-/* ── EDRAM CLUT Cache ─────────────────────────────────────────────
- * When STP fixup IS needed, store the fixed CLUT in EDRAM (after PSX VRAM).
- * GE reads directly from EDRAM — no dcache writeback needed.
- * When fixup is NOT needed, sceGuClutLoad points straight at PSX VRAM EDRAM.
- * ────────────────────────────────────────────────────────────────── */
-#define CLUT_EDRAM_OFFSET  0x188000
-#define CLUT_EDRAM_SLOTS   32
-#define CLUT_EDRAM_SLOT_SZ 512   /* 256 entries × 2 bytes, 16-byte aligned */
-static int clut_edram_rr = 0;
+/* ── CLUT Transform Cache ─────────────────────────────────────── */
+#define CLUT_CACHE_SIZE 256
 
-static inline uint16_t *clut_edram_slot(int slot)
+static struct {
+    uint32_t clut_word;
+    uint32_t src_hash;
+    uint16_t __attribute__((aligned(16))) data[256];
+} clut_cache[CLUT_CACHE_SIZE];
+static int clut_cache_rr = 0;
+
+static uint32_t clut_fast_hash(const uint16_t *src, int count)
 {
-    return (uint16_t *)((uintptr_t)sceGeEdramGetAddr() + CLUT_EDRAM_OFFSET
-                        + slot * CLUT_EDRAM_SLOT_SZ);
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < count; i++) {
+        h ^= src[i];
+        h *= 16777619u;
+    }
+    return h;
 }
 
 /* Quick scan: does the CLUT need STP fixup?
@@ -64,6 +68,25 @@ static int clut_needs_fixup(const uint16_t *src, int count)
         if ((c & 0x7FFF) == 0) return 1;  /* 0x8000: needs color tweak */
     }
     return 0;
+}
+
+static uint16_t *clut_cache_get(uint32_t cword, const uint16_t *src,
+                                int count, int *hit)
+{
+    uint32_t hash = clut_fast_hash(src, count);
+    for (int i = 0; i < CLUT_CACHE_SIZE; i++) {
+        if (clut_cache[i].clut_word == cword &&
+            clut_cache[i].src_hash == hash) {
+            *hit = 1;
+            return clut_cache[i].data;
+        }
+    }
+    int slot = clut_cache_rr;
+    clut_cache_rr = (clut_cache_rr + 1) & (CLUT_CACHE_SIZE - 1);
+    clut_cache[slot].clut_word = cword;
+    clut_cache[slot].src_hash = hash;
+    *hit = 0;
+    return clut_cache[slot].data;
 }
 
 /* ── Texture GE state tracking ──────────────────────────────────── */
@@ -168,19 +191,21 @@ static void setup_psx_texture(uint32_t clut_word)
                 active_clut_ptr = &edram_vram[clut_y * 1024 + clut_x];
                 gpu_frame_stats.clut_cache_hit++;
             } else {
-                /* Fixup needed: write to EDRAM CLUT slot (no dcache flush) */
-                int slot = clut_edram_rr;
-                clut_edram_rr = (clut_edram_rr + 1) % CLUT_EDRAM_SLOTS;
-                uint16_t *cd = clut_edram_slot(slot);
-                for (int i = 0; i < 16; i++) {
-                    uint16_t c = csrc[i];
-                    if (c == 0) { cd[i] = 0; continue; }
-                    c |= 0x8000;
-                    if ((c & 0x7FFF) == 0) c |= 0x0001;
-                    cd[i] = c;
+                int clut_hit;
+                uint16_t *cd = clut_cache_get(clut_word, csrc, 16, &clut_hit);
+                if (clut_hit) gpu_frame_stats.clut_cache_hit++;
+                else          gpu_frame_stats.clut_cache_miss++;
+                if (!clut_hit) {
+                    for (int i = 0; i < 16; i++) {
+                        uint16_t c = csrc[i];
+                        if (c == 0) { cd[i] = 0; continue; }
+                        c |= 0x8000;
+                        if ((c & 0x7FFF) == 0) c |= 0x0001;
+                        cd[i] = c;
+                    }
                 }
+                sceKernelDcacheWritebackRange(cd, 32);
                 active_clut_ptr = cd;
-                gpu_frame_stats.clut_cache_miss++;
             }
             cached_clut_word = clut_word;
         }
@@ -250,19 +275,21 @@ static void setup_psx_texture(uint32_t clut_word)
                 active_clut_ptr = &edram_vram[clut_y * 1024 + clut_x];
                 gpu_frame_stats.clut_cache_hit++;
             } else {
-                /* Fixup needed: write to EDRAM CLUT slot (no dcache flush) */
-                int slot = clut_edram_rr;
-                clut_edram_rr = (clut_edram_rr + 1) % CLUT_EDRAM_SLOTS;
-                uint16_t *cd = clut_edram_slot(slot);
-                for (int i = 0; i < 256; i++) {
-                    uint16_t c = csrc[i];
-                    if (c == 0) { cd[i] = 0; continue; }
-                    c |= 0x8000;
-                    if ((c & 0x7FFF) == 0) c |= 0x0001;
-                    cd[i] = c;
+                int clut_hit;
+                uint16_t *cd = clut_cache_get(clut_word, csrc, 256, &clut_hit);
+                if (clut_hit) gpu_frame_stats.clut_cache_hit++;
+                else          gpu_frame_stats.clut_cache_miss++;
+                if (!clut_hit) {
+                    for (int i = 0; i < 256; i++) {
+                        uint16_t c = csrc[i];
+                        if (c == 0) { cd[i] = 0; continue; }
+                        c |= 0x8000;
+                        if ((c & 0x7FFF) == 0) c |= 0x0001;
+                        cd[i] = c;
+                    }
                 }
+                sceKernelDcacheWritebackRange(cd, 512);
                 active_clut_ptr = cd;
-                gpu_frame_stats.clut_cache_miss++;
             }
             cached_clut_word = clut_word;
         }

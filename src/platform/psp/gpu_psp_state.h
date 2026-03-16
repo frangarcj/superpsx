@@ -31,8 +31,7 @@ extern gs_state_t gs_state;
  * 0x000000 - 0x043FFF: FB0 (272KB)
  * 0x044000 - 0x087FFF: FB1 (272KB)
  * 0x088000 - 0x187FFF: PSX VRAM Mirror (1MB)
- * 0x188000 - 0x191FFF: CLUT Cache (32 slots × 512B = 16KB)
- * 0x192000 - 0x1FFFFF: Free (440KB)
+ * 0x188000 - 0x1FFFFF: Free (480KB)
  */
 #define PSP_FB0_OFFSET    0x000000
 #define PSP_FB1_OFFSET    0x044000
