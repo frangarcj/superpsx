@@ -401,6 +401,7 @@ if(TARGET_PSP)
         src/platform/psp/platform_psp.c
         src/platform/psp/vu0_micro_psp.c
         src/platform/psp/gte_vfpu.c
+        src/platform/psp/gpu_psp_backend.c
     )
 else()
     list(APPEND PLAYGROUND_SOURCES
@@ -425,6 +426,7 @@ if(TARGET_PSP)
     target_compile_options(jit_playground.elf PRIVATE -O2 -G0 -Wall -ffast-math)
     target_compile_definitions(jit_playground.elf PRIVATE JIT_PLAYGROUND PLATFORM_PSP)
     target_link_libraries(jit_playground.elf PRIVATE
+        -lpsppower
         -lm
         -lc
         -lpspdebug

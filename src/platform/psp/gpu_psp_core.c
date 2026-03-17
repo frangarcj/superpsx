@@ -411,7 +411,6 @@ void GPU_Backend_UpdateDisplay(void)
         sceGeListSync(sync_id[dl_active], 0);
     }
 
-    memset(&gpu_frame_stats, 0, sizeof(gpu_frame_stats));
     vpool_offset = 0;
     sceGuStart(GU_SEND, display_list[dl_active]);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);

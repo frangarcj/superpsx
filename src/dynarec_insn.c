@@ -148,7 +148,7 @@ static void emit_push_color_inline(void)
 
     /* Code byte from RGBC */
     EMIT_LW(REG_AT, CPU_CP2_DATA(6), REG_S0);
-    emit(MK_R(0, 0, REG_AT, REG_AT, 24, 0x02));       /* SRL AT, AT, 24 */
+    emit(MK_R(0, 0, REG_AT, REG_AT, 24, 0x02)); /* SRL AT, AT, 24 */
 
     /* Pack: RGB2 = r | (g<<8) | (b<<16) | (code<<24) */
     EMIT_SLL(REG_AT, REG_AT, 24);
@@ -171,7 +171,8 @@ static void emit_ir_sat_store(int lm)
      * PMAXW/PMINW execute in 1 cycle each, replacing 4-word SLT+MOVN
      * per channel (saves 6 emitted words). */
     EMIT_ORI(REG_T9, REG_ZERO, 0x7FFF);
-    if (lm) {
+    if (lm)
+    {
         /* lm=1: clamp [0, 0x7FFF] */
         EMIT_PMAXW(REG_V0, REG_V0, REG_ZERO);
         EMIT_PMINW(REG_V0, REG_V0, REG_T9);
@@ -179,7 +180,9 @@ static void emit_ir_sat_store(int lm)
         EMIT_PMINW(REG_V1, REG_V1, REG_T9);
         EMIT_PMAXW(REG_A0, REG_A0, REG_ZERO);
         EMIT_PMINW(REG_A0, REG_A0, REG_T9);
-    } else {
+    }
+    else
+    {
         /* lm=0: clamp [-0x8000, 0x7FFF] */
         EMIT_ADDIU(REG_T8, REG_ZERO, -0x8000);
         EMIT_PMAXW(REG_V0, REG_V0, REG_T8);
@@ -190,7 +193,7 @@ static void emit_ir_sat_store(int lm)
         EMIT_PMINW(REG_A0, REG_A0, REG_T9);
     }
 
-    EMIT_SW(REG_V0, CPU_CP2_DATA(9),  REG_S0);
+    EMIT_SW(REG_V0, CPU_CP2_DATA(9), REG_S0);
     EMIT_SW(REG_V1, CPU_CP2_DATA(10), REG_S0);
     EMIT_SW(REG_A0, CPU_CP2_DATA(11), REG_S0);
     EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);
@@ -204,20 +207,21 @@ static void emit_ir_sat_store(int lm)
 static void emit_interpolate_color(int sf)
 {
     /* Load far color (FC) and shift << 12 */
-    EMIT_LW(REG_A1, CPU_CP2_CTRL(21), REG_S0);        /* A1 = RFC */
-    EMIT_LW(REG_A2, CPU_CP2_CTRL(22), REG_S0);        /* A2 = GFC */
-    EMIT_LW(REG_A3, CPU_CP2_CTRL(23), REG_S0);        /* A3 = BFC */
-    EMIT_SLL(REG_A1, REG_A1, 12);                      /* A1 = fc1 = RFC<<12 */
-    EMIT_SLL(REG_A2, REG_A2, 12);                      /* A2 = fc2 = GFC<<12 */
-    EMIT_SLL(REG_A3, REG_A3, 12);                      /* A3 = fc3 = BFC<<12 */
+    EMIT_LW(REG_A1, CPU_CP2_CTRL(21), REG_S0); /* A1 = RFC */
+    EMIT_LW(REG_A2, CPU_CP2_CTRL(22), REG_S0); /* A2 = GFC */
+    EMIT_LW(REG_A3, CPU_CP2_CTRL(23), REG_S0); /* A3 = BFC */
+    EMIT_SLL(REG_A1, REG_A1, 12);              /* A1 = fc1 = RFC<<12 */
+    EMIT_SLL(REG_A2, REG_A2, 12);              /* A2 = fc2 = GFC<<12 */
+    EMIT_SLL(REG_A3, REG_A3, 12);              /* A3 = fc3 = BFC<<12 */
 
     /* diff = fc - acc (V0/V1/A0 still hold acc) */
-    EMIT_SUBU(REG_A1, REG_A1, REG_V0);                /* A1 = diff1 */
-    EMIT_SUBU(REG_A2, REG_A2, REG_V1);                /* A2 = diff2 */
-    EMIT_SUBU(REG_A3, REG_A3, REG_A0);                /* A3 = diff3 */
+    EMIT_SUBU(REG_A1, REG_A1, REG_V0); /* A1 = diff1 */
+    EMIT_SUBU(REG_A2, REG_A2, REG_V1); /* A2 = diff2 */
+    EMIT_SUBU(REG_A3, REG_A3, REG_A0); /* A3 = diff3 */
 
     /* sf=1: shift diff >> 12 */
-    if (sf) {
+    if (sf)
+    {
         EMIT_SRA(REG_A1, REG_A1, 12);
         EMIT_SRA(REG_A2, REG_A2, 12);
         EMIT_SRA(REG_A3, REG_A3, 12);
@@ -234,22 +238,23 @@ static void emit_interpolate_color(int sf)
     EMIT_PMINW(REG_A3, REG_A3, REG_T9);
 
     /* result = tmp_ir × IR0 + acc */
-    EMIT_LH(REG_T8, CPU_CP2_DATA(8), REG_S0);         /* T8 = IR0 (int16) */
+    EMIT_LH(REG_T8, CPU_CP2_DATA(8), REG_S0); /* T8 = IR0 (int16) */
 
     EMIT_MULT(REG_A1, REG_T8);
     EMIT_MFLO(REG_A1);
-    EMIT_ADDU(REG_V0, REG_A1, REG_V0);                /* V0 = product1 + acc1 */
+    EMIT_ADDU(REG_V0, REG_A1, REG_V0); /* V0 = product1 + acc1 */
 
     EMIT_MULT(REG_A2, REG_T8);
     EMIT_MFLO(REG_A2);
-    EMIT_ADDU(REG_V1, REG_A2, REG_V1);                /* V1 = product2 + acc2 */
+    EMIT_ADDU(REG_V1, REG_A2, REG_V1); /* V1 = product2 + acc2 */
 
     EMIT_MULT(REG_A3, REG_T8);
     EMIT_MFLO(REG_A3);
-    EMIT_ADDU(REG_A0, REG_A3, REG_A0);                /* A0 = product3 + acc3 */
+    EMIT_ADDU(REG_A0, REG_A3, REG_A0); /* A0 = product3 + acc3 */
 
     /* MAC = result >> sf*12 */
-    if (sf) {
+    if (sf)
+    {
         EMIT_SRA(REG_V0, REG_V0, 12);
         EMIT_SRA(REG_V1, REG_V1, 12);
         EMIT_SRA(REG_A0, REG_A0, 12);
@@ -260,6 +265,94 @@ static void emit_interpolate_color(int sf)
     EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);
     EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);
 }
+
+/* ================================================================
+ * PSP VFPU inline GTE matrix multiply
+ *
+ * Parallel to VU0 macro mode on PS2. Uses VFPU vtfm3.t for the
+ * 3×3 matrix × vector + translation.
+ *
+ * Flow: C lite call to refresh float matrix cache → lv.q matrix rows
+ * + translation → mtv vertex int16 → vi2f → vtfm3.t → vadd.t →
+ * vf2in → mfv → store MAC1-3 + IR saturation.
+ *
+ * VFPU register allocation:
+ *   M000 (C000/C010/C020): matrix rows (pre-scaled 1/4096)
+ *   C100: vertex (int32→float)
+ *   C200: translation
+ *   C300: result (float→int32)
+ * ================================================================ */
+#if 0  /* VFPU MVMVA path disabled — using integer MADD (POPS-style) */
+
+static int vfpu_preloaded[3] = {0, 0, 0};
+
+/* Emit C call to refresh matrix cache + load into VFPU M000 + C200.
+ * After call: vu0_jit_cache has rows+trans, VFPU M000/C200 loaded.
+ * Clobbers: T8 (base addr). Emits ~14 words. */
+static void emit_vfpu_load_matrix(int mx, int cv)
+{
+    uint32_t mx_cv = (uint32_t)(mx | (cv << 2));
+    EMIT_MOVE(REG_A0, REG_S0);
+    EMIT_ORI(REG_A1, REG_ZERO, mx_cv);
+    emit_call_c_lite((uint32_t)(uintptr_t)vu0_prepare_mvmva);
+    emit_load_imm32(REG_T8, (uint32_t)(uintptr_t)&vu0_jit_cache);
+    EMIT_LV_Q(VFPU_C000,  0, REG_T8);   /* matrix row 1 */
+    EMIT_LV_Q(VFPU_C010, 16, REG_T8);   /* matrix row 2 */
+    EMIT_LV_Q(VFPU_C020, 32, REG_T8);   /* matrix row 3 */
+    EMIT_LV_Q(VFPU_C200, 48, REG_T8);   /* translation */
+}
+
+/* Emit VFPU vertex multiply using pre-loaded matrix in M000 + C200.
+ * v: 0=V0, 1=V1, 2=V2, 3=IR1-3.  lm: limit flag.
+ * T8 must be valid = &vu0_jit_cache (from emit_vfpu_load_matrix or caller).
+ * If t8_valid=0, reloads T8.
+ *
+ * Output: V0=MAC1, V1=MAC2, A0=MAC3 stored. IR1-3 saturated. FLAG=0.
+ * Clobbers: T8, T9, AT, V0, V1, A0. (~25 words) */
+static void emit_vfpu_vertex_multiply(int v, int lm, int t8_valid)
+{
+    if (!t8_valid)
+        emit_load_imm32(REG_T8, (uint32_t)(uintptr_t)&vu0_jit_cache);
+
+    /* Load vertex int16 from cpu struct → GPR */
+    if (v < 3) {
+        int base = v * 2;
+        EMIT_LH(REG_V0, CPU_CP2_DATA(base) + 0, REG_S0);     /* VX */
+        EMIT_LH(REG_V1, CPU_CP2_DATA(base) + 2, REG_S0);     /* VY */
+        EMIT_LH(REG_A0, CPU_CP2_DATA(base + 1), REG_S0);     /* VZ */
+    } else {
+        EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);           /* IR1 */
+        EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);           /* IR2 */
+        EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);           /* IR3 */
+    }
+
+    /* GPR → VFPU: vertex as int32 scalars into C100 column */
+    EMIT_MTV(REG_V0, VFPU_S100);   /* S100 = VX (int32) */
+    EMIT_MTV(REG_V1, VFPU_S110);   /* S110 = VY (int32) */
+    EMIT_MTV(REG_A0, VFPU_S120);   /* S120 = VZ (int32) */
+
+    /* int32 → float */
+    EMIT_VI2F_Q(VFPU_C100, VFPU_C100);
+
+    /* VFPU: result = M000 × C100 + C200 (matrix × vertex + translation) */
+    EMIT_VTFM3_T_C300_M000_C100();
+    EMIT_VADD_T_C300_C300_C200();
+
+    /* float → int32 (round to nearest) */
+    EMIT_VF2IN_Q(VFPU_C300, VFPU_C300);
+
+    /* VFPU → GPR: read MAC1/2/3 */
+    EMIT_MFV(REG_V0, VFPU_S300);   /* V0 = MAC1 */
+    EMIT_MFV(REG_V1, VFPU_S310);   /* V1 = MAC2 */
+    EMIT_MFV(REG_A0, VFPU_S320);   /* A0 = MAC3 */
+
+    /* Store MAC1-3 + IR saturation + FLAG=0 */
+    EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);
+    EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);
+    EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);
+    emit_ir_sat_store(lm);
+}
+#endif /* VFPU MVMVA path disabled */
 
 /* ---- P18: Shared VU0 matrix loading for ×3 commands ----
  * When vu0_preloaded[mx] != 0, a ×3 caller has already loaded the matrix
@@ -279,10 +372,10 @@ static void emit_vu0_load_matrix(int mx, int cv, int vf_base)
     EMIT_ORI(REG_A1, REG_ZERO, mx_cv);
     emit_call_c_lite((uint32_t)(uintptr_t)vu0_prepare_mvmva);
     emit_load_imm32(REG_T8, (uint32_t)(uintptr_t)&vu0_jit_cache);
-    EMIT_LQC2(vf_base,     0,  REG_T8);   /* col1   */
-    EMIT_LQC2(vf_base + 1, 16, REG_T8);   /* col2   */
-    EMIT_LQC2(vf_base + 2, 32, REG_T8);   /* col3   */
-    EMIT_LQC2(vf_base + 3, 48, REG_T8);   /* trans  */
+    EMIT_LQC2(vf_base, 0, REG_T8);      /* col1   */
+    EMIT_LQC2(vf_base + 1, 16, REG_T8); /* col2   */
+    EMIT_LQC2(vf_base + 2, 32, REG_T8); /* col3   */
+    EMIT_LQC2(vf_base + 3, 48, REG_T8); /* trans  */
 }
 
 /* Emit VU0 vertex multiply using pre-loaded matrix in VF[vf_col1..vf_col1+3].
@@ -296,19 +389,25 @@ static void emit_vu0_vertex_multiply(int v, int lm, int vf_col1, int t8_valid)
         emit_load_imm32(REG_T8, (uint32_t)(uintptr_t)&vu0_jit_cache);
 
     /* Vertex int16 → FPU float → scratch → LQC2 VF5. */
-    if (v < 3) {
+    if (v < 3)
+    {
         int base = v * 2;
         EMIT_LH(REG_V0, CPU_CP2_DATA(base) + 0, REG_S0);
         EMIT_LH(REG_V1, CPU_CP2_DATA(base) + 2, REG_S0);
         EMIT_LH(REG_A0, CPU_CP2_DATA(base + 1), REG_S0);
-    } else {
-        EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);
+    }
+    else
+    {
+        EMIT_LH(REG_V0, CPU_CP2_DATA(9), REG_S0);
         EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);
         EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);
     }
-    EMIT_MTC1(REG_V0, 0);          EMIT_CVT_S_W(0, 0);
-    EMIT_MTC1(REG_V1, 1);          EMIT_CVT_S_W(1, 1);
-    EMIT_MTC1(REG_A0, 2);          EMIT_CVT_S_W(2, 2);
+    EMIT_MTC1(REG_V0, 0);
+    EMIT_CVT_S_W(0, 0);
+    EMIT_MTC1(REG_V1, 1);
+    EMIT_CVT_S_W(1, 1);
+    EMIT_MTC1(REG_A0, 2);
+    EMIT_CVT_S_W(2, 2);
     EMIT_SWC1(0, 64, REG_T8);
     EMIT_SWC1(1, 68, REG_T8);
     EMIT_SWC1(2, 72, REG_T8);
@@ -322,9 +421,15 @@ static void emit_vu0_vertex_multiply(int v, int lm, int vf_col1, int t8_valid)
 
     /* Store result → scratch → FPU extract → GPR. */
     EMIT_SQC2(6, 64, REG_T8);
-    EMIT_LWC1(0, 64, REG_T8);   EMIT_CVT_W_S(0, 0);  EMIT_MFC1(REG_V0, 0);
-    EMIT_LWC1(1, 68, REG_T8);   EMIT_CVT_W_S(1, 1);  EMIT_MFC1(REG_V1, 1);
-    EMIT_LWC1(2, 72, REG_T8);   EMIT_CVT_W_S(2, 2);  EMIT_MFC1(REG_A0, 2);
+    EMIT_LWC1(0, 64, REG_T8);
+    EMIT_CVT_W_S(0, 0);
+    EMIT_MFC1(REG_V0, 0);
+    EMIT_LWC1(1, 68, REG_T8);
+    EMIT_CVT_W_S(1, 1);
+    EMIT_MFC1(REG_V1, 1);
+    EMIT_LWC1(2, 72, REG_T8);
+    EMIT_CVT_W_S(2, 2);
+    EMIT_MFC1(REG_A0, 2);
 
     /* Store MAC1-3 + IR saturation + FLAG=0. */
     EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);
@@ -371,45 +476,48 @@ static void emit_vu0_micro_prepare(int mx, int cv)
 static void emit_vu0_micro_multiply(int v, int lm, int use_core)
 {
     /* Load vertex from cpu struct */
-    if (v < 3) {
+    if (v < 3)
+    {
         int base = v * 2;
-        EMIT_LH(REG_V0, CPU_CP2_DATA(base) + 0, REG_S0);     /* VX */
-        EMIT_LH(REG_V1, CPU_CP2_DATA(base) + 2, REG_S0);     /* VY */
-        EMIT_LH(REG_A0, CPU_CP2_DATA(base + 1), REG_S0);     /* VZ */
-    } else {
+        EMIT_LH(REG_V0, CPU_CP2_DATA(base) + 0, REG_S0); /* VX */
+        EMIT_LH(REG_V1, CPU_CP2_DATA(base) + 2, REG_S0); /* VY */
+        EMIT_LH(REG_A0, CPU_CP2_DATA(base + 1), REG_S0); /* VZ */
+    }
+    else
+    {
         /* v=3: use IR1-3 as vector (for Color matrix step) */
-        EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);           /* IR1 */
-        EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);           /* IR2 */
-        EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);           /* IR3 */
+        EMIT_LH(REG_V0, CPU_CP2_DATA(9), REG_S0);  /* IR1 */
+        EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0); /* IR2 */
+        EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0); /* IR3 */
     }
 
     /* Write vertex to VU0 data memory QW[0] as int32.
      * VU0 data mem at 0x11004000 (uncached, no sync needed for writes). */
     emit_load_imm32(REG_T8, VU0_DATA_MEM);
-    EMIT_SW(REG_V0, VU0_OFF_VERTEX + 0,  REG_T8);            /* x */
-    EMIT_SW(REG_V1, VU0_OFF_VERTEX + 4,  REG_T8);            /* y */
-    EMIT_SW(REG_A0, VU0_OFF_VERTEX + 8,  REG_T8);            /* z */
-    EMIT_SW(REG_ZERO, VU0_OFF_VERTEX + 12, REG_T8);          /* w=0 */
+    EMIT_SW(REG_V0, VU0_OFF_VERTEX + 0, REG_T8);    /* x */
+    EMIT_SW(REG_V1, VU0_OFF_VERTEX + 4, REG_T8);    /* y */
+    EMIT_SW(REG_A0, VU0_OFF_VERTEX + 8, REG_T8);    /* z */
+    EMIT_SW(REG_ZERO, VU0_OFF_VERTEX + 12, REG_T8); /* w=0 */
 
     /* Launch micro program: CTC2 sets CMSAR0, VCALLMSR starts execution */
     int prog_addr = use_core ? VU0_PROG_MVMVA_CORE : VU0_PROG_MVMVA_FULL;
     EMIT_ORI(REG_T9, REG_ZERO, prog_addr >> 3);
-    EMIT_CTC2(REG_T9, 27);                                    /* CMSAR0 = addr */
-    EMIT_VCALLMSR();                                           /* launch VU0 */
+    EMIT_CTC2(REG_T9, 27); /* CMSAR0 = addr */
+    EMIT_VCALLMSR();       /* launch VU0 */
 
     /* Poll VU0 completion: CFC2 $t9, $vi29; ANDI $t9, 1; BNE → loop.
      * VU0 MVMVA is ~17 insns @ 1 cycle each ≈ 17 VU cycles.
      * EE may need 1-3 poll iterations. */
-    EMIT_CFC2(REG_T9, 29);                                    /* T9 = VU0 status */
-    EMIT_ANDI(REG_T9, REG_T9, 1);                             /* bit 0 = VBS0 */
-    EMIT_BNE(REG_T9, REG_ZERO, -3);                           /* branch back to CFC2 */
-    EMIT_NOP();                                                /* delay slot */
+    EMIT_CFC2(REG_T9, 29);          /* T9 = VU0 status */
+    EMIT_ANDI(REG_T9, REG_T9, 1);   /* bit 0 = VBS0 */
+    EMIT_BNE(REG_T9, REG_ZERO, -3); /* branch back to CFC2 */
+    EMIT_NOP();                     /* delay slot */
 
     /* Read result from VU data mem QW[15] = MAC1, MAC2, MAC3, 0 */
     /* T8 still = VU0_DATA_MEM from above */
-    EMIT_LW(REG_V0, VU0_OFF_OUT_MAC + 0,  REG_T8);           /* MAC1 */
-    EMIT_LW(REG_V1, VU0_OFF_OUT_MAC + 4,  REG_T8);           /* MAC2 */
-    EMIT_LW(REG_A0, VU0_OFF_OUT_MAC + 8,  REG_T8);           /* MAC3 */
+    EMIT_LW(REG_V0, VU0_OFF_OUT_MAC + 0, REG_T8); /* MAC1 */
+    EMIT_LW(REG_V1, VU0_OFF_OUT_MAC + 4, REG_T8); /* MAC2 */
+    EMIT_LW(REG_A0, VU0_OFF_OUT_MAC + 8, REG_T8); /* MAC3 */
 
     /* Store MAC1-3 + IR saturation + FLAG=0 */
     EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);
@@ -423,20 +531,23 @@ static void emit_vu0_micro_multiply(int v, int lm, int use_core)
  * Clobbers: T8, T9, V0, V1, A0. */
 static void emit_vu0_micro_launch(int v, int use_core)
 {
-    if (v < 3) {
+    if (v < 3)
+    {
         int base = v * 2;
         EMIT_LH(REG_V0, CPU_CP2_DATA(base) + 0, REG_S0);
         EMIT_LH(REG_V1, CPU_CP2_DATA(base) + 2, REG_S0);
         EMIT_LH(REG_A0, CPU_CP2_DATA(base + 1), REG_S0);
-    } else {
-        EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);
+    }
+    else
+    {
+        EMIT_LH(REG_V0, CPU_CP2_DATA(9), REG_S0);
         EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);
         EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);
     }
     emit_load_imm32(REG_T8, VU0_DATA_MEM);
-    EMIT_SW(REG_V0, VU0_OFF_VERTEX + 0,  REG_T8);
-    EMIT_SW(REG_V1, VU0_OFF_VERTEX + 4,  REG_T8);
-    EMIT_SW(REG_A0, VU0_OFF_VERTEX + 8,  REG_T8);
+    EMIT_SW(REG_V0, VU0_OFF_VERTEX + 0, REG_T8);
+    EMIT_SW(REG_V1, VU0_OFF_VERTEX + 4, REG_T8);
+    EMIT_SW(REG_A0, VU0_OFF_VERTEX + 8, REG_T8);
     EMIT_SW(REG_ZERO, VU0_OFF_VERTEX + 12, REG_T8);
     int prog_addr = use_core ? VU0_PROG_MVMVA_CORE : VU0_PROG_MVMVA_FULL;
     EMIT_ORI(REG_T9, REG_ZERO, prog_addr >> 3);
@@ -453,9 +564,9 @@ static void emit_vu0_micro_poll_complete(int lm)
     EMIT_BNE(REG_T9, REG_ZERO, -3);
     EMIT_NOP();
     emit_load_imm32(REG_T8, VU0_DATA_MEM);
-    EMIT_LW(REG_V0, VU0_OFF_OUT_MAC + 0,  REG_T8);
-    EMIT_LW(REG_V1, VU0_OFF_OUT_MAC + 4,  REG_T8);
-    EMIT_LW(REG_A0, VU0_OFF_OUT_MAC + 8,  REG_T8);
+    EMIT_LW(REG_V0, VU0_OFF_OUT_MAC + 0, REG_T8);
+    EMIT_LW(REG_V1, VU0_OFF_OUT_MAC + 4, REG_T8);
+    EMIT_LW(REG_A0, VU0_OFF_OUT_MAC + 8, REG_T8);
     EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);
     EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);
     EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);
@@ -485,109 +596,146 @@ static void emit_inline_mvmva(int mx, int v, int cv, int sf, int lm)
      * Only for sf=1 (matrix pre-scaled by 1/4096 in the cache).
      * Results: V0=MAC1, V1=MAC2, A0=MAC3 → cp2_data[25-27], IR1-3, FLAG=0.
      * Uses: $f0-$f2 (FPU scratch), T8 (base addr). */
-    if (sf) {
+    if (sf)
+    {
 #ifdef ENABLE_VU0_MICRO
         /* VU0 micro path: write vertex to VU data mem, launch micro program.
          * vu0_micro_preloaded[mx] tracks if matrix is in VU data mem + VF regs. */
         int micro_ready = (mx < 3) ? vu0_micro_preloaded[mx] : 0;
-        if (micro_ready) {
+        if (micro_ready)
+        {
             /* Matrix already in VU data mem + VF1-4 from prior _FULL call → use _CORE */
             emit_vu0_micro_multiply(v, lm, 1);
-        } else {
+        }
+        else
+        {
             /* Prepare matrix in VU0 data mem, then launch _FULL (loads into VF1-4) */
             emit_vu0_micro_prepare(mx, cv);
             emit_vu0_micro_multiply(v, lm, 0);
         }
 #elif defined(PLATFORM_PS2)
         int vf_base = (mx < 3) ? vu0_preloaded[mx] : 0;
-        if (vf_base) {
+        if (vf_base)
+        {
             /* P18: matrix already in VF[vf_base..vf_base+3], skip prepare.
              * T8 was clobbered since matrix load → reload needed. */
             emit_vu0_vertex_multiply(v, lm, vf_base, 0);
-        } else {
+        }
+        else
+        {
             /* Standalone call: load matrix + compute.
              * T8 still valid from emit_vu0_load_matrix → skip reload. */
             emit_vu0_load_matrix(mx, cv, 1);
             emit_vu0_vertex_multiply(v, lm, 1, 1);
         }
 #endif /* ENABLE_VU0_MICRO / PLATFORM_PS2 */
+#if defined(PLATFORM_PS2) || defined(ENABLE_VU0_MICRO)
         return;
+#endif
+        /* PSP: fall through to integer MADD path (same approach as POPS) */
     }
-    /* --- Integer fallback (sf=0 — rare, e.g. standalone MVMVA) --- */
+    /* --- Integer MADD path (PSP: all cases; PS2: sf=0 only) --- */
     /* Load vector into V0/V1/A0 */
-    if (v < 3) {
-        int base = v * 2;  /* data[0,2,4] for V0,V1,V2 */
-        EMIT_LH(REG_V0, CPU_CP2_DATA(base) + 0, REG_S0);     /* VX */
-        EMIT_LH(REG_V1, CPU_CP2_DATA(base) + 2, REG_S0);     /* VY */
-        EMIT_LH(REG_A0, CPU_CP2_DATA(base + 1), REG_S0);     /* VZ */
-    } else {
+    if (v < 3)
+    {
+        int base = v * 2;                                /* data[0,2,4] for V0,V1,V2 */
+        EMIT_LH(REG_V0, CPU_CP2_DATA(base) + 0, REG_S0); /* VX */
+        EMIT_LH(REG_V1, CPU_CP2_DATA(base) + 2, REG_S0); /* VY */
+        EMIT_LH(REG_A0, CPU_CP2_DATA(base + 1), REG_S0); /* VZ */
+    }
+    else
+    {
         /* v=3: IR1-3 as vector */
-        EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);
+        EMIT_LH(REG_V0, CPU_CP2_DATA(9), REG_S0);
         EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);
         EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);
     }
 
     /* Matrix base in ctrl regs */
-    int cb = (mx == 0) ? 0 : (mx == 1) ? 8 : 16;
+    int cb = (mx == 0) ? 0 : (mx == 1) ? 8
+                                       : 16;
 
     /* Row 1: M11*VX + M12*VY + M13*VZ */
-    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb) + 0, REG_S0);       /* M11 */
-    EMIT_MULT(REG_T8, REG_V0);                             /* HI:LO = M11*VX */
-    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb) + 2, REG_S0);       /* M12 */
-    EMIT_MADD(REG_T8, REG_V1);                             /* HI:LO += M12*VY */
-    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb+1) + 0, REG_S0);     /* M13 */
-    EMIT_MADD(REG_T8, REG_A0);                             /* HI:LO += M13*VZ */
-    EMIT_MFLO(REG_A1);                                     /* A1 = row1 */
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb) + 0, REG_S0);     /* M11 */
+    EMIT_MULT(REG_T8, REG_V0);                         /* HI:LO = M11*VX */
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb) + 2, REG_S0);     /* M12 */
+    EMIT_MADD(REG_T8, REG_V1);                         /* HI:LO += M12*VY */
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb + 1) + 0, REG_S0); /* M13 */
+    EMIT_MADD(REG_T8, REG_A0);                         /* HI:LO += M13*VZ */
+    EMIT_MFLO(REG_A1);                                 /* A1 = row1 */
 
     /* Row 2: M21*VX + M22*VY + M23*VZ */
-    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb+1) + 2, REG_S0);     /* M21 */
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb + 1) + 2, REG_S0); /* M21 */
     EMIT_MULT(REG_T8, REG_V0);
-    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb+2) + 0, REG_S0);     /* M22 */
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb + 2) + 0, REG_S0); /* M22 */
     EMIT_MADD(REG_T8, REG_V1);
-    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb+2) + 2, REG_S0);     /* M23 */
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb + 2) + 2, REG_S0); /* M23 */
     EMIT_MADD(REG_T8, REG_A0);
-    EMIT_MFLO(REG_A2);                                     /* A2 = row2 */
+    EMIT_MFLO(REG_A2); /* A2 = row2 */
 
     /* Row 3: M31*VX + M32*VY + M33*VZ */
-    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb+3) + 0, REG_S0);     /* M31 */
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb + 3) + 0, REG_S0); /* M31 */
     EMIT_MULT(REG_T8, REG_V0);
-    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb+3) + 2, REG_S0);     /* M32 */
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb + 3) + 2, REG_S0); /* M32 */
     EMIT_MADD(REG_T8, REG_V1);
-    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb+4) + 0, REG_S0);     /* M33 */
+    EMIT_LH(REG_T8, CPU_CP2_CTRL(cb + 4) + 0, REG_S0); /* M33 */
     EMIT_MADD(REG_T8, REG_A0);
-    EMIT_MFLO(REG_A3);                                     /* A3 = row3 */
+    EMIT_MFLO(REG_A3); /* A3 = row3 */
 
-    /* Add translation vector (shifted << 12 before adding to raw products) */
-    if (cv == 0) {
-        /* TR: ctrl[5-7] */
-        EMIT_LW(REG_T8, CPU_CP2_CTRL(5), REG_S0);
-        EMIT_SLL(REG_T8, REG_T8, 12);
-        EMIT_ADDU(REG_A1, REG_A1, REG_T8);
-        EMIT_LW(REG_T8, CPU_CP2_CTRL(6), REG_S0);
-        EMIT_SLL(REG_T8, REG_T8, 12);
-        EMIT_ADDU(REG_A2, REG_A2, REG_T8);
-        EMIT_LW(REG_T8, CPU_CP2_CTRL(7), REG_S0);
-        EMIT_SLL(REG_T8, REG_T8, 12);
-        EMIT_ADDU(REG_A3, REG_A3, REG_T8);
-    } else if (cv == 1) {
-        /* BK: ctrl[13-15] */
-        EMIT_LW(REG_T8, CPU_CP2_CTRL(13), REG_S0);
-        EMIT_SLL(REG_T8, REG_T8, 12);
-        EMIT_ADDU(REG_A1, REG_A1, REG_T8);
-        EMIT_LW(REG_T8, CPU_CP2_CTRL(14), REG_S0);
-        EMIT_SLL(REG_T8, REG_T8, 12);
-        EMIT_ADDU(REG_A2, REG_A2, REG_T8);
-        EMIT_LW(REG_T8, CPU_CP2_CTRL(15), REG_S0);
-        EMIT_SLL(REG_T8, REG_T8, 12);
-        EMIT_ADDU(REG_A3, REG_A3, REG_T8);
-    }
-    /* cv=3: no translation */
-
-    /* sf shift */
-    if (sf) {
+    /* Translation + sf shift.
+     * sf=1 (POPS-style): shift dot product >> 12 first, add raw T.
+     *   Avoids 32-bit overflow from T<<12 intermediate.
+     * sf=0: add T<<12 to raw dot product (no shift). */
+    if (sf)
+    {
         EMIT_SRA(REG_A1, REG_A1, 12);
         EMIT_SRA(REG_A2, REG_A2, 12);
         EMIT_SRA(REG_A3, REG_A3, 12);
+        if (cv == 0)
+        {
+            EMIT_LW(REG_T8, CPU_CP2_CTRL(5), REG_S0);
+            EMIT_ADDU(REG_A1, REG_A1, REG_T8);
+            EMIT_LW(REG_T8, CPU_CP2_CTRL(6), REG_S0);
+            EMIT_ADDU(REG_A2, REG_A2, REG_T8);
+            EMIT_LW(REG_T8, CPU_CP2_CTRL(7), REG_S0);
+            EMIT_ADDU(REG_A3, REG_A3, REG_T8);
+        }
+        else if (cv == 1)
+        {
+            EMIT_LW(REG_T8, CPU_CP2_CTRL(13), REG_S0);
+            EMIT_ADDU(REG_A1, REG_A1, REG_T8);
+            EMIT_LW(REG_T8, CPU_CP2_CTRL(14), REG_S0);
+            EMIT_ADDU(REG_A2, REG_A2, REG_T8);
+            EMIT_LW(REG_T8, CPU_CP2_CTRL(15), REG_S0);
+            EMIT_ADDU(REG_A3, REG_A3, REG_T8);
+        }
+    }
+    else
+    {
+        if (cv == 0)
+        {
+            EMIT_LW(REG_T8, CPU_CP2_CTRL(5), REG_S0);
+            EMIT_SLL(REG_T8, REG_T8, 12);
+            EMIT_ADDU(REG_A1, REG_A1, REG_T8);
+            EMIT_LW(REG_T8, CPU_CP2_CTRL(6), REG_S0);
+            EMIT_SLL(REG_T8, REG_T8, 12);
+            EMIT_ADDU(REG_A2, REG_A2, REG_T8);
+            EMIT_LW(REG_T8, CPU_CP2_CTRL(7), REG_S0);
+            EMIT_SLL(REG_T8, REG_T8, 12);
+            EMIT_ADDU(REG_A3, REG_A3, REG_T8);
+        }
+        else if (cv == 1)
+        {
+            EMIT_LW(REG_T8, CPU_CP2_CTRL(13), REG_S0);
+            EMIT_SLL(REG_T8, REG_T8, 12);
+            EMIT_ADDU(REG_A1, REG_A1, REG_T8);
+            EMIT_LW(REG_T8, CPU_CP2_CTRL(14), REG_S0);
+            EMIT_SLL(REG_T8, REG_T8, 12);
+            EMIT_ADDU(REG_A2, REG_A2, REG_T8);
+            EMIT_LW(REG_T8, CPU_CP2_CTRL(15), REG_S0);
+            EMIT_SLL(REG_T8, REG_T8, 12);
+            EMIT_ADDU(REG_A3, REG_A3, REG_T8);
+        }
     }
 
     /* Move to V0/V1/A0 (needed for push_color/IR_sat helpers) */
@@ -613,26 +761,29 @@ static void emit_rgbc_times_ir_shl4(void)
 {
     /* Extract R,G,B from RGBC */
     EMIT_LW(REG_T8, CPU_CP2_DATA(6), REG_S0);
-    EMIT_ANDI(REG_V0, REG_T8, 0xFF);                      /* V0 = R */
-    emit(MK_R(0, 0, REG_T8, REG_T9, 8, 0x02));           /* SRL T9,T8,8 */
-    EMIT_ANDI(REG_V1, REG_T9, 0xFF);                      /* V1 = G */
-    emit(MK_R(0, 0, REG_T8, REG_T9, 16, 0x02));          /* SRL T9,T8,16 */
-    EMIT_ANDI(REG_A0, REG_T9, 0xFF);                      /* A0 = B */
+    EMIT_ANDI(REG_V0, REG_T8, 0xFF);            /* V0 = R */
+    emit(MK_R(0, 0, REG_T8, REG_T9, 8, 0x02));  /* SRL T9,T8,8 */
+    EMIT_ANDI(REG_V1, REG_T9, 0xFF);            /* V1 = G */
+    emit(MK_R(0, 0, REG_T8, REG_T9, 16, 0x02)); /* SRL T9,T8,16 */
+    EMIT_ANDI(REG_A0, REG_T9, 0xFF);            /* A0 = B */
 
     /* Load IR1-3 */
-    EMIT_LH(REG_A1, CPU_CP2_DATA(9),  REG_S0);           /* A1 = IR1 */
-    EMIT_LH(REG_A2, CPU_CP2_DATA(10), REG_S0);           /* A2 = IR2 */
-    EMIT_LH(REG_A3, CPU_CP2_DATA(11), REG_S0);           /* A3 = IR3 */
+    EMIT_LH(REG_A1, CPU_CP2_DATA(9), REG_S0);  /* A1 = IR1 */
+    EMIT_LH(REG_A2, CPU_CP2_DATA(10), REG_S0); /* A2 = IR2 */
+    EMIT_LH(REG_A3, CPU_CP2_DATA(11), REG_S0); /* A3 = IR3 */
 
     /* acc = (rgb × ir) << 4 */
-    EMIT_MULT(REG_V0, REG_A1); EMIT_MFLO(REG_V0);
-    EMIT_SLL(REG_V0, REG_V0, 4);                          /* V0 = (R*IR1)<<4 */
+    EMIT_MULT(REG_V0, REG_A1);
+    EMIT_MFLO(REG_V0);
+    EMIT_SLL(REG_V0, REG_V0, 4); /* V0 = (R*IR1)<<4 */
 
-    EMIT_MULT(REG_V1, REG_A2); EMIT_MFLO(REG_V1);
-    EMIT_SLL(REG_V1, REG_V1, 4);                          /* V1 = (G*IR2)<<4 */
+    EMIT_MULT(REG_V1, REG_A2);
+    EMIT_MFLO(REG_V1);
+    EMIT_SLL(REG_V1, REG_V1, 4); /* V1 = (G*IR2)<<4 */
 
-    EMIT_MULT(REG_A0, REG_A3); EMIT_MFLO(REG_A0);
-    EMIT_SLL(REG_A0, REG_A0, 4);                          /* A0 = (B*IR3)<<4 */
+    EMIT_MULT(REG_A0, REG_A3);
+    EMIT_MFLO(REG_A0);
+    EMIT_SLL(REG_A0, REG_A0, 4); /* A0 = (B*IR3)<<4 */
 }
 
 /* Emit store_mac_ir + push_color + FLAG=0 for ops that need
@@ -641,7 +792,8 @@ static void emit_rgbc_times_ir_shl4(void)
  * sf: shift by 12 for MAC. lm: IR saturation bound. */
 static void emit_sf_mac_push_ir(int sf, int lm)
 {
-    if (sf) {
+    if (sf)
+    {
         EMIT_SRA(REG_V0, REG_V0, 12);
         EMIT_SRA(REG_V1, REG_V1, 12);
         EMIT_SRA(REG_A0, REG_A0, 12);
@@ -657,8 +809,8 @@ static void emit_sf_mac_push_ir(int sf, int lm)
  * 2× mvmva + reload MAC + push_color. (~150 words) */
 static void emit_ncs_core(int v, int sf, int lm)
 {
-    emit_inline_mvmva(1, v, 3, sf, lm);   /* Light × V, no TR */
-    emit_inline_mvmva(2, 3, 1, sf, lm);   /* BK + Color × IR */
+    emit_inline_mvmva(1, v, 3, sf, lm); /* Light × V, no TR */
+    emit_inline_mvmva(2, 3, 1, sf, lm); /* BK + Color × IR */
     /* mvmva left saturated IR in V0/V1/A0; reload MAC for push_color */
     EMIT_LW(REG_V0, CPU_CP2_DATA(25), REG_S0);
     EMIT_LW(REG_V1, CPU_CP2_DATA(26), REG_S0);
@@ -673,8 +825,8 @@ static void emit_nccs_core(int v, int sf, int lm)
 {
     emit_inline_mvmva(1, v, 3, sf, lm);
     emit_inline_mvmva(2, 3, 1, sf, lm);
-    emit_rgbc_times_ir_shl4();             /* V0/V1/A0 = (rgb×ir)<<4 */
-    emit_sf_mac_push_ir(sf, lm);           /* sf + MAC + push_color + IR sat + FLAG=0 */
+    emit_rgbc_times_ir_shl4();   /* V0/V1/A0 = (rgb×ir)<<4 */
+    emit_sf_mac_push_ir(sf, lm); /* sf + MAC + push_color + IR sat + FLAG=0 */
 }
 
 /* Emit NCDS core for vertex v: 2× mvmva + RGBC×IR<<4 → interpolate + push_color.
@@ -683,10 +835,10 @@ static void emit_ncds_core(int v, int sf, int lm)
 {
     emit_inline_mvmva(1, v, 3, sf, lm);
     emit_inline_mvmva(2, 3, 1, sf, lm);
-    emit_rgbc_times_ir_shl4();             /* V0/V1/A0 = acc = (rgb×ir)<<4 */
-    emit_interpolate_color(sf);            /* FC interpolation, stores MAC */
+    emit_rgbc_times_ir_shl4();  /* V0/V1/A0 = acc = (rgb×ir)<<4 */
+    emit_interpolate_color(sf); /* FC interpolation, stores MAC */
     emit_push_color_inline();
-    emit_ir_sat_store(lm);                 /* FLAG=0 */
+    emit_ir_sat_store(lm); /* FLAG=0 */
 }
 
 #ifdef ENABLE_VU0_MICRO
@@ -756,9 +908,9 @@ static void emit_rtps_project(int sf, int last)
 {
     /* Step 2: Push SZ FIFO inline.
      * SZ3 = saturate_sz( sf ? MAC3 : MAC3>>12 ) */
-    EMIT_LW(REG_T8, CPU_CP2_DATA(27), REG_S0);         /* T8 = MAC3 */
+    EMIT_LW(REG_T8, CPU_CP2_DATA(27), REG_S0); /* T8 = MAC3 */
     if (!sf)
-        EMIT_SRA(REG_T8, REG_T8, 12);                  /* sf=0: need raw>>12 */
+        EMIT_SRA(REG_T8, REG_T8, 12); /* sf=0: need raw>>12 */
     /* Saturate SZ to [0, 0xFFFF] — P19: PMAXW/PMINW */
     EMIT_PMAXW(REG_T8, REG_T8, REG_ZERO);
     EMIT_ORI(REG_T9, REG_ZERO, 0xFFFF);
@@ -767,65 +919,65 @@ static void emit_rtps_project(int sf, int last)
     EMIT_LW(REG_V0, CPU_CP2_DATA(17), REG_S0);
     EMIT_LW(REG_V1, CPU_CP2_DATA(18), REG_S0);
     EMIT_LW(REG_A0, CPU_CP2_DATA(19), REG_S0);
-    EMIT_SW(REG_V0, CPU_CP2_DATA(16), REG_S0);         /* SZ0 = SZ1 */
-    EMIT_SW(REG_V1, CPU_CP2_DATA(17), REG_S0);         /* SZ1 = SZ2 */
-    EMIT_SW(REG_A0, CPU_CP2_DATA(18), REG_S0);         /* SZ2 = old SZ3 */
-    EMIT_SW(REG_T8, CPU_CP2_DATA(19), REG_S0);         /* SZ3 = new */
+    EMIT_SW(REG_V0, CPU_CP2_DATA(16), REG_S0); /* SZ0 = SZ1 */
+    EMIT_SW(REG_V1, CPU_CP2_DATA(17), REG_S0); /* SZ1 = SZ2 */
+    EMIT_SW(REG_A0, CPU_CP2_DATA(18), REG_S0); /* SZ2 = old SZ3 */
+    EMIT_SW(REG_T8, CPU_CP2_DATA(19), REG_S0); /* SZ3 = new */
 
     /* Step 3: UNR perspective division — fully inline.
      * T8 = SZ3 (saturated).  Compute div_result → A0 */
-    EMIT_LH(REG_V0, CPU_CP2_CTRL(26), REG_S0);         /* V0 = (int16)H */
-    EMIT_ANDI(REG_V0, REG_V0, 0xFFFF);                  /* V0 = (uint16)H */
+    EMIT_LH(REG_V0, CPU_CP2_CTRL(26), REG_S0); /* V0 = (int16)H */
+    EMIT_ANDI(REG_V0, REG_V0, 0xFFFF);         /* V0 = (uint16)H */
 
     /* Check h < sz3*2 */
-    EMIT_SLL(REG_T9, REG_T8, 1);                        /* T9 = sz3 * 2 */
-    emit(MK_R(0, REG_V0, REG_T9, REG_V1, 0, 0x2B));    /* SLTU V1, H, sz3*2 */
+    EMIT_SLL(REG_T9, REG_T8, 1);                    /* T9 = sz3 * 2 */
+    emit(MK_R(0, REG_V0, REG_T9, REG_V1, 0, 0x2B)); /* SLTU V1, H, sz3*2 */
 
     /* FPU DIV.S: compute (H * 65536.0f) / SZ3 → A0
-     * Uses EE COP1 single-precision float (29-cycle DIV.S latency).
-     * Replaces 52-word CLZ16+Newton+table UNR path with 18 words. */
-    EMIT_MTC1(REG_T8, 0);                               /* $f0 = SZ3 (int bits) */
-    EMIT_CVT_S_W(0, 0);                                 /* $f0 = float(SZ3) */
-    EMIT_MTC1(REG_V0, 1);                               /* $f1 = H (int bits) */
-    EMIT_CVT_S_W(1, 1);                                 /* $f1 = float(H) */
-    EMIT_LUI(REG_AT, 0x4780);                           /* AT = 0x47800000 = 65536.0f */
-    EMIT_MTC1(REG_AT, 2);                               /* $f2 = 65536.0f */
-    EMIT_MUL_S(1, 1, 2);                                /* $f1 = H * 65536.0 */
-    EMIT_DIV_S(1, 1, 0);                                /* $f1 = (H*65536) / SZ3 */
-    EMIT_LUI(REG_AT, 0x3F00);                           /* AT = 0x3F000000 = 0.5f */
-    EMIT_MTC1(REG_AT, 3);                               /* $f3 = 0.5f */
-    EMIT_ADD_S(1, 1, 3);                                /* $f1 += 0.5 (round nearest) */
-    EMIT_CVT_W_S(1, 1);                                 /* $f1 = int(trunc toward 0) */
-    EMIT_MFC1(REG_A0, 1);                               /* A0 = division result */
+     * Uses COP1 single-precision float. Slight rounding difference vs
+     * PSX hardware UNR, but avoids complex CLZ+table path. */
+    EMIT_MTC1(REG_T8, 0);     /* $f0 = SZ3 (int bits) */
+    EMIT_CVT_S_W(0, 0);       /* $f0 = float(SZ3) */
+    EMIT_MTC1(REG_V0, 1);     /* $f1 = H (int bits) */
+    EMIT_CVT_S_W(1, 1);       /* $f1 = float(H) */
+    EMIT_LUI(REG_AT, 0x4780); /* AT = 0x47800000 = 65536.0f */
+    EMIT_MTC1(REG_AT, 2);     /* $f2 = 65536.0f */
+    EMIT_MUL_S(1, 1, 2);      /* $f1 = H * 65536.0 */
+    EMIT_DIV_S(1, 1, 0);      /* $f1 = (H*65536) / SZ3 */
+    EMIT_LUI(REG_AT, 0x3F00); /* AT = 0x3F000000 = 0.5f */
+    EMIT_MTC1(REG_AT, 3);     /* $f3 = 0.5f */
+    EMIT_ADD_S(1, 1, 3);      /* $f1 += 0.5 (round nearest) */
+    EMIT_CVT_W_S(1, 1);       /* $f1 = int(trunc toward 0) */
+    EMIT_MFC1(REG_A0, 1);     /* A0 = division result */
     /* Clamp to 0x1FFFF */
-    emit_load_imm32(REG_T8, 0x1FFFF);                   /* T8 = 0x1FFFF */
-    emit(MK_R(0, REG_T8, REG_A0, REG_AT, 0, 0x2B));    /* SLTU AT, 0x1FFFF, A0 */
-    EMIT_MOVN(REG_A0, REG_T8, REG_AT);                  /* if exceeded: clamp */
+    emit_load_imm32(REG_T8, 0x1FFFF);               /* T8 = 0x1FFFF */
+    emit(MK_R(0, REG_T8, REG_A0, REG_AT, 0, 0x2B)); /* SLTU AT, 0x1FFFF, A0 */
+    EMIT_MOVN(REG_A0, REG_T8, REG_AT);              /* if exceeded: clamp */
     /* Handle h >= sz3*2: force 0x1FFFF (V1=0 means h>=sz3*2) */
-    EMIT_MOVZ(REG_A0, REG_T8, REG_V1);                  /* A0 = 0x1FFFF if !V1 */
+    EMIT_MOVZ(REG_A0, REG_T8, REG_V1); /* A0 = 0x1FFFF if !V1 */
 
     /* Step 4: Screen projection (32-bit).
      * SX = (div_result * IR1 + OFX) >> 16
      * SY = (div_result * IR2 + OFY) >> 16  */
-    EMIT_LH(REG_T8, CPU_CP2_DATA(9), REG_S0);           /* T8 = IR1 */
-    EMIT_LW(REG_T9, CPU_CP2_CTRL(24), REG_S0);          /* T9 = OFX */
-    EMIT_MULT(REG_A0, REG_T8);                           /* LO = div * IR1 */
+    EMIT_LH(REG_T8, CPU_CP2_DATA(9), REG_S0);  /* T8 = IR1 */
+    EMIT_LW(REG_T9, CPU_CP2_CTRL(24), REG_S0); /* T9 = OFX */
+    EMIT_MULT(REG_A0, REG_T8);                 /* LO = div * IR1 */
     EMIT_MFLO(REG_V0);
-    EMIT_ADDU(REG_V0, REG_V0, REG_T9);                   /* V0 = div*IR1 + OFX */
-    EMIT_SRA(REG_V0, REG_V0, 16);                        /* V0 = SX */
+    EMIT_ADDU(REG_V0, REG_V0, REG_T9); /* V0 = div*IR1 + OFX */
+    EMIT_SRA(REG_V0, REG_V0, 16);      /* V0 = SX */
 
-    EMIT_LH(REG_T8, CPU_CP2_DATA(10), REG_S0);          /* T8 = IR2 */
-    EMIT_LW(REG_T9, CPU_CP2_CTRL(25), REG_S0);          /* T9 = OFY */
-    EMIT_MULT(REG_A0, REG_T8);                           /* LO = div * IR2 */
+    EMIT_LH(REG_T8, CPU_CP2_DATA(10), REG_S0); /* T8 = IR2 */
+    EMIT_LW(REG_T9, CPU_CP2_CTRL(25), REG_S0); /* T9 = OFY */
+    EMIT_MULT(REG_A0, REG_T8);                 /* LO = div * IR2 */
     EMIT_MFLO(REG_V1);
-    EMIT_ADDU(REG_V1, REG_V1, REG_T9);                   /* V1 = div*IR2 + OFY */
-    EMIT_SRA(REG_V1, REG_V1, 16);                        /* V1 = SY */
+    EMIT_ADDU(REG_V1, REG_V1, REG_T9); /* V1 = div*IR2 + OFY */
+    EMIT_SRA(REG_V1, REG_V1, 16);      /* V1 = SY */
 
     /* Step 5: Push SXY FIFO + saturate to [-0x400, 0x3FF] */
     EMIT_LW(REG_T8, CPU_CP2_DATA(13), REG_S0);
     EMIT_LW(REG_T9, CPU_CP2_DATA(14), REG_S0);
-    EMIT_SW(REG_T8, CPU_CP2_DATA(12), REG_S0);          /* SXY0 = SXY1 */
-    EMIT_SW(REG_T9, CPU_CP2_DATA(13), REG_S0);          /* SXY1 = SXY2 */
+    EMIT_SW(REG_T8, CPU_CP2_DATA(12), REG_S0); /* SXY0 = SXY1 */
+    EMIT_SW(REG_T9, CPU_CP2_DATA(13), REG_S0); /* SXY1 = SXY2 */
     /* Saturate SX/SY to [-0x400, 0x3FF] — P19: PMAXW/PMINW */
     EMIT_ADDIU(REG_T8, REG_ZERO, -0x400);
     EMIT_ORI(REG_T9, REG_ZERO, 0x3FF);
@@ -837,23 +989,24 @@ static void emit_rtps_project(int sf, int last)
     EMIT_ANDI(REG_V0, REG_V0, 0xFFFF);
     EMIT_SLL(REG_V1, REG_V1, 16);
     EMIT_OR(REG_V0, REG_V0, REG_V1);
-    EMIT_SW(REG_V0, CPU_CP2_DATA(14), REG_S0);          /* SXY2 */
+    EMIT_SW(REG_V0, CPU_CP2_DATA(14), REG_S0); /* SXY2 */
 
     /* Step 6: Depth cueing (last vertex only) */
-    if (last) {
+    if (last)
+    {
         /* MAC0 = DQA * div_result + DQB */
-        EMIT_LH(REG_T8, CPU_CP2_CTRL(27), REG_S0);     /* T8 = DQA */
-        EMIT_MULT(REG_T8, REG_A0);                      /* LO = DQA * div */
+        EMIT_LH(REG_T8, CPU_CP2_CTRL(27), REG_S0); /* T8 = DQA */
+        EMIT_MULT(REG_T8, REG_A0);                 /* LO = DQA * div */
         EMIT_MFLO(REG_T8);
-        EMIT_LW(REG_T9, CPU_CP2_CTRL(28), REG_S0);     /* T9 = DQB */
-        EMIT_ADDU(REG_T8, REG_T8, REG_T9);              /* T8 = MAC0 */
-        EMIT_SW(REG_T8, CPU_CP2_DATA(24), REG_S0);      /* store MAC0 */
+        EMIT_LW(REG_T9, CPU_CP2_CTRL(28), REG_S0); /* T9 = DQB */
+        EMIT_ADDU(REG_T8, REG_T8, REG_T9);         /* T8 = MAC0 */
+        EMIT_SW(REG_T8, CPU_CP2_DATA(24), REG_S0); /* store MAC0 */
         /* IR0 = saturate(MAC0 >> 12, 0, 0x1000) — P19: PMAXW/PMINW */
         EMIT_SRA(REG_T9, REG_T8, 12);
         EMIT_PMAXW(REG_T9, REG_T9, REG_ZERO);
         EMIT_ORI(REG_T8, REG_ZERO, 0x1000);
         EMIT_PMINW(REG_T9, REG_T9, REG_T8);
-        EMIT_SW(REG_T9, CPU_CP2_DATA(8), REG_S0);       /* store IR0 */
+        EMIT_SW(REG_T9, CPU_CP2_DATA(8), REG_S0); /* store IR0 */
     }
 
     /* FLAG=0 */
@@ -1035,8 +1188,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 #ifdef PLATFORM_PSP
             /* PSP/PPSSPP overflow fixup: INT_MIN / -1 gives hi=-1 instead
              * of hi=0.  Any x / -1 has remainder 0, so force it. */
-            EMIT_ADDIU(REG_AT, s2, 1);            /* AT = rt+1 (0 if rt==-1) */
-            EMIT_MOVZ(REG_T8, REG_ZERO, REG_AT);  /* if rt==-1: T8 = 0 */
+            EMIT_ADDIU(REG_AT, s2, 1);           /* AT = rt+1 (0 if rt==-1) */
+            EMIT_MOVZ(REG_T8, REG_ZERO, REG_AT); /* if rt==-1: T8 = 0 */
 #endif
             /* divz hi = rs: reload if s1 was clobbered by mflo */
             if (s1 == REG_T8)
@@ -1812,9 +1965,12 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             switch (gte_func)
             {
             case 0x01: /* RTPS */
-                if (gte_use_vu0 && gte_sf) {
+                if (gte_use_vu0 && gte_sf)
+                {
                     emit_rtps_core(0, gte_sf, gte_lm, 1);
-                } else {
+                }
+                else
+                {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
                     emit_load_imm32(REG_A2, gte_lm);
@@ -1844,19 +2000,19 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     EMIT_LH(REG_A2, CPU_CP2_DATA(14) + 2, REG_S0); /* A2 = SY2 */
 
                     /* Y differences */
-                    EMIT_SUBU(REG_V0, REG_A1, REG_A2);             /* V0 = SY1-SY2 */
-                    EMIT_SUBU(REG_V1, REG_A2, REG_A0);             /* V1 = SY2-SY0 */
-                    EMIT_SUBU(REG_A0, REG_A0, REG_A1);             /* A0 = SY0-SY1 */
+                    EMIT_SUBU(REG_V0, REG_A1, REG_A2); /* V0 = SY1-SY2 */
+                    EMIT_SUBU(REG_V1, REG_A2, REG_A0); /* V1 = SY2-SY0 */
+                    EMIT_SUBU(REG_A0, REG_A0, REG_A1); /* A0 = SY0-SY1 */
 
                     /* Multiply + accumulate */
-                    EMIT_MULT(REG_T8, REG_V0);                     /* LO = SX0*(SY1-SY2) */
-                    EMIT_MADD(REG_T9, REG_V1);                     /* LO += SX1*(SY2-SY0) */
-                    EMIT_MADD(REG_AT, REG_A0);                     /* LO += SX2*(SY0-SY1) */
-                    EMIT_MFLO(REG_V0);                              /* V0 = MAC0 */
+                    EMIT_MULT(REG_T8, REG_V0); /* LO = SX0*(SY1-SY2) */
+                    EMIT_MADD(REG_T9, REG_V1); /* LO += SX1*(SY2-SY0) */
+                    EMIT_MADD(REG_AT, REG_A0); /* LO += SX2*(SY0-SY1) */
+                    EMIT_MFLO(REG_V0);         /* V0 = MAC0 */
 
                     /* Store results */
-                    EMIT_SW(REG_V0, CPU_CP2_DATA(24), REG_S0);     /* MAC0 */
-                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);   /* FLAG = 0 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(24), REG_S0);   /* MAC0 */
+                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0); /* FLAG = 0 */
                 }
                 else
                 {
@@ -1883,58 +2039,62 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                      */
 
                     /* Load rotation diagonal D1,D2,D3 (lo16 = signed halfword) */
-                    EMIT_LH(REG_T8, CPU_CP2_CTRL(0),  REG_S0);     /* T8 = D1 = lo16(RT11RT12) */
-                    EMIT_LH(REG_T9, CPU_CP2_CTRL(2),  REG_S0);     /* T9 = D2 = lo16(RT22RT23) */
-                    EMIT_LH(REG_AT, CPU_CP2_CTRL(4),  REG_S0);     /* AT = D3 = lo16(RT33) */
+                    EMIT_LH(REG_T8, CPU_CP2_CTRL(0), REG_S0); /* T8 = D1 = lo16(RT11RT12) */
+                    EMIT_LH(REG_T9, CPU_CP2_CTRL(2), REG_S0); /* T9 = D2 = lo16(RT22RT23) */
+                    EMIT_LH(REG_AT, CPU_CP2_CTRL(4), REG_S0); /* AT = D3 = lo16(RT33) */
 
                     /* Load IR1-3 */
-                    EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);     /* V0 = IR1 */
-                    EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);     /* V1 = IR2 */
-                    EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);     /* A0 = IR3 */
+                    EMIT_LH(REG_V0, CPU_CP2_DATA(9), REG_S0);  /* V0 = IR1 */
+                    EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0); /* V1 = IR2 */
+                    EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0); /* A0 = IR3 */
 
                     /* MAC1 = IR3*D2 - IR2*D3 */
-                    EMIT_MULT(REG_A0, REG_T9);                     /* LO = IR3*D2 */
-                    EMIT_MFLO(REG_A1);                              /* A1 = IR3*D2 */
-                    EMIT_MULT(REG_V1, REG_AT);                     /* LO = IR2*D3 */
-                    EMIT_MFLO(REG_A2);                              /* A2 = IR2*D3 */
-                    EMIT_SUBU(REG_A1, REG_A1, REG_A2);             /* A1 = MAC1 */
+                    EMIT_MULT(REG_A0, REG_T9);         /* LO = IR3*D2 */
+                    EMIT_MFLO(REG_A1);                 /* A1 = IR3*D2 */
+                    EMIT_MULT(REG_V1, REG_AT);         /* LO = IR2*D3 */
+                    EMIT_MFLO(REG_A2);                 /* A2 = IR2*D3 */
+                    EMIT_SUBU(REG_A1, REG_A1, REG_A2); /* A1 = MAC1 */
 
                     /* MAC2 = IR1*D3 - IR3*D1 */
-                    EMIT_MULT(REG_V0, REG_AT);                     /* LO = IR1*D3 */
-                    EMIT_MFLO(REG_A2);                              /* A2 = IR1*D3 */
-                    EMIT_MULT(REG_A0, REG_T8);                     /* LO = IR3*D1 */
-                    EMIT_MFLO(REG_A3);                              /* A3 = IR3*D1 */
-                    EMIT_SUBU(REG_A2, REG_A2, REG_A3);             /* A2 = MAC2 */
+                    EMIT_MULT(REG_V0, REG_AT);         /* LO = IR1*D3 */
+                    EMIT_MFLO(REG_A2);                 /* A2 = IR1*D3 */
+                    EMIT_MULT(REG_A0, REG_T8);         /* LO = IR3*D1 */
+                    EMIT_MFLO(REG_A3);                 /* A3 = IR3*D1 */
+                    EMIT_SUBU(REG_A2, REG_A2, REG_A3); /* A2 = MAC2 */
 
                     /* MAC3 = IR2*D1 - IR1*D2 */
-                    EMIT_MULT(REG_V1, REG_T8);                     /* LO = IR2*D1 */
-                    EMIT_MFLO(REG_A3);                              /* A3 = IR2*D1 */
-                    EMIT_MULT(REG_V0, REG_T9);                     /* LO = IR1*D2 */
-                    EMIT_MFLO(REG_V0);                              /* V0 = IR1*D2 (reuse) */
-                    EMIT_SUBU(REG_A3, REG_A3, REG_V0);             /* A3 = MAC3 */
+                    EMIT_MULT(REG_V1, REG_T8);         /* LO = IR2*D1 */
+                    EMIT_MFLO(REG_A3);                 /* A3 = IR2*D1 */
+                    EMIT_MULT(REG_V0, REG_T9);         /* LO = IR1*D2 */
+                    EMIT_MFLO(REG_V0);                 /* V0 = IR1*D2 (reuse) */
+                    EMIT_SUBU(REG_A3, REG_A3, REG_V0); /* A3 = MAC3 */
 
                     /* sf=1: shift right by 12 */
-                    if (gte_sf) {
+                    if (gte_sf)
+                    {
                         EMIT_SRA(REG_A1, REG_A1, 12);
                         EMIT_SRA(REG_A2, REG_A2, 12);
                         EMIT_SRA(REG_A3, REG_A3, 12);
                     }
 
                     /* Store MAC1-3 */
-                    EMIT_SW(REG_A1, CPU_CP2_DATA(25), REG_S0);     /* MAC1 */
-                    EMIT_SW(REG_A2, CPU_CP2_DATA(26), REG_S0);     /* MAC2 */
-                    EMIT_SW(REG_A3, CPU_CP2_DATA(27), REG_S0);     /* MAC3 */
+                    EMIT_SW(REG_A1, CPU_CP2_DATA(25), REG_S0); /* MAC1 */
+                    EMIT_SW(REG_A2, CPU_CP2_DATA(26), REG_S0); /* MAC2 */
+                    EMIT_SW(REG_A3, CPU_CP2_DATA(27), REG_S0); /* MAC3 */
 
                     /* Saturate IR: clamp [lo..0x7FFF] — P19: PMAXW/PMINW */
                     EMIT_ORI(REG_T9, REG_ZERO, 0x7FFF);
-                    if (gte_lm) {
+                    if (gte_lm)
+                    {
                         EMIT_PMAXW(REG_A1, REG_A1, REG_ZERO);
                         EMIT_PMINW(REG_A1, REG_A1, REG_T9);
                         EMIT_PMAXW(REG_A2, REG_A2, REG_ZERO);
                         EMIT_PMINW(REG_A2, REG_A2, REG_T9);
                         EMIT_PMAXW(REG_A3, REG_A3, REG_ZERO);
                         EMIT_PMINW(REG_A3, REG_A3, REG_T9);
-                    } else {
+                    }
+                    else
+                    {
                         EMIT_ADDIU(REG_T8, REG_ZERO, -0x8000);
                         EMIT_PMAXW(REG_A1, REG_A1, REG_T8);
                         EMIT_PMINW(REG_A1, REG_A1, REG_T9);
@@ -1945,10 +2105,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     }
 
                     /* Store IR1-3 + FLAG=0 */
-                    EMIT_SW(REG_A1, CPU_CP2_DATA(9),  REG_S0);     /* IR1 */
-                    EMIT_SW(REG_A2, CPU_CP2_DATA(10), REG_S0);     /* IR2 */
-                    EMIT_SW(REG_A3, CPU_CP2_DATA(11), REG_S0);     /* IR3 */
-                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);   /* FLAG = 0 */
+                    EMIT_SW(REG_A1, CPU_CP2_DATA(9), REG_S0);    /* IR1 */
+                    EMIT_SW(REG_A2, CPU_CP2_DATA(10), REG_S0);   /* IR2 */
+                    EMIT_SW(REG_A3, CPU_CP2_DATA(11), REG_S0);   /* IR3 */
+                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0); /* FLAG = 0 */
                     /* Total: sf=0/lm=1: 41w, sf=1/lm=0: 45w */
                 }
                 else
@@ -1969,15 +2129,15 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                      */
 
                     /* Extract R,G,B from RGBC and shift << 16 */
-                    EMIT_LW(REG_T8, CPU_CP2_DATA(6), REG_S0);      /* T8 = RGBC */
-                    EMIT_ANDI(REG_V0, REG_T8, 0xFF);               /* V0 = R */
-                    emit(MK_R(0, 0, REG_T8, REG_T9, 8, 0x02));    /* SRL T9,T8,8 */
-                    EMIT_ANDI(REG_V1, REG_T9, 0xFF);               /* V1 = G */
-                    emit(MK_R(0, 0, REG_T8, REG_T9, 16, 0x02));   /* SRL T9,T8,16 */
-                    EMIT_ANDI(REG_A0, REG_T9, 0xFF);               /* A0 = B */
-                    EMIT_SLL(REG_V0, REG_V0, 16);                  /* V0 = R<<16 */
-                    EMIT_SLL(REG_V1, REG_V1, 16);                  /* V1 = G<<16 */
-                    EMIT_SLL(REG_A0, REG_A0, 16);                  /* A0 = B<<16 */
+                    EMIT_LW(REG_T8, CPU_CP2_DATA(6), REG_S0);   /* T8 = RGBC */
+                    EMIT_ANDI(REG_V0, REG_T8, 0xFF);            /* V0 = R */
+                    emit(MK_R(0, 0, REG_T8, REG_T9, 8, 0x02));  /* SRL T9,T8,8 */
+                    EMIT_ANDI(REG_V1, REG_T9, 0xFF);            /* V1 = G */
+                    emit(MK_R(0, 0, REG_T8, REG_T9, 16, 0x02)); /* SRL T9,T8,16 */
+                    EMIT_ANDI(REG_A0, REG_T9, 0xFF);            /* A0 = B */
+                    EMIT_SLL(REG_V0, REG_V0, 16);               /* V0 = R<<16 */
+                    EMIT_SLL(REG_V1, REG_V1, 16);               /* V1 = G<<16 */
+                    EMIT_SLL(REG_A0, REG_A0, 16);               /* A0 = B<<16 */
 
                     emit_interpolate_color(gte_sf);
                     emit_push_color_inline();
@@ -2001,12 +2161,12 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                      */
 
                     /* Load IR1-3 and shift << 12 */
-                    EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);    /* V0 = IR1 */
-                    EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);    /* V1 = IR2 */
-                    EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);    /* A0 = IR3 */
-                    EMIT_SLL(REG_V0, REG_V0, 12);                  /* V0 = IR1<<12 */
-                    EMIT_SLL(REG_V1, REG_V1, 12);                  /* V1 = IR2<<12 */
-                    EMIT_SLL(REG_A0, REG_A0, 12);                  /* A0 = IR3<<12 */
+                    EMIT_LH(REG_V0, CPU_CP2_DATA(9), REG_S0);  /* V0 = IR1 */
+                    EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0); /* V1 = IR2 */
+                    EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0); /* A0 = IR3 */
+                    EMIT_SLL(REG_V0, REG_V0, 12);              /* V0 = IR1<<12 */
+                    EMIT_SLL(REG_V1, REG_V1, 12);              /* V1 = IR2<<12 */
+                    EMIT_SLL(REG_A0, REG_A0, 12);              /* A0 = IR3<<12 */
 
                     emit_interpolate_color(gte_sf);
                     emit_push_color_inline();
@@ -2026,10 +2186,13 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 int mx = (opcode >> 17) & 3;
                 int v = (opcode >> 15) & 3;
                 int cv = (opcode >> 13) & 3;
-                if (gte_use_vu0 && gte_sf && mx < 3 && cv != 2) {
+                if (gte_use_vu0 && gte_sf && mx < 3 && cv != 2)
+                {
                     /* Inline: mx=0(RT)/1(L)/2(LC), v=0-3, cv=0(TR)/1(BK)/3(none) */
                     emit_inline_mvmva(mx, v, cv, gte_sf, gte_lm);
-                } else {
+                }
+                else
+                {
                     /* Bugged paths (mx=3, cv=2) or vu0 disabled → C fallback */
                     uint32_t packed = gte_sf | (gte_lm << 1) | (mx << 2) | (v << 4) | (cv << 6);
                     EMIT_MOVE(REG_A0, REG_S0);
@@ -2040,9 +2203,12 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             case 0x13: /* NCDS */
-                if (gte_use_vu0 && gte_sf) {
+                if (gte_use_vu0 && gte_sf)
+                {
                     emit_ncds_core(0, gte_sf, gte_lm);
-                } else {
+                }
+                else
+                {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
                     emit_load_imm32(REG_A2, gte_lm);
@@ -2051,14 +2217,17 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x14: /* CDP */
-                if (gte_use_vu0 && gte_sf) {
+                if (gte_use_vu0 && gte_sf)
+                {
                     /* BK + Color × IR → RGBC×IR<<4 → interpolate + push_color */
                     emit_inline_mvmva(2, 3, 1, gte_sf, gte_lm);
                     emit_rgbc_times_ir_shl4();
                     emit_interpolate_color(gte_sf);
                     emit_push_color_inline();
                     emit_ir_sat_store(gte_lm);
-                } else {
+                }
+                else
+                {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
                     emit_load_imm32(REG_A2, gte_lm);
@@ -2067,7 +2236,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x16: /* NCDT */
-                if (gte_use_vu0 && gte_sf) {
+                if (gte_use_vu0 && gte_sf)
+                {
 #ifdef ENABLE_VU0_MICRO
                     /* P21: Overlapped ×3 — hide VU0 Light×V behind EE post-lighting. */
                     /* Vertex 0: full sync */
@@ -2094,7 +2264,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     emit_ncds_post_lighting(gte_sf, gte_lm);
 #elif defined(PLATFORM_PS2)
                     /* P18 macro: preload L(VF1-4) + LC(VF7-10) once. */
-                    if (gte_sf) {
+                    if (gte_sf)
+                    {
                         emit_vu0_load_matrix(1, 3, 1);
                         emit_vu0_load_matrix(2, 1, 7);
                         vu0_preloaded[1] = 1;
@@ -2105,8 +2276,15 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     emit_ncds_core(2, gte_sf, gte_lm);
                     vu0_preloaded[1] = 0;
                     vu0_preloaded[2] = 0;
+#elif defined(PLATFORM_PSP)
+                    /* VFPU: call core ×3 (M000 can hold only one matrix) */
+                    emit_ncds_core(0, gte_sf, gte_lm);
+                    emit_ncds_core(1, gte_sf, gte_lm);
+                    emit_ncds_core(2, gte_sf, gte_lm);
 #endif
-                } else {
+                }
+                else
+                {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
                     emit_load_imm32(REG_A2, gte_lm);
@@ -2115,9 +2293,12 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x1B: /* NCCS */
-                if (gte_use_vu0 && gte_sf) {
+                if (gte_use_vu0 && gte_sf)
+                {
                     emit_nccs_core(0, gte_sf, gte_lm);
-                } else {
+                }
+                else
+                {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
                     emit_load_imm32(REG_A2, gte_lm);
@@ -2126,12 +2307,15 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x1C: /* CC */
-                if (gte_use_vu0 && gte_sf) {
+                if (gte_use_vu0 && gte_sf)
+                {
                     /* BK + Color × IR → RGBC×IR<<4 → store_mac_ir + push_color */
                     emit_inline_mvmva(2, 3, 1, gte_sf, gte_lm);
                     emit_rgbc_times_ir_shl4();
                     emit_sf_mac_push_ir(gte_sf, gte_lm);
-                } else {
+                }
+                else
+                {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
                     emit_load_imm32(REG_A2, gte_lm);
@@ -2140,9 +2324,12 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x1E: /* NCS */
-                if (gte_use_vu0 && gte_sf) {
+                if (gte_use_vu0 && gte_sf)
+                {
                     emit_ncs_core(0, gte_sf, gte_lm);
-                } else {
+                }
+                else
+                {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
                     emit_load_imm32(REG_A2, gte_lm);
@@ -2151,7 +2338,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x20: /* NCT */
-                if (gte_use_vu0 && gte_sf) {
+                if (gte_use_vu0 && gte_sf)
+                {
 #ifdef ENABLE_VU0_MICRO
                     /* P21: Overlapped ×3 — hide VU0 Light×V behind EE post-lighting.
                      * V0: sync both mvmvas → launch V1 Light → post_light V0 → poll
@@ -2181,7 +2369,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     emit_ncs_post_lighting();
 #elif defined(PLATFORM_PS2)
                     /* P18 macro: preload L(VF1-4) + LC(VF7-10) once. */
-                    if (gte_sf) {
+                    if (gte_sf)
+                    {
                         emit_vu0_load_matrix(1, 3, 1);
                         emit_vu0_load_matrix(2, 1, 7);
                         vu0_preloaded[1] = 1;
@@ -2192,8 +2381,15 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     emit_ncs_core(2, gte_sf, gte_lm);
                     vu0_preloaded[1] = 0;
                     vu0_preloaded[2] = 0;
+#elif defined(PLATFORM_PSP)
+                    /* VFPU: call core ×3 (M000 can hold only one matrix) */
+                    emit_ncs_core(0, gte_sf, gte_lm);
+                    emit_ncs_core(1, gte_sf, gte_lm);
+                    emit_ncs_core(2, gte_sf, gte_lm);
 #endif
-                } else {
+                }
+                else
+                {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
                     emit_load_imm32(REG_A2, gte_lm);
@@ -2213,29 +2409,30 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                      */
 
                     /* Load IR1,IR2,IR3 as sign-extended int16 */
-                    EMIT_LH(REG_T8, CPU_CP2_DATA(9),  REG_S0);     /* T8 = (int16)IR1 */
-                    EMIT_LH(REG_T9, CPU_CP2_DATA(10), REG_S0);     /* T9 = (int16)IR2 */
-                    EMIT_LH(REG_AT, CPU_CP2_DATA(11), REG_S0);     /* AT = (int16)IR3 */
+                    EMIT_LH(REG_T8, CPU_CP2_DATA(9), REG_S0);  /* T8 = (int16)IR1 */
+                    EMIT_LH(REG_T9, CPU_CP2_DATA(10), REG_S0); /* T9 = (int16)IR2 */
+                    EMIT_LH(REG_AT, CPU_CP2_DATA(11), REG_S0); /* AT = (int16)IR3 */
 
                     /* Square: MULT + MFLO */
-                    EMIT_MULT(REG_T8, REG_T8);                     /* LO = IR1² */
-                    EMIT_MFLO(REG_V0);                              /* V0 = IR1² */
-                    EMIT_MULT(REG_T9, REG_T9);                     /* LO = IR2² */
-                    EMIT_MFLO(REG_V1);                              /* V1 = IR2² */
-                    EMIT_MULT(REG_AT, REG_AT);                     /* LO = IR3² */
-                    EMIT_MFLO(REG_A0);                              /* A0 = IR3² */
+                    EMIT_MULT(REG_T8, REG_T8); /* LO = IR1² */
+                    EMIT_MFLO(REG_V0);         /* V0 = IR1² */
+                    EMIT_MULT(REG_T9, REG_T9); /* LO = IR2² */
+                    EMIT_MFLO(REG_V1);         /* V1 = IR2² */
+                    EMIT_MULT(REG_AT, REG_AT); /* LO = IR3² */
+                    EMIT_MFLO(REG_A0);         /* A0 = IR3² */
 
                     /* sf=1: shift right by 12 */
-                    if (gte_sf) {
-                        EMIT_SRA(REG_V0, REG_V0, 12);              /* V0 >>= 12 */
-                        EMIT_SRA(REG_V1, REG_V1, 12);              /* V1 >>= 12 */
-                        EMIT_SRA(REG_A0, REG_A0, 12);              /* A0 >>= 12 */
+                    if (gte_sf)
+                    {
+                        EMIT_SRA(REG_V0, REG_V0, 12); /* V0 >>= 12 */
+                        EMIT_SRA(REG_V1, REG_V1, 12); /* V1 >>= 12 */
+                        EMIT_SRA(REG_A0, REG_A0, 12); /* A0 >>= 12 */
                     }
 
                     /* Store MAC1-3 */
-                    EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);     /* MAC1 */
-                    EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);     /* MAC2 */
-                    EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);     /* MAC3 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0); /* MAC1 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0); /* MAC2 */
+                    EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0); /* MAC3 */
 
                     /* Saturate IR: clamp to [0..0x7FFF] — P19: PMAXW/PMINW
                      * (squares always ≥ 0, but clamp upper still needed) */
@@ -2245,10 +2442,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     EMIT_PMINW(REG_A0, REG_A0, REG_T8);
 
                     /* Store IR1-3 + FLAG=0 */
-                    EMIT_SW(REG_V0, CPU_CP2_DATA(9),  REG_S0);     /* IR1 */
-                    EMIT_SW(REG_V1, CPU_CP2_DATA(10), REG_S0);     /* IR2 */
-                    EMIT_SW(REG_A0, CPU_CP2_DATA(11), REG_S0);     /* IR3 */
-                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);   /* FLAG = 0 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(9), REG_S0);    /* IR1 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(10), REG_S0);   /* IR2 */
+                    EMIT_SW(REG_A0, CPU_CP2_DATA(11), REG_S0);   /* IR3 */
+                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0); /* FLAG = 0 */
                     /* Total: sf=0: 23 words, sf=1: 26 words */
                 }
                 else
@@ -2269,30 +2466,30 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                      */
 
                     /* Extract R,G,B from RGBC */
-                    EMIT_LW(REG_T8, CPU_CP2_DATA(6), REG_S0);      /* T8 = RGBC */
-                    EMIT_ANDI(REG_V0, REG_T8, 0xFF);               /* V0 = R */
-                    emit(MK_R(0, 0, REG_T8, REG_T9, 8, 0x02));    /* SRL T9,T8,8 */
-                    EMIT_ANDI(REG_V1, REG_T9, 0xFF);               /* V1 = G */
-                    emit(MK_R(0, 0, REG_T8, REG_T9, 16, 0x02));   /* SRL T9,T8,16 */
-                    EMIT_ANDI(REG_A0, REG_T9, 0xFF);               /* A0 = B */
+                    EMIT_LW(REG_T8, CPU_CP2_DATA(6), REG_S0);   /* T8 = RGBC */
+                    EMIT_ANDI(REG_V0, REG_T8, 0xFF);            /* V0 = R */
+                    emit(MK_R(0, 0, REG_T8, REG_T9, 8, 0x02));  /* SRL T9,T8,8 */
+                    EMIT_ANDI(REG_V1, REG_T9, 0xFF);            /* V1 = G */
+                    emit(MK_R(0, 0, REG_T8, REG_T9, 16, 0x02)); /* SRL T9,T8,16 */
+                    EMIT_ANDI(REG_A0, REG_T9, 0xFF);            /* A0 = B */
 
                     /* Load IR1-3 */
-                    EMIT_LH(REG_A1, CPU_CP2_DATA(9),  REG_S0);    /* A1 = IR1 */
-                    EMIT_LH(REG_A2, CPU_CP2_DATA(10), REG_S0);    /* A2 = IR2 */
-                    EMIT_LH(REG_A3, CPU_CP2_DATA(11), REG_S0);    /* A3 = IR3 */
+                    EMIT_LH(REG_A1, CPU_CP2_DATA(9), REG_S0);  /* A1 = IR1 */
+                    EMIT_LH(REG_A2, CPU_CP2_DATA(10), REG_S0); /* A2 = IR2 */
+                    EMIT_LH(REG_A3, CPU_CP2_DATA(11), REG_S0); /* A3 = IR3 */
 
                     /* acc = (rgb × ir) << 4 */
-                    EMIT_MULT(REG_V0, REG_A1);                     /* LO = R*IR1 */
-                    EMIT_MFLO(REG_V0);                              /* V0 = R*IR1 */
-                    EMIT_SLL(REG_V0, REG_V0, 4);                   /* V0 = acc1 */
+                    EMIT_MULT(REG_V0, REG_A1);   /* LO = R*IR1 */
+                    EMIT_MFLO(REG_V0);           /* V0 = R*IR1 */
+                    EMIT_SLL(REG_V0, REG_V0, 4); /* V0 = acc1 */
 
-                    EMIT_MULT(REG_V1, REG_A2);                     /* LO = G*IR2 */
-                    EMIT_MFLO(REG_V1);                              /* V1 = G*IR2 */
-                    EMIT_SLL(REG_V1, REG_V1, 4);                   /* V1 = acc2 */
+                    EMIT_MULT(REG_V1, REG_A2);   /* LO = G*IR2 */
+                    EMIT_MFLO(REG_V1);           /* V1 = G*IR2 */
+                    EMIT_SLL(REG_V1, REG_V1, 4); /* V1 = acc2 */
 
-                    EMIT_MULT(REG_A0, REG_A3);                     /* LO = B*IR3 */
-                    EMIT_MFLO(REG_A0);                              /* A0 = B*IR3 */
-                    EMIT_SLL(REG_A0, REG_A0, 4);                   /* A0 = acc3 */
+                    EMIT_MULT(REG_A0, REG_A3);   /* LO = B*IR3 */
+                    EMIT_MFLO(REG_A0);           /* A0 = B*IR3 */
+                    EMIT_SLL(REG_A0, REG_A0, 4); /* A0 = acc3 */
 
                     emit_interpolate_color(gte_sf);
                     emit_push_color_inline();
@@ -2317,7 +2514,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                      * IR sat + FLAG=0 only on final iteration.
                      */
                     int dpct_iter;
-                    for (dpct_iter = 0; dpct_iter < 3; dpct_iter++) {
+                    for (dpct_iter = 0; dpct_iter < 3; dpct_iter++)
+                    {
                         /* Extract R,G,B from RGB0 and shift << 16 */
                         EMIT_LW(REG_T8, CPU_CP2_DATA(20), REG_S0);
                         EMIT_ANDI(REG_V0, REG_T8, 0xFF);
@@ -2356,19 +2554,19 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                      */
 
                     /* Load SZ1,SZ2,SZ3 + ZSF3 */
-                    EMIT_LW(REG_T8, CPU_CP2_DATA(17), REG_S0);     /* T8 = SZ1 */
-                    EMIT_LW(REG_T9, CPU_CP2_DATA(18), REG_S0);     /* T9 = SZ2 */
-                    EMIT_LW(REG_AT, CPU_CP2_DATA(19), REG_S0);     /* AT = SZ3 */
-                    EMIT_LH(REG_V0, CPU_CP2_CTRL(29), REG_S0);     /* V0 = (int16)ZSF3 */
+                    EMIT_LW(REG_T8, CPU_CP2_DATA(17), REG_S0); /* T8 = SZ1 */
+                    EMIT_LW(REG_T9, CPU_CP2_DATA(18), REG_S0); /* T9 = SZ2 */
+                    EMIT_LW(REG_AT, CPU_CP2_DATA(19), REG_S0); /* AT = SZ3 */
+                    EMIT_LH(REG_V0, CPU_CP2_CTRL(29), REG_S0); /* V0 = (int16)ZSF3 */
 
                     /* Sum */
-                    EMIT_ADDU(REG_T8, REG_T8, REG_T9);             /* T8 = SZ1+SZ2 */
-                    EMIT_ADDU(REG_T8, REG_T8, REG_AT);             /* T8 = SZ1+SZ2+SZ3 */
+                    EMIT_ADDU(REG_T8, REG_T8, REG_T9); /* T8 = SZ1+SZ2 */
+                    EMIT_ADDU(REG_T8, REG_T8, REG_AT); /* T8 = SZ1+SZ2+SZ3 */
 
                     /* Multiply + store MAC0 */
-                    EMIT_MULT(REG_V0, REG_T8);                     /* HI:LO = ZSF3 × sum */
-                    EMIT_MFLO(REG_V0);                              /* V0 = MAC0 */
-                    EMIT_SW(REG_V0, CPU_CP2_DATA(24), REG_S0);     /* store MAC0 */
+                    EMIT_MULT(REG_V0, REG_T8);                 /* HI:LO = ZSF3 × sum */
+                    EMIT_MFLO(REG_V0);                         /* V0 = MAC0 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(24), REG_S0); /* store MAC0 */
 
                     /* OTZ = saturate(MAC0>>12, 0, 0xFFFF) — P19: PMAXW/PMINW */
                     EMIT_SRA(REG_V1, REG_V0, 12);
@@ -2377,8 +2575,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     EMIT_PMINW(REG_V1, REG_V1, REG_T9);
 
                     /* Store OTZ + FLAG=0 */
-                    EMIT_SW(REG_V1, CPU_CP2_DATA(7), REG_S0);      /* OTZ */
-                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);   /* FLAG = 0 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(7), REG_S0);    /* OTZ */
+                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0); /* FLAG = 0 */
                     /* Total: 19 EE words */
                 }
                 else
@@ -2400,21 +2598,21 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                      */
 
                     /* Load SZ0-3 + ZSF4 */
-                    EMIT_LW(REG_T8, CPU_CP2_DATA(16), REG_S0);     /* T8 = SZ0 */
-                    EMIT_LW(REG_T9, CPU_CP2_DATA(17), REG_S0);     /* T9 = SZ1 */
-                    EMIT_LW(REG_AT, CPU_CP2_DATA(18), REG_S0);     /* AT = SZ2 */
-                    EMIT_LW(REG_V1, CPU_CP2_DATA(19), REG_S0);     /* V1 = SZ3 */
-                    EMIT_LH(REG_V0, CPU_CP2_CTRL(30), REG_S0);     /* V0 = (int16)ZSF4 */
+                    EMIT_LW(REG_T8, CPU_CP2_DATA(16), REG_S0); /* T8 = SZ0 */
+                    EMIT_LW(REG_T9, CPU_CP2_DATA(17), REG_S0); /* T9 = SZ1 */
+                    EMIT_LW(REG_AT, CPU_CP2_DATA(18), REG_S0); /* AT = SZ2 */
+                    EMIT_LW(REG_V1, CPU_CP2_DATA(19), REG_S0); /* V1 = SZ3 */
+                    EMIT_LH(REG_V0, CPU_CP2_CTRL(30), REG_S0); /* V0 = (int16)ZSF4 */
 
                     /* Sum */
-                    EMIT_ADDU(REG_T8, REG_T8, REG_T9);             /* T8 = SZ0+SZ1 */
-                    EMIT_ADDU(REG_T8, REG_T8, REG_AT);             /* T8 += SZ2 */
-                    EMIT_ADDU(REG_T8, REG_T8, REG_V1);             /* T8 += SZ3 */
+                    EMIT_ADDU(REG_T8, REG_T8, REG_T9); /* T8 = SZ0+SZ1 */
+                    EMIT_ADDU(REG_T8, REG_T8, REG_AT); /* T8 += SZ2 */
+                    EMIT_ADDU(REG_T8, REG_T8, REG_V1); /* T8 += SZ3 */
 
                     /* Multiply + store MAC0 */
-                    EMIT_MULT(REG_V0, REG_T8);                     /* HI:LO = ZSF4 × sum */
-                    EMIT_MFLO(REG_V0);                              /* V0 = MAC0 */
-                    EMIT_SW(REG_V0, CPU_CP2_DATA(24), REG_S0);     /* store MAC0 */
+                    EMIT_MULT(REG_V0, REG_T8);                 /* HI:LO = ZSF4 × sum */
+                    EMIT_MFLO(REG_V0);                         /* V0 = MAC0 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(24), REG_S0); /* store MAC0 */
 
                     /* OTZ = saturate(MAC0>>12, 0, 0xFFFF) — P19: PMAXW/PMINW */
                     EMIT_SRA(REG_V1, REG_V0, 12);
@@ -2423,8 +2621,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     EMIT_PMINW(REG_V1, REG_V1, REG_T9);
 
                     /* Store OTZ + FLAG=0 */
-                    EMIT_SW(REG_V1, CPU_CP2_DATA(7), REG_S0);      /* OTZ */
-                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);   /* FLAG = 0 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(7), REG_S0);    /* OTZ */
+                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0); /* FLAG = 0 */
                     /* Total: 21 EE words */
                 }
                 else
@@ -2435,7 +2633,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x30: /* RTPT */
-                if (gte_use_vu0 && gte_sf) {
+                if (gte_use_vu0 && gte_sf)
+                {
 #ifdef ENABLE_VU0_MICRO
                     /* Overlapped VU0 micro: matrix once, overlap multiplies with projections */
                     emit_vu0_micro_prepare(0, 0);
@@ -2460,8 +2659,15 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     emit_rtps_core(1, gte_sf, gte_lm, 0);
                     emit_rtps_core(2, gte_sf, gte_lm, 1);
                     vu0_preloaded[0] = 0;
+#elif defined(PLATFORM_PSP)
+                    /* Integer MADD: no matrix preloading (POPS-style) */
+                    emit_rtps_core(0, gte_sf, gte_lm, 0);
+                    emit_rtps_core(1, gte_sf, gte_lm, 0);
+                    emit_rtps_core(2, gte_sf, gte_lm, 1);
 #endif
-                } else {
+                }
+                else
+                {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
                     emit_load_imm32(REG_A2, gte_lm);
@@ -2483,37 +2689,38 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                      */
 
                     /* Load IR0, IR1-3 */
-                    EMIT_LH(REG_T8, CPU_CP2_DATA(8),  REG_S0);     /* T8 = IR0 */
-                    EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);     /* V0 = IR1 */
-                    EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);     /* V1 = IR2 */
-                    EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);     /* A0 = IR3 */
+                    EMIT_LH(REG_T8, CPU_CP2_DATA(8), REG_S0);  /* T8 = IR0 */
+                    EMIT_LH(REG_V0, CPU_CP2_DATA(9), REG_S0);  /* V0 = IR1 */
+                    EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0); /* V1 = IR2 */
+                    EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0); /* A0 = IR3 */
 
                     /* Multiply: MAC_n = IR_n × IR0 */
-                    EMIT_MULT(REG_V0, REG_T8);                     /* LO = IR1*IR0 */
-                    EMIT_MFLO(REG_V0);                              /* V0 = product1 */
-                    EMIT_MULT(REG_V1, REG_T8);                     /* LO = IR2*IR0 */
-                    EMIT_MFLO(REG_V1);                              /* V1 = product2 */
-                    EMIT_MULT(REG_A0, REG_T8);                     /* LO = IR3*IR0 */
-                    EMIT_MFLO(REG_A0);                              /* A0 = product3 */
+                    EMIT_MULT(REG_V0, REG_T8); /* LO = IR1*IR0 */
+                    EMIT_MFLO(REG_V0);         /* V0 = product1 */
+                    EMIT_MULT(REG_V1, REG_T8); /* LO = IR2*IR0 */
+                    EMIT_MFLO(REG_V1);         /* V1 = product2 */
+                    EMIT_MULT(REG_A0, REG_T8); /* LO = IR3*IR0 */
+                    EMIT_MFLO(REG_A0);         /* A0 = product3 */
 
                     /* sf=1: shift for MAC */
-                    if (gte_sf) {
+                    if (gte_sf)
+                    {
                         EMIT_SRA(REG_V0, REG_V0, 12);
                         EMIT_SRA(REG_V1, REG_V1, 12);
                         EMIT_SRA(REG_A0, REG_A0, 12);
                     }
 
                     /* Store MAC1-3 */
-                    EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);     /* MAC1 */
-                    EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);     /* MAC2 */
-                    EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);     /* MAC3 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0); /* MAC1 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0); /* MAC2 */
+                    EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0); /* MAC3 */
 
                     /* ---- push_color (V0,V1,A0 = MAC values, preserved) ---- */
                     /* RGB FIFO shift */
-                    EMIT_LW(REG_T8, CPU_CP2_DATA(21), REG_S0);     /* T8 = RGB1 */
-                    EMIT_LW(REG_T9, CPU_CP2_DATA(22), REG_S0);     /* T9 = RGB2 */
-                    EMIT_SW(REG_T8, CPU_CP2_DATA(20), REG_S0);     /* RGB0 = RGB1 */
-                    EMIT_SW(REG_T9, CPU_CP2_DATA(21), REG_S0);     /* RGB1 = RGB2 */
+                    EMIT_LW(REG_T8, CPU_CP2_DATA(21), REG_S0); /* T8 = RGB1 */
+                    EMIT_LW(REG_T9, CPU_CP2_DATA(22), REG_S0); /* T9 = RGB2 */
+                    EMIT_SW(REG_T8, CPU_CP2_DATA(20), REG_S0); /* RGB0 = RGB1 */
+                    EMIT_SW(REG_T9, CPU_CP2_DATA(21), REG_S0); /* RGB1 = RGB2 */
 
                     /* Color: r/g/b = clamp(MAC>>4, 0, 255) — P19: PMAXW/PMINW */
                     EMIT_SRA(REG_A1, REG_V0, 4);
@@ -2529,28 +2736,31 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     EMIT_PMINW(REG_A3, REG_A3, REG_T9);
 
                     /* Get code byte from RGBC */
-                    EMIT_LW(REG_AT, CPU_CP2_DATA(6), REG_S0);      /* AT = RGBC */
-                    emit(MK_R(0, 0, REG_AT, REG_AT, 24, 0x02));    /* SRL AT, AT, 24 */
+                    EMIT_LW(REG_AT, CPU_CP2_DATA(6), REG_S0);   /* AT = RGBC */
+                    emit(MK_R(0, 0, REG_AT, REG_AT, 24, 0x02)); /* SRL AT, AT, 24 */
 
                     /* Pack: RGB2 = r | (g<<8) | (b<<16) | (code<<24) */
-                    EMIT_SLL(REG_AT, REG_AT, 24);                  /* AT = code<<24 */
-                    EMIT_SLL(REG_A3, REG_A3, 16);                  /* A3 = b<<16 */
-                    EMIT_OR(REG_AT, REG_AT, REG_A3);               /* AT |= b<<16 */
-                    EMIT_SLL(REG_A2, REG_A2, 8);                   /* A2 = g<<8 */
-                    EMIT_OR(REG_AT, REG_AT, REG_A2);               /* AT |= g<<8 */
-                    EMIT_OR(REG_AT, REG_AT, REG_A1);               /* AT |= r */
-                    EMIT_SW(REG_AT, CPU_CP2_DATA(22), REG_S0);     /* RGB2 */
+                    EMIT_SLL(REG_AT, REG_AT, 24);              /* AT = code<<24 */
+                    EMIT_SLL(REG_A3, REG_A3, 16);              /* A3 = b<<16 */
+                    EMIT_OR(REG_AT, REG_AT, REG_A3);           /* AT |= b<<16 */
+                    EMIT_SLL(REG_A2, REG_A2, 8);               /* A2 = g<<8 */
+                    EMIT_OR(REG_AT, REG_AT, REG_A2);           /* AT |= g<<8 */
+                    EMIT_OR(REG_AT, REG_AT, REG_A1);           /* AT |= r */
+                    EMIT_SW(REG_AT, CPU_CP2_DATA(22), REG_S0); /* RGB2 */
 
                     /* ---- Saturate IR (V0,V1,A0 = MAC, still valid) — P19: PMAXW/PMINW ---- */
                     EMIT_ORI(REG_T9, REG_ZERO, 0x7FFF);
-                    if (gte_lm) {
+                    if (gte_lm)
+                    {
                         EMIT_PMAXW(REG_V0, REG_V0, REG_ZERO);
                         EMIT_PMINW(REG_V0, REG_V0, REG_T9);
                         EMIT_PMAXW(REG_V1, REG_V1, REG_ZERO);
                         EMIT_PMINW(REG_V1, REG_V1, REG_T9);
                         EMIT_PMAXW(REG_A0, REG_A0, REG_ZERO);
                         EMIT_PMINW(REG_A0, REG_A0, REG_T9);
-                    } else {
+                    }
+                    else
+                    {
                         EMIT_ADDIU(REG_T8, REG_ZERO, -0x8000);
                         EMIT_PMAXW(REG_V0, REG_V0, REG_T8);
                         EMIT_PMINW(REG_V0, REG_V0, REG_T9);
@@ -2561,10 +2771,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     }
 
                     /* Store IR1-3 + FLAG=0 */
-                    EMIT_SW(REG_V0, CPU_CP2_DATA(9),  REG_S0);     /* IR1 */
-                    EMIT_SW(REG_V1, CPU_CP2_DATA(10), REG_S0);     /* IR2 */
-                    EMIT_SW(REG_A0, CPU_CP2_DATA(11), REG_S0);     /* IR3 */
-                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);   /* FLAG = 0 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(9), REG_S0);    /* IR1 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(10), REG_S0);   /* IR2 */
+                    EMIT_SW(REG_A0, CPU_CP2_DATA(11), REG_S0);   /* IR3 */
+                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0); /* FLAG = 0 */
                 }
                 else
                 {
@@ -2591,47 +2801,48 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                      */
 
                     /* Load IR0, IR1-3, compute products */
-                    EMIT_LH(REG_T8, CPU_CP2_DATA(8),  REG_S0);     /* T8 = IR0 */
-                    EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);     /* V0 = IR1 */
-                    EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);     /* V1 = IR2 */
-                    EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);     /* A0 = IR3 */
+                    EMIT_LH(REG_T8, CPU_CP2_DATA(8), REG_S0);  /* T8 = IR0 */
+                    EMIT_LH(REG_V0, CPU_CP2_DATA(9), REG_S0);  /* V0 = IR1 */
+                    EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0); /* V1 = IR2 */
+                    EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0); /* A0 = IR3 */
 
-                    EMIT_MULT(REG_V0, REG_T8);                     /* LO = IR1*IR0 */
-                    EMIT_MFLO(REG_V0);                              /* V0 = product1 */
-                    EMIT_MULT(REG_V1, REG_T8);                     /* LO = IR2*IR0 */
-                    EMIT_MFLO(REG_V1);                              /* V1 = product2 */
-                    EMIT_MULT(REG_A0, REG_T8);                     /* LO = IR3*IR0 */
-                    EMIT_MFLO(REG_A0);                              /* A0 = product3 */
+                    EMIT_MULT(REG_V0, REG_T8); /* LO = IR1*IR0 */
+                    EMIT_MFLO(REG_V0);         /* V0 = product1 */
+                    EMIT_MULT(REG_V1, REG_T8); /* LO = IR2*IR0 */
+                    EMIT_MFLO(REG_V1);         /* V1 = product2 */
+                    EMIT_MULT(REG_A0, REG_T8); /* LO = IR3*IR0 */
+                    EMIT_MFLO(REG_A0);         /* A0 = product3 */
 
                     /* sf=1: shift products before adding base */
-                    if (gte_sf) {
+                    if (gte_sf)
+                    {
                         EMIT_SRA(REG_V0, REG_V0, 12);
                         EMIT_SRA(REG_V1, REG_V1, 12);
                         EMIT_SRA(REG_A0, REG_A0, 12);
                     }
 
                     /* Add old MAC base */
-                    EMIT_LW(REG_T8, CPU_CP2_DATA(25), REG_S0);     /* T8 = old MAC1 */
-                    EMIT_LW(REG_T9, CPU_CP2_DATA(26), REG_S0);     /* T9 = old MAC2 */
-                    EMIT_LW(REG_AT, CPU_CP2_DATA(27), REG_S0);     /* AT = old MAC3 */
-                    EMIT_ADDU(REG_V0, REG_V0, REG_T8);             /* V0 = new MAC1 */
-                    EMIT_ADDU(REG_V1, REG_V1, REG_T9);             /* V1 = new MAC2 */
-                    EMIT_ADDU(REG_A0, REG_A0, REG_AT);             /* A0 = new MAC3 */
+                    EMIT_LW(REG_T8, CPU_CP2_DATA(25), REG_S0); /* T8 = old MAC1 */
+                    EMIT_LW(REG_T9, CPU_CP2_DATA(26), REG_S0); /* T9 = old MAC2 */
+                    EMIT_LW(REG_AT, CPU_CP2_DATA(27), REG_S0); /* AT = old MAC3 */
+                    EMIT_ADDU(REG_V0, REG_V0, REG_T8);         /* V0 = new MAC1 */
+                    EMIT_ADDU(REG_V1, REG_V1, REG_T9);         /* V1 = new MAC2 */
+                    EMIT_ADDU(REG_A0, REG_A0, REG_AT);         /* A0 = new MAC3 */
 
                     /* Store MAC1-3 */
-                    EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);     /* MAC1 */
-                    EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);     /* MAC2 */
-                    EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);     /* MAC3 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0); /* MAC1 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0); /* MAC2 */
+                    EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0); /* MAC3 */
 
                     /* ---- push_color (same as GPF) ---- */
-                    EMIT_LW(REG_T8, CPU_CP2_DATA(21), REG_S0);     /* T8 = RGB1 */
-                    EMIT_LW(REG_T9, CPU_CP2_DATA(22), REG_S0);     /* T9 = RGB2 */
-                    EMIT_SW(REG_T8, CPU_CP2_DATA(20), REG_S0);     /* RGB0 = RGB1 */
-                    EMIT_SW(REG_T9, CPU_CP2_DATA(21), REG_S0);     /* RGB1 = RGB2 */
+                    EMIT_LW(REG_T8, CPU_CP2_DATA(21), REG_S0); /* T8 = RGB1 */
+                    EMIT_LW(REG_T9, CPU_CP2_DATA(22), REG_S0); /* T9 = RGB2 */
+                    EMIT_SW(REG_T8, CPU_CP2_DATA(20), REG_S0); /* RGB0 = RGB1 */
+                    EMIT_SW(REG_T9, CPU_CP2_DATA(21), REG_S0); /* RGB1 = RGB2 */
 
-                    EMIT_SRA(REG_A1, REG_V0, 4);                   /* A1 = r = MAC1>>4 */
-                    EMIT_SRA(REG_A2, REG_V1, 4);                   /* A2 = g = MAC2>>4 */
-                    EMIT_SRA(REG_A3, REG_A0, 4);                   /* A3 = b = MAC3>>4 */
+                    EMIT_SRA(REG_A1, REG_V0, 4); /* A1 = r = MAC1>>4 */
+                    EMIT_SRA(REG_A2, REG_V1, 4); /* A2 = g = MAC2>>4 */
+                    EMIT_SRA(REG_A3, REG_A0, 4); /* A3 = b = MAC3>>4 */
 
                     emit(MK_R(0, REG_A1, REG_ZERO, REG_T8, 0, 0x2A));
                     EMIT_MOVN(REG_A1, REG_ZERO, REG_T8);
@@ -2649,7 +2860,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     EMIT_MOVN(REG_A3, REG_T9, REG_T8);
 
                     EMIT_LW(REG_AT, CPU_CP2_DATA(6), REG_S0);
-                    emit(MK_R(0, 0, REG_AT, REG_AT, 24, 0x02));    /* SRL AT,AT,24 */
+                    emit(MK_R(0, 0, REG_AT, REG_AT, 24, 0x02)); /* SRL AT,AT,24 */
 
                     EMIT_SLL(REG_AT, REG_AT, 24);
                     EMIT_SLL(REG_A3, REG_A3, 16);
@@ -2657,11 +2868,12 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     EMIT_SLL(REG_A2, REG_A2, 8);
                     EMIT_OR(REG_AT, REG_AT, REG_A2);
                     EMIT_OR(REG_AT, REG_AT, REG_A1);
-                    EMIT_SW(REG_AT, CPU_CP2_DATA(22), REG_S0);     /* RGB2 */
+                    EMIT_SW(REG_AT, CPU_CP2_DATA(22), REG_S0); /* RGB2 */
 
                     /* ---- Saturate IR (same as GPF) ---- */
                     EMIT_ORI(REG_T9, REG_ZERO, 0x7FFF);
-                    if (gte_lm) {
+                    if (gte_lm)
+                    {
                         emit(MK_R(0, REG_V0, REG_ZERO, REG_T8, 0, 0x2A));
                         EMIT_MOVN(REG_V0, REG_ZERO, REG_T8);
                         emit(MK_R(0, REG_T9, REG_V0, REG_T8, 0, 0x2A));
@@ -2676,7 +2888,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                         EMIT_MOVN(REG_A0, REG_ZERO, REG_T8);
                         emit(MK_R(0, REG_T9, REG_A0, REG_T8, 0, 0x2A));
                         EMIT_MOVN(REG_A0, REG_T9, REG_T8);
-                    } else {
+                    }
+                    else
+                    {
                         EMIT_ADDIU(REG_A1, REG_ZERO, -0x8000);
 
                         emit(MK_R(0, REG_V0, REG_A1, REG_T8, 0, 0x2A));
@@ -2696,10 +2910,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     }
 
                     /* Store IR1-3 + FLAG=0 */
-                    EMIT_SW(REG_V0, CPU_CP2_DATA(9),  REG_S0);     /* IR1 */
-                    EMIT_SW(REG_V1, CPU_CP2_DATA(10), REG_S0);     /* IR2 */
-                    EMIT_SW(REG_A0, CPU_CP2_DATA(11), REG_S0);     /* IR3 */
-                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);   /* FLAG = 0 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(9), REG_S0);    /* IR1 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(10), REG_S0);   /* IR2 */
+                    EMIT_SW(REG_A0, CPU_CP2_DATA(11), REG_S0);   /* IR3 */
+                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0); /* FLAG = 0 */
                 }
                 else
                 {
@@ -2711,7 +2925,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x3F: /* NCCT */
-                if (gte_use_vu0 && gte_sf) {
+                if (gte_use_vu0 && gte_sf)
+                {
 #ifdef ENABLE_VU0_MICRO
                     /* P21: Overlapped ×3 — hide VU0 Light×V behind EE post-lighting. */
                     /* Vertex 0: full sync */
@@ -2738,7 +2953,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     emit_nccs_post_lighting(gte_sf, gte_lm);
 #elif defined(PLATFORM_PS2)
                     /* P18 macro: preload L(VF1-4) + LC(VF7-10) once. */
-                    if (gte_sf) {
+                    if (gte_sf)
+                    {
                         emit_vu0_load_matrix(1, 3, 1);
                         emit_vu0_load_matrix(2, 1, 7);
                         vu0_preloaded[1] = 1;
@@ -2749,8 +2965,15 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     emit_nccs_core(2, gte_sf, gte_lm);
                     vu0_preloaded[1] = 0;
                     vu0_preloaded[2] = 0;
+#elif defined(PLATFORM_PSP)
+                    /* VFPU: call core ×3 (M000 can hold only one matrix) */
+                    emit_nccs_core(0, gte_sf, gte_lm);
+                    emit_nccs_core(1, gte_sf, gte_lm);
+                    emit_nccs_core(2, gte_sf, gte_lm);
 #endif
-                } else {
+                }
+                else
+                {
                     EMIT_MOVE(REG_A0, REG_S0);
                     emit_load_imm32(REG_A1, gte_sf);
                     emit_load_imm32(REG_A2, gte_lm);
@@ -3066,82 +3289,80 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         flush_dirty_consts();
 
         /* P22: Inline ISC skip for SWC2 when SMRV+aligned (same as SW) */
-        if (block_isc_cached
-            && smrv_is_known_ram(rs)
-            && align_is_known(rs) && (imm % 4 == 0))
+        if (block_isc_cached && smrv_is_known_ram(rs) && align_is_known(rs) && (imm % 4 == 0))
         {
-            EMIT_LW(REG_AT, 80, REG_SP);                     /* at = cached ISC     */
+            EMIT_LW(REG_AT, 80, REG_SP); /* at = cached ISC     */
             uint32_t *isc_skip = code_ptr;
-            emit(MK_I(0x05, REG_AT, REG_ZERO, 0));           /* bne at,zero,@skip   */
+            emit(MK_I(0x05, REG_AT, REG_ZERO, 0));          /* bne at,zero,@skip   */
             emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* [delay] and at,t8,s3 */
-            EMIT_ADDU(REG_AT, REG_AT, REG_S1);               /* addu at, at, s1     */
-            EMIT_SW(REG_T9, 0, REG_AT);                      /* store               */
+            EMIT_ADDU(REG_AT, REG_AT, REG_S1);              /* addu at, at, s1     */
+            EMIT_SW(REG_T9, 0, REG_AT);                     /* store               */
             int32_t skip_off = (int32_t)(code_ptr - isc_skip - 1);
             *isc_skip = (*isc_skip & 0xFFFF0000) | ((uint32_t)skip_off & 0xFFFF);
         }
         else
         {
-        /* Cache Isolation check */
-        uint32_t *isc_swc2;
-        if (block_isc_cached)
-        {
-            EMIT_LW(REG_AT, 80, REG_SP);
-            isc_swc2 = code_ptr;
-            emit(MK_I(0x05, REG_AT, REG_ZERO, 0)); /* bne at,zero,@cold */
-            EMIT_NOP();
-        }
-        else
-        {
-            EMIT_LW(REG_A0, CPU_COP0(12), REG_S0);
-            emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02));
-            emit(MK_I(0x0C, REG_A0, REG_A0, 1));
-            isc_swc2 = code_ptr;
-            emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne → cold */
-            EMIT_NOP();
-        }
+            /* Cache Isolation check */
+            uint32_t *isc_swc2;
+            if (block_isc_cached)
+            {
+                EMIT_LW(REG_AT, 80, REG_SP);
+                isc_swc2 = code_ptr;
+                emit(MK_I(0x05, REG_AT, REG_ZERO, 0)); /* bne at,zero,@cold */
+                EMIT_NOP();
+            }
+            else
+            {
+                EMIT_LW(REG_A0, CPU_COP0(12), REG_S0);
+                emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02));
+                emit(MK_I(0x0C, REG_A0, REG_A0, 1));
+                isc_swc2 = code_ptr;
+                emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne → cold */
+                EMIT_NOP();
+            }
 
-        /* Alignment check (word-aligned required) — P6: elide if base known aligned */
-        uint32_t *align_swc2 = NULL;
-        if (align_is_known(rs) && (imm % 4 == 0))
-        {
-            /* Alignment guaranteed — emit only the phys mask */
-            emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* and at, t8, s3 */
-        }
-        else
-        {
-            emit(MK_I(0x0C, REG_T8, REG_AT, 3)); /* andi at, t8, 3 */
-            align_swc2 = code_ptr;
-            emit(MK_I(0x05, REG_AT, REG_ZERO, 0));          /* bne at, zero, @cold */
-            emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* [delay] and at, t8, s3 */
-        }
+            /* Alignment check (word-aligned required) — P6: elide if base known aligned */
+            uint32_t *align_swc2 = NULL;
+            if (align_is_known(rs) && (imm % 4 == 0))
+            {
+                /* Alignment guaranteed — emit only the phys mask */
+                emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* and at, t8, s3 */
+            }
+            else
+            {
+                emit(MK_I(0x0C, REG_T8, REG_AT, 3)); /* andi at, t8, 3 */
+                align_swc2 = code_ptr;
+                emit(MK_I(0x05, REG_AT, REG_ZERO, 0));          /* bne at, zero, @cold */
+                emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* [delay] and at, t8, s3 */
+            }
 
-        /* Range check: skip if SMRV proves base is RAM */
-        uint32_t *range_swc2 = NULL;
-        if (!smrv_is_known_ram(rs))
-        {
-            emit(MK_R(0, 0, REG_AT, REG_A0, 21, 0x02)); /* srl a0, at, 21 */
-            range_swc2 = code_ptr;
-            emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne a0, zero, @cold */
-        }
-        EMIT_ADDU(REG_AT, REG_AT, REG_S1); /* [delay/inline] host addr */
+            /* Range check: skip if SMRV proves base is RAM */
+            uint32_t *range_swc2 = NULL;
+            if (!smrv_is_known_ram(rs))
+            {
+                emit(MK_R(0, 0, REG_AT, REG_A0, 21, 0x02)); /* srl a0, at, 21 */
+                range_swc2 = code_ptr;
+                emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne a0, zero, @cold */
+            }
+            EMIT_ADDU(REG_AT, REG_AT, REG_S1); /* [delay/inline] host addr */
 
-        /* Fast path: direct store */
-        EMIT_SW(REG_T9, 0, REG_AT);
+            /* Fast path: direct store */
+            EMIT_SW(REG_T9, 0, REG_AT);
 
-        /* Defer slow path to end of block via cold_queue (P7) */
-        {
-            uint32_t *branches[4];
-            int nb = 0;
-            branches[nb++] = isc_swc2;
-            if (align_swc2)
-                branches[nb++] = align_swc2;
-            if (range_swc2)
-                branches[nb++] = range_swc2;
-            cold_slow_push(branches, nb, code_ptr,
-                           (uint32_t)WriteWord, psx_pc,
-                           (int16_t)emit_cycle_offset, 4, 1, 1,
-                           dyn_dirty_mask);
-        }
+            /* Defer slow path to end of block via cold_queue (P7) */
+            {
+                uint32_t *branches[4];
+                int nb = 0;
+                branches[nb++] = isc_swc2;
+                if (align_swc2)
+                    branches[nb++] = align_swc2;
+                if (range_swc2)
+                    branches[nb++] = range_swc2;
+                cold_slow_push(branches, nb, code_ptr,
+                               (uint32_t)WriteWord, psx_pc,
+                               (int16_t)emit_cycle_offset, 4, 1, 1,
+                               dyn_dirty_mask);
+            }
         }
         reg_cache_invalidate();
     }

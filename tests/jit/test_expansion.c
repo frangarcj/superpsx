@@ -21,12 +21,12 @@
 
 /* ---- Externs from dynarec ---- */
 extern uint32_t *dynarec_ensure_block(uint32_t pc, BlockEntry **out_be);
-extern int block_lite_calls;  /* set during compilation */
+extern int block_lite_calls; /* set during compilation */
 extern int block_full_calls;
 
 /* Trampoline sizes (EE words) — counted from dynarec_run.c Init_Dynarec */
-#define TRAMP_LITE_WORDS  24   /* 8 sw + 6 call + 8 lw + jr + nop */
-#define TRAMP_FULL_WORDS  18   /* 4 sw pinned + 6 call + 4 lw pinned + jr + nop */
+#define TRAMP_LITE_WORDS 24 /* 8 sw + 6 call + 8 lw + jr + nop */
+#define TRAMP_FULL_WORDS 18 /* 4 sw pinned + 6 call + 4 lw pinned + jr + nop */
 
 /* ---- Helper: enable COP2 in SR (needed for GTE instructions) ---- */
 static void expansion_enable_cop2(void)
@@ -42,15 +42,16 @@ static void expansion_enable_cop2(void)
  * ================================================================ */
 typedef void (*setup_fn_t)(void);
 
-typedef struct {
-    int native;       /* EE words in the compiled block */
-    int lite_calls;   /* emit_call_c_lite count */
-    int full_calls;   /* emit_call_c count */
-    int effective;    /* native + trampoline overhead */
+typedef struct
+{
+    int native;     /* EE words in the compiled block */
+    int lite_calls; /* emit_call_c_lite count */
+    int full_calls; /* emit_call_c count */
+    int effective;  /* native + trampoline overhead */
 } ExpResult;
 
 static ExpResult compile_and_measure_ex(const uint32_t *insns, int insn_types,
-                                         int repeat, setup_fn_t setup)
+                                        int repeat, setup_fn_t setup)
 {
     ExpResult res = {0, 0, 0, 0};
 
@@ -100,9 +101,7 @@ static ExpResult compile_and_measure_ex(const uint32_t *insns, int insn_types,
     res.native = (int)be->native_count;
     res.lite_calls = block_lite_calls;
     res.full_calls = block_full_calls;
-    res.effective = res.native
-                  + res.lite_calls * TRAMP_LITE_WORDS
-                  + res.full_calls * TRAMP_FULL_WORDS;
+    res.effective = res.native + res.lite_calls * TRAMP_LITE_WORDS + res.full_calls * TRAMP_FULL_WORDS;
     return res;
 }
 
@@ -327,53 +326,55 @@ static void test_expansion_gte_report(void)
     printf("  %-14s  %5s  %5s  %5s  %5s  %5s  %5s\n",
            "-----------", "-----", "-----", "----", "----", "-----", "--------");
 
-    /* 18 PSX insns per block (16 repeat + JR + NOP) */
-    #define GTE_REPORT(name, insn) do {                                          \
-        r = compile_and_measure_ex(&(uint32_t){(insn)}, 1, REPEAT,              \
-                                   expansion_enable_cop2);                       \
-        printf("  %-14s  %5d  %4.1fx  %5d  %5d  %5d  %5.1fx\n",               \
-               (name), r.native, (float)r.native/18.0f,                         \
-               r.lite_calls, r.full_calls,                                       \
-               r.effective, (float)r.effective/18.0f);                           \
-    } while(0)
+/* 18 PSX insns per block (16 repeat + JR + NOP) */
+#define GTE_REPORT(name, insn)                                     \
+    do                                                             \
+    {                                                              \
+        r = compile_and_measure_ex(&(uint32_t){(insn)}, 1, REPEAT, \
+                                   expansion_enable_cop2);         \
+        printf("  %-14s  %5d  %4.1fx  %5d  %5d  %5d  %5.1fx\n",    \
+               (name), r.native, (float)r.native / 18.0f,          \
+               r.lite_calls, r.full_calls,                         \
+               r.effective, (float)r.effective / 18.0f);           \
+    } while (0)
 
     /* --- Perspective Transform --- */
-    GTE_REPORT("RTPS",   GTE_CMD_RTPS(1, 1));
-    GTE_REPORT("RTPT",   GTE_CMD_RTPT(1, 1));
+    GTE_REPORT("RTPS", GTE_CMD_RTPS(1, 1));
+    GTE_REPORT("RTPT", GTE_CMD_RTPT(1, 1));
 
     /* --- Geometry --- */
-    GTE_REPORT("NCLIP",  GTE_CMD_NCLIP);
-    GTE_REPORT("AVSZ3",  GTE_CMD_AVSZ3);
-    GTE_REPORT("AVSZ4",  GTE_CMD_AVSZ4);
+    GTE_REPORT("NCLIP", GTE_CMD_NCLIP);
+    GTE_REPORT("AVSZ3", GTE_CMD_AVSZ3);
+    GTE_REPORT("AVSZ4", GTE_CMD_AVSZ4);
 
     /* --- Simple vector --- */
-    GTE_REPORT("OP",     GTE_CMD_OP(1, 0));
-    GTE_REPORT("SQR",    GTE_CMD_SQR(1, 0));
+    GTE_REPORT("OP", GTE_CMD_OP(1, 0));
+    GTE_REPORT("SQR", GTE_CMD_SQR(1, 0));
 
     /* --- Interpolation --- */
-    GTE_REPORT("GPF",    GTE_CMD_GPF(1, 0));
-    GTE_REPORT("GPL",    GTE_CMD_GPL(1, 0));
+    GTE_REPORT("GPF", GTE_CMD_GPF(1, 0));
+    GTE_REPORT("GPL", GTE_CMD_GPL(1, 0));
 
     /* --- Depth cueing --- */
-    GTE_REPORT("DPCS",   GTE_CMD_DPCS(1, 0));
-    GTE_REPORT("INTPL",  GTE_CMD_INTPL(1, 0));
-    GTE_REPORT("DCPL",   GTE_CMD_DCPL(1, 0));
-    GTE_REPORT("DPCT",   GTE_CMD_DPCT(1, 0));
+    GTE_REPORT("DPCS", GTE_CMD_DPCS(1, 0));
+    GTE_REPORT("INTPL", GTE_CMD_INTPL(1, 0));
+    GTE_REPORT("DCPL", GTE_CMD_DCPL(1, 0));
+    GTE_REPORT("DPCT", GTE_CMD_DPCT(1, 0));
 
     /* --- Matrix ops --- */
-    GTE_REPORT("MVMVA",  GTE_CMD_MVMVA(1, 0, 0, 0, 0));
+    GTE_REPORT("MVMVA", GTE_CMD_MVMVA(1, 0, 0, 0, 0));
 
     /* --- Normal color --- */
-    GTE_REPORT("NCS",    GTE_CMD_NCS(1, 1));
-    GTE_REPORT("NCT",    GTE_CMD_NCT(1, 1));
-    GTE_REPORT("NCCS",   GTE_CMD_NCCS(1, 1));
-    GTE_REPORT("NCCT",   GTE_CMD_NCCT(1, 1));
-    GTE_REPORT("CC",     GTE_CMD_CC(1, 1));
-    GTE_REPORT("CDP",    GTE_CMD_CDP(1, 1));
-    GTE_REPORT("NCDS",   GTE_CMD_NCDS(1, 1));
-    GTE_REPORT("NCDT",   GTE_CMD_NCDT(1, 1));
+    GTE_REPORT("NCS", GTE_CMD_NCS(1, 1));
+    GTE_REPORT("NCT", GTE_CMD_NCT(1, 1));
+    GTE_REPORT("NCCS", GTE_CMD_NCCS(1, 1));
+    GTE_REPORT("NCCT", GTE_CMD_NCCT(1, 1));
+    GTE_REPORT("CC", GTE_CMD_CC(1, 1));
+    GTE_REPORT("CDP", GTE_CMD_CDP(1, 1));
+    GTE_REPORT("NCDS", GTE_CMD_NCDS(1, 1));
+    GTE_REPORT("NCDT", GTE_CMD_NCDT(1, 1));
 
-    #undef GTE_REPORT
+#undef GTE_REPORT
 
     printf("\n");
     END_TEST();

@@ -14,7 +14,7 @@
 #include <string.h>
 #include <setjmp.h>
 #ifdef PLATFORM_PS2
-#include <kernel.h>        /* FlushCache */
+#include <kernel.h> /* FlushCache */
 #elif defined(PLATFORM_PSP)
 #include <pspkernel.h>
 #include <pspdebug.h>
@@ -38,65 +38,120 @@ PGTestCtx pg_ctx;
  * ================================================================ */
 
 /* --- Hardware / IO --- */
-uint32_t ReadHardware(uint32_t addr)               { (void)addr; return 0; }
-void     WriteHardware(uint32_t addr,
-                       uint32_t data, int width)    { (void)addr; (void)data; (void)width; }
-void     SignalInterrupt(uint32_t irq)                { (void)irq; }
+uint32_t ReadHardware(uint32_t addr)
+{
+    (void)addr;
+    return 0;
+}
+void WriteHardware(uint32_t addr,
+                   uint32_t data, int width)
+{
+    (void)addr;
+    (void)data;
+    (void)width;
+}
+void SignalInterrupt(uint32_t irq) { (void)irq; }
 
 /* --- GPU --- */
 uint32_t gpu_stat = 0;
 uint32_t gpu_busy_until = 0;
-int      gpu_pending_vblank_flush = 0;
+int gpu_pending_vblank_flush = 0;
 volatile uint64_t gpu_irq_delay_cycle = 0;
-void     GPU_VBlank(void)                           {}
-void     GPU_Backend_VBlank(void)                   {}
-uint32_t GPU_ReadStatus(void)                       { return gpu_stat; }
-void     GPU_DMA_Write(uint32_t a, int n)           { (void)a; (void)n; }
-void     GPU_Write_GP0(uint32_t v)                  { (void)v; }
-void     GPU_Write_GP1(uint32_t v)                  { (void)v; }
-uint32_t GPU_Read_GPUREAD(void)                     { return 0; }
-void     DumpVRAM(void)                             {}
+void GPU_VBlank(void) {}
+void GPU_Backend_VBlank(void) {}
+uint32_t GPU_ReadStatus(void) { return gpu_stat; }
+void GPU_DMA_Write(uint32_t a, int n)
+{
+    (void)a;
+    (void)n;
+}
+void GPU_Write_GP0(uint32_t v) { (void)v; }
+void GPU_Write_GP1(uint32_t v) { (void)v; }
+uint32_t GPU_Read_GPUREAD(void) { return 0; }
+void DumpVRAM(void) {}
 
 /* --- SPU --- */
-void     SPU_GenerateSamples(int n)                 { (void)n; }
-void     SPU_Init(void)                             {}
-void     SPU_Shutdown(void)                         {}
-void     SPU_WriteRegister(uint32_t a, uint16_t v)  { (void)a; (void)v; }
-uint16_t SPU_ReadRegister(uint32_t a)               { (void)a; return 0; }
-void     SPU_DMA_Write(uint32_t a, int n)           { (void)a; (void)n; }
-void     SPU_DMA_Read(uint32_t a, int n)            { (void)a; (void)n; }
+void SPU_GenerateSamples(int n) { (void)n; }
+void SPU_Init(void) {}
+void SPU_Shutdown(void) {}
+void SPU_WriteRegister(uint32_t a, uint16_t v)
+{
+    (void)a;
+    (void)v;
+}
+uint16_t SPU_ReadRegister(uint32_t a)
+{
+    (void)a;
+    return 0;
+}
+void SPU_DMA_Write(uint32_t a, int n)
+{
+    (void)a;
+    (void)n;
+}
+void SPU_DMA_Read(uint32_t a, int n)
+{
+    (void)a;
+    (void)n;
+}
 
 /* --- SIO --- */
 uint32_t sio_data = 0;
-int      sio_tx_pending = 0;
-int      sio_selected = 0;
+int sio_tx_pending = 0;
+int sio_selected = 0;
 volatile uint64_t sio_irq_delay_cycle = 0;
-uint32_t SIO_Read(uint32_t a)                       { (void)a; return 0; }
-void     SIO_Write(uint32_t a, uint32_t v)          { (void)a; (void)v; }
+uint32_t SIO_Read(uint32_t a)
+{
+    (void)a;
+    return 0;
+}
+void SIO_Write(uint32_t a, uint32_t v)
+{
+    (void)a;
+    (void)v;
+}
 
 /* --- CDROM --- */
-uint8_t  cdrom_irq_active = 0;
+uint8_t cdrom_irq_active = 0;
 
 /* --- Timers --- */
-void     Timer_ScheduleAll(void)                    {}
+void Timer_ScheduleAll(void) {}
 
 /* --- GTE --- (real implementations from gte.c; no stubs needed) */
 
 /* --- Loader --- */
-int  Load_PSX_EXE(const char *p, uint32_t *pc)     { (void)p; (void)pc; return -1; }
-int  Load_PSX_EXE_FromISO(const char *p, uint32_t *pc) { (void)p; (void)pc; return -1; }
+int Load_PSX_EXE(const char *p, uint32_t *pc)
+{
+    (void)p;
+    (void)pc;
+    return -1;
+}
+int Load_PSX_EXE_FromISO(const char *p, uint32_t *pc)
+{
+    (void)p;
+    (void)pc;
+    return -1;
+}
 
 /* --- DMA --- */
-void DMA_WriteReg(uint32_t a, uint32_t v)           { (void)a; (void)v; }
-uint32_t DMA_ReadReg(uint32_t a)                    { (void)a; return 0; }
-int  DMA_IsPending(void)                            { return 0; }
+void DMA_WriteReg(uint32_t a, uint32_t v)
+{
+    (void)a;
+    (void)v;
+}
+uint32_t DMA_ReadReg(uint32_t a)
+{
+    (void)a;
+    return 0;
+}
+int DMA_IsPending(void) { return 0; }
 
 /* --- Joystick --- */
-void Joystick_Init(void)                            {}
+void Joystick_Init(void) {}
 
 /* --- Config --- */
 #include "config.h"
-PSXConfig psx_config;     /* zero-initialised */
+PSXConfig psx_config; /* zero-initialised */
 
 /* --- Profiler --- */
 #include "profiler.h"
@@ -104,15 +159,15 @@ PSXConfig psx_config;     /* zero-initialised */
 int prof_disable_spu = 1;
 int prof_disable_gpu_render = 1;
 /* Minimal profiler stubs — the real profiler.c is not linked */
-void profiler_init(void)        {}
-void profiler_frame_end(void)   {}
+void profiler_init(void) {}
+void profiler_frame_end(void) {}
 #else
 int prof_disable_spu = 1;
 int prof_disable_gpu_render = 1;
 #endif
 
 /* --- Boot mode (run.c externs) --- */
-int         psx_boot_mode = 0;
+int psx_boot_mode = 0;
 const char *psx_exe_filename = NULL;
 
 /* ================================================================
@@ -162,14 +217,15 @@ void pg_reset_jit_cache(void)
     tlb_bp_map_count = 0;
 
     /* Clear hash table */
-    for (int i = 0; i < JIT_HT_SIZE; i++) {
+    for (int i = 0; i < JIT_HT_SIZE; i++)
+    {
         jit_ht[i].psx_pc[0] = 0xFFFFFFFF;
         jit_ht[i].psx_pc[1] = 0xFFFFFFFF;
         jit_ht[i].native[0] = NULL;
         jit_ht[i].native[1] = NULL;
     }
 
-    jit_flush_pending = 1;  /* Deferred: will flush before next block execution */
+    jit_flush_pending = 1; /* Deferred: will flush before next block execution */
 }
 
 int pg_dump_next_block = 0; /* set to 1 to dump next compiled block */
@@ -185,7 +241,8 @@ void pg_run_jit(uint32_t pc, int32_t cycles)
     int max_dispatches = 200;
     int first_block = 1;
 
-    while (cpu.cycles_left > 0 && max_dispatches-- > 0) {
+    while (cpu.cycles_left > 0 && max_dispatches-- > 0)
+    {
         uint32_t curr_pc = cpu.pc;
 
         /* Stop if we've left the test code / halt region */
@@ -195,23 +252,28 @@ void pg_run_jit(uint32_t pc, int32_t cycles)
 
         BlockEntry *be;
         uint32_t *block = dynarec_ensure_block(curr_pc, &be);
-        if (!block) break;
+        if (!block)
+            break;
 
         /* Hex dump of the compiled native code */
-        if (pg_dump_next_block && first_block) {
+        if (pg_dump_next_block && first_block)
+        {
             first_block = 0;
             int nwords = (int)be->native_count;
-            if (nwords > 200) nwords = 200;
+            if (nwords > 200)
+                nwords = 200;
             printf("  [DUMP] block PC=0x%08X nwords=%d\n",
                    curr_pc, nwords);
-            for (int i = 0; i < nwords; i++) {
+            for (int i = 0; i < nwords; i++)
+            {
                 printf("  [%3d] 0x%08X\n", i, block[i]);
             }
             pg_dump_next_block = 0;
         }
 
         /* Flush caches if any blocks were compiled since last execution */
-        if (jit_flush_pending) {
+        if (jit_flush_pending)
+        {
             Platform_FlushDCache(NULL, NULL);
             Platform_FlushICache();
             jit_flush_pending = 0;
@@ -220,7 +282,8 @@ void pg_run_jit(uint32_t pc, int32_t cycles)
         int32_t remaining = ((block_func_t)block)(&cpu, psx_ram, psx_bios, cpu.cycles_left);
         cpu.cycles_left = remaining;
 
-        if (cpu.block_aborted) {
+        if (cpu.block_aborted)
+        {
             cpu.pc = psx_abort_pc;
             cpu.block_aborted = 0;
         }
@@ -232,7 +295,8 @@ void pg_run_jit(uint32_t pc, int32_t cycles)
  * ================================================================ */
 int main(int argc, char *argv[])
 {
-    (void)argc; (void)argv;
+    (void)argc;
+    (void)argv;
 
     printf("\n========================================\n");
     printf("   JIT Playground — SuperPSX\n");
@@ -247,6 +311,9 @@ int main(int argc, char *argv[])
 
     /* 2b. Enable GTE fast paths (gte_use_vu0) for inline GTE tests */
 #ifdef PLATFORM_PS2
+    psx_config.gte_vu0 = 1;
+    gte_use_vu0 = 1;
+#elif defined(PLATFORM_PSP)
     psx_config.gte_vu0 = 1;
     gte_use_vu0 = 1;
 #else

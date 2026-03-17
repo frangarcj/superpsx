@@ -66,7 +66,7 @@ cmake --build build-psp 2>&1 | tail -5
 cmake --build build-psp --target jit_playground.elf 2>&1 | tail -5
 
 # Run PSP playground (expect: 110/110 passed) — 25s is enough
-/Applications/PPSSPPSDL.app/Contents/MacOS/PPSSPPSDL -i -v \
+/Applications/PPSSPPSDL.app/Contents/MacOS/PPSSPPSDL -v \
   build-psp/jit_playground.elf > ./build/psp_playground_out.txt 2>&1 &
 PID=$!; sleep 25; kill $PID 2>/dev/null; wait $PID 2>/dev/null; \
 grep "PRINTF" ./build/psp_playground_out.txt | sed 's/.*stdout: //' | \

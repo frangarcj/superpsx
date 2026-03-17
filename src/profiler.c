@@ -50,8 +50,60 @@ static uint64_t prof_grand_psx_cycles = 0;
 static uint32_t prof_grand_jit_blocks = 0;
 static uint32_t prof_grand_jit_compiles = 0;
 static uint64_t prof_grand_gpu_pixels = 0;
+static gpu_frame_stats_t prof_grand_gpu_stats;
 
 #define PROF_REPORT_INTERVAL 60
+
+static void write_gpu_commands(FILE *out, const gpu_frame_stats_t *s, uint32_t nframes)
+{
+    double nf = (double)nframes;
+    fprintf(out,
+            "GPU Commands (per frame avg over %lu frames):\n"
+            "  Poly tex=%.1f flat=%.1f | Rect tex=%.1f flat=%.1f\n"
+            "  Line=%.1f Fill=%.1f\n"
+            "  VRAM: load=%.1f store=%.1f copy=%.1f\n"
+            "  TexCache: hit=%.1f miss=%.1f (%.1f%% hit rate)\n"
+            "  Uploads: full=%.1f partial=%.1f (4bpp=%.1f 8bpp=%.1f) rows=%.0f\n",
+            (unsigned long)nframes,
+            s->poly_tex / nf, s->poly_flat / nf,
+            s->rect_tex / nf, s->rect_flat / nf,
+            s->line / nf, s->fill / nf,
+            s->vram_load / nf, s->vram_store / nf, s->vram_copy / nf,
+            s->texcache_hit / nf, s->texcache_miss / nf,
+            (s->texcache_hit + s->texcache_miss > 0)
+                ? (100.0 * s->texcache_hit / (s->texcache_hit + s->texcache_miss))
+                : 0.0,
+            s->tex_upload_full / nf, s->tex_upload_partial / nf,
+            s->tex_upload_4bpp / nf, s->tex_upload_8bpp / nf,
+            s->tex_upload_rows / nf);
+}
+
+static void accumulate_gpu_stats(gpu_frame_stats_t *dst, const gpu_frame_stats_t *src)
+{
+    dst->poly_tex += src->poly_tex;
+    dst->poly_flat += src->poly_flat;
+    dst->rect_tex += src->rect_tex;
+    dst->rect_flat += src->rect_flat;
+    dst->line += src->line;
+    dst->fill += src->fill;
+    dst->vram_load += src->vram_load;
+    dst->vram_store += src->vram_store;
+    dst->vram_copy += src->vram_copy;
+    dst->texcache_hit += src->texcache_hit;
+    dst->texcache_miss += src->texcache_miss;
+    dst->tex_upload_full += src->tex_upload_full;
+    dst->tex_upload_partial += src->tex_upload_partial;
+    dst->tex_upload_4bpp += src->tex_upload_4bpp;
+    dst->tex_upload_8bpp += src->tex_upload_8bpp;
+    dst->tex_upload_rows += src->tex_upload_rows;
+    dst->clut_change += src->clut_change;
+    dst->clut_cache_hit += src->clut_cache_hit;
+    dst->clut_cache_miss += src->clut_cache_miss;
+    dst->tex_key_change += src->tex_key_change;
+    dst->vbatch_flushes += src->vbatch_flushes;
+    dst->vbatch_verts += src->vbatch_verts;
+    dst->vram_readbacks += src->vram_readbacks;
+}
 
 /* ── Internal: write a formatted report table ────────────────────── */
 static void write_report(FILE *out,
@@ -129,6 +181,7 @@ void profiler_init(void)
     prof_grand_jit_blocks = 0;
     prof_grand_jit_compiles = 0;
     prof_grand_gpu_pixels = 0;
+    memset(&prof_grand_gpu_stats, 0, sizeof(prof_grand_gpu_stats));
     prof_report_num = 0;
     prof_total_frames = 0;
 
@@ -270,39 +323,8 @@ void profiler_frame_end(uint64_t psx_cycles_this_frame)
                          prof.jit_compiles, prof.gpu_pixels);
 
             /* ── Per-frame GPU command breakdown ── */
-            {
-                double nf = (double)prof.frames;
-                fprintf(prof_log_file,
-                        "GPU Commands (per frame avg over %lu frames):\n"
-                        "  Poly tex=%.1f flat=%.1f | Rect tex=%.1f flat=%.1f\n"
-                        "  Line=%.1f Fill=%.1f\n"
-                        "  VRAM: load=%.1f store=%.1f copy=%.1f\n"
-                        "  TexCache: hit=%.1f miss=%.1f (%.1f%% hit rate)\n"
-                        "  Uploads: full=%.1f partial=%.1f (4bpp=%.1f 8bpp=%.1f) rows=%.0f\n",
-                        (unsigned long)prof.frames,
-                        gpu_frame_stats.poly_tex / nf,
-                        gpu_frame_stats.poly_flat / nf,
-                        gpu_frame_stats.rect_tex / nf,
-                        gpu_frame_stats.rect_flat / nf,
-                        gpu_frame_stats.line / nf,
-                        gpu_frame_stats.fill / nf,
-                        gpu_frame_stats.vram_load / nf,
-                        gpu_frame_stats.vram_store / nf,
-                        gpu_frame_stats.vram_copy / nf,
-                        gpu_frame_stats.texcache_hit / nf,
-                        gpu_frame_stats.texcache_miss / nf,
-                        (gpu_frame_stats.texcache_hit + gpu_frame_stats.texcache_miss > 0)
-                            ? (100.0 * gpu_frame_stats.texcache_hit /
-                               (gpu_frame_stats.texcache_hit + gpu_frame_stats.texcache_miss))
-                            : 0.0,
-                        gpu_frame_stats.tex_upload_full / nf,
-                        gpu_frame_stats.tex_upload_partial / nf,
-                        gpu_frame_stats.tex_upload_4bpp / nf,
-                        gpu_frame_stats.tex_upload_8bpp / nf,
-                        gpu_frame_stats.tex_upload_rows / nf);
-                /* Reset for next report interval */
-                memset(&gpu_frame_stats, 0, sizeof(gpu_frame_stats));
-            }
+            write_gpu_commands(prof_log_file, &gpu_frame_stats, prof.frames);
+            accumulate_gpu_stats(&prof_grand_gpu_stats, &gpu_frame_stats);
             fprintf(prof_log_file, "\n");
 
             /* Grand totals every 5 reports */
@@ -317,6 +339,7 @@ void profiler_frame_end(uint64_t psx_cycles_this_frame)
                              prof_grand_ticks, prof_grand_calls,
                              prof_grand_psx_cycles, prof_grand_jit_blocks,
                              prof_grand_jit_compiles, prof_grand_gpu_pixels);
+                write_gpu_commands(prof_log_file, &prof_grand_gpu_stats, prof_grand_frames);
                 fprintf(prof_log_file, "\n");
             }
 
@@ -335,6 +358,7 @@ void profiler_frame_end(uint64_t psx_cycles_this_frame)
         prof.jit_blocks = 0;
         prof.jit_compiles = 0;
         prof.gpu_pixels = 0;
+        memset(&gpu_frame_stats, 0, sizeof(gpu_frame_stats));
         /* Keep stack intact — callers still have pending PROF_POP.
          * Reset all entry times to prevent old-interval time
          * from bleeding into the new accumulator period. */

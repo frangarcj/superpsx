@@ -37,10 +37,11 @@ int gte_use_vfpu = 0; /* 0=exact C path, 1=VFPU fast path */
 void GTE_VBlankUpdate(void)
 {
 #ifdef PLATFORM_PSP
-    /* PSP: only set gte_use_vfpu. Do NOT set gte_use_vu0 — the JIT
-     * checks gte_use_vu0 at compile time and would emit PS2 VU0
-     * instructions that the PSP can't execute. */
+    /* PSP: set gte_use_vfpu for C-level VFPU paths, and also
+     * gte_use_vu0 for JIT inline paths — the JIT uses #ifdef PLATFORM_PSP
+     * guards to emit VFPU instructions instead of VU0. */
     gte_use_vfpu = psx_config.gte_vu0;
+    gte_use_vu0 = psx_config.gte_vu0;
 #else
     gte_use_vu0 = psx_config.gte_vu0;
 #endif
@@ -1800,30 +1801,43 @@ void vu0_prepare_mvmva(R3000CPU *cpu, uint32_t mx_cv)
 
     /* Refresh and select matrix columns */
     float *col1, *col2, *col3;
-    switch (mx) {
+    switch (mx)
+    {
     case 0:
-        if (vu0_rt_is_dirty(cpu)) vu0_refresh_rt_matrix(cpu);
-        col1 = vu0_rt_col1; col2 = vu0_rt_col2; col3 = vu0_rt_col3;
+        if (vu0_rt_is_dirty(cpu))
+            vu0_refresh_rt_matrix(cpu);
+        col1 = vu0_rt_col1;
+        col2 = vu0_rt_col2;
+        col3 = vu0_rt_col3;
         break;
     case 1:
-        if (vu0_lt_is_dirty(cpu)) vu0_refresh_lt_matrix(cpu);
-        col1 = vu0_lt_col1; col2 = vu0_lt_col2; col3 = vu0_lt_col3;
+        if (vu0_lt_is_dirty(cpu))
+            vu0_refresh_lt_matrix(cpu);
+        col1 = vu0_lt_col1;
+        col2 = vu0_lt_col2;
+        col3 = vu0_lt_col3;
         break;
     default:
-        if (vu0_lc_is_dirty(cpu)) vu0_refresh_lc_matrix(cpu);
-        col1 = vu0_lc_col1; col2 = vu0_lc_col2; col3 = vu0_lc_col3;
+        if (vu0_lc_is_dirty(cpu))
+            vu0_refresh_lc_matrix(cpu);
+        col1 = vu0_lc_col1;
+        col2 = vu0_lc_col2;
+        col3 = vu0_lc_col3;
         break;
     }
 
     /* Refresh and select translation vector */
     float *trans;
-    switch (cv) {
+    switch (cv)
+    {
     case 0:
-        if (mx != 0 && vu0_rt_is_dirty(cpu)) vu0_refresh_rt_matrix(cpu);
+        if (mx != 0 && vu0_rt_is_dirty(cpu))
+            vu0_refresh_rt_matrix(cpu);
         trans = vu0_rt_trans;
         break;
     case 1:
-        if (vu0_bk_is_dirty(cpu)) vu0_refresh_bk_trans(cpu);
+        if (vu0_bk_is_dirty(cpu))
+            vu0_refresh_bk_trans(cpu);
         trans = vu0_bk_trans;
         break;
     default:
@@ -1832,7 +1846,8 @@ void vu0_prepare_mvmva(R3000CPU *cpu, uint32_t mx_cv)
     }
 
     /* Copy to contiguous JIT cache for LQC2 access */
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 4; i++)
+    {
         vu0_jit_cache.col1[i] = col1[i];
         vu0_jit_cache.col2[i] = col2[i];
         vu0_jit_cache.col3[i] = col3[i];
@@ -1932,15 +1947,19 @@ void GTE_RTPS_Project(R3000CPU *cpu, int last)
         (uint16_t)(int16_t)(int32_t)C(c_H), D(d_SZ3));
 
     int64_t sx_mac = (int64_t)(int32_t)div_result *
-                     (int16_t)(int32_t)D(d_IR1) + (int32_t)C(c_OFX);
+                         (int16_t)(int32_t)D(d_IR1) +
+                     (int32_t)C(c_OFX);
     int64_t sy_mac = (int64_t)(int32_t)div_result *
-                     (int16_t)(int32_t)D(d_IR2) + (int32_t)C(c_OFY);
+                         (int16_t)(int32_t)D(d_IR2) +
+                     (int32_t)C(c_OFY);
 
     push_sxy(cpu, (int32_t)(sx_mac >> 16), (int32_t)(sy_mac >> 16));
 
-    if (last) {
+    if (last)
+    {
         int64_t dq_mac = (int64_t)(int16_t)(int32_t)C(c_DQA) *
-                         (int32_t)div_result + (int32_t)C(c_DQB);
+                             (int32_t)div_result +
+                         (int32_t)C(c_DQB);
         D(d_MAC0) = (uint32_t)(int32_t)dq_mac;
         D(d_IR0) = (uint32_t)saturate_ir0(dq_mac >> 12);
     }
@@ -1965,7 +1984,7 @@ void GTE_Inline_RTPS(R3000CPU *cpu, int sf, int lm)
     else
 #endif
 #ifdef PLATFORM_PSP
-    if (gte_use_vfpu && sf)
+        if (gte_use_vfpu && sf)
     {
         gte_cmd_rtps_vfpu(cpu, lm);
     }
@@ -2131,7 +2150,7 @@ void GTE_Inline_RTPT(R3000CPU *cpu, int sf, int lm)
     else
 #endif
 #ifdef PLATFORM_PSP
-    if (gte_use_vfpu && sf)
+        if (gte_use_vfpu && sf)
     {
         gte_cmd_rtpt_vfpu(cpu, lm);
     }

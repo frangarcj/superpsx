@@ -14,9 +14,9 @@
 #include <string.h>
 #include <malloc.h>
 #ifdef PLATFORM_PSP
-#include <psputils.h>  /* sceKernelDcacheWritebackAll, sceKernelIcacheInvalidateAll */
+#include <psputils.h> /* sceKernelDcacheWritebackAll, sceKernelIcacheInvalidateAll */
 #else
-#include <kernel.h>    /* FlushCache (PS2) */
+#include <kernel.h> /* FlushCache (PS2) */
 #endif
 #include "superpsx.h"
 #include "scheduler.h"
@@ -274,7 +274,7 @@ static inline void jit_ht_remove(uint32_t psx_pc)
  *  Shared state — compile-time
  * ================================================================ */
 extern uint32_t blocks_compiled;
-extern int jit_flush_pending;            /* 1 = D/I-cache needs flush before execution */
+extern int jit_flush_pending; /* 1 = D/I-cache needs flush before execution */
 extern uint32_t total_instructions;
 extern uint32_t block_cycle_count;
 extern uint32_t emit_cycle_offset;
@@ -376,36 +376,47 @@ static inline void emit(uint32_t inst)
 #define EMIT_MFLO(rd) emit(MK_R(0, 0, 0, (rd), 0, 0x12))
 #define EMIT_MFHI(rd) emit(MK_R(0, 0, 0, (rd), 0, 0x10))
 
-/* R5900 specialized emitters (MOVZ/MOVN/MADD/MADDU: same encoding on Allegrex) */
+/* R5900 specialized emitters (MOVZ/MOVN: same encoding on Allegrex) */
 #define EMIT_MOVZ(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x0A))
 #define EMIT_MOVN(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x0B))
+/* MADD/MADDU: R5900 uses SPECIAL2(0x1C)/func 0x00-0x01;
+ *             Allegrex uses SPECIAL(0x00)/func 0x1C-0x1D */
+#ifdef PLATFORM_PSP
+#define EMIT_MADD(rs, rt) emit(MK_R(0x00, (rs), (rt), 0, 0, 0x1C))
+#define EMIT_MADDU(rs, rt) emit(MK_R(0x00, (rs), (rt), 0, 0, 0x1D))
+#else
 #define EMIT_MADD(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x00))
 #define EMIT_MADDU(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x01))
+#endif
 
 #ifdef PLATFORM_PSP
 /* PSP (Allegrex) has only one HI/LO pipeline — redirect pipeline 1 to pipeline 0 */
-#define EMIT_MULT1(rs, rt)  EMIT_MULT((rs), (rt))
+#define EMIT_MULT1(rs, rt) EMIT_MULT((rs), (rt))
 #define EMIT_MULTU1(rs, rt) emit(MK_R(0, (rs), (rt), 0, 0, 0x19))
-#define EMIT_DIV1(rs, rt)   emit(MK_R(0, (rs), (rt), 0, 0, 0x1A))
-#define EMIT_DIVU1(rs, rt)  emit(MK_R(0, (rs), (rt), 0, 0, 0x1B))
-#define EMIT_MFLO1(rd)      EMIT_MFLO((rd))
-#define EMIT_MFHI1(rd)      EMIT_MFHI((rd))
-#define EMIT_MTLO1(rs)      emit(MK_R(0, (rs), 0, 0, 0, 0x13))
-#define EMIT_MTHI1(rs)      emit(MK_R(0, (rs), 0, 0, 0, 0x11))
+#define EMIT_DIV1(rs, rt) emit(MK_R(0, (rs), (rt), 0, 0, 0x1A))
+#define EMIT_DIVU1(rs, rt) emit(MK_R(0, (rs), (rt), 0, 0, 0x1B))
+#define EMIT_MFLO1(rd) EMIT_MFLO((rd))
+#define EMIT_MFHI1(rd) EMIT_MFHI((rd))
+#define EMIT_MTLO1(rs) emit(MK_R(0, (rs), 0, 0, 0, 0x13))
+#define EMIT_MTHI1(rs) emit(MK_R(0, (rs), 0, 0, 0, 0x11))
 
 /* PMAXW(rd,rs,rt) = MAX(rs,rt)→rd.  All callers have rd==rs.
  * PSP fallback: SLT AT,rs,rt; MOVN rd,rt,AT  (if rs<rt: rd=rt) */
-#define EMIT_PMAXW(rd, rs, rt) do { \
-    emit(MK_R(0, (rs), (rt), REG_AT, 0, 0x2A)); /* SLT AT, rs, rt */ \
-    emit(MK_R(0, (rt), REG_AT, (rd), 0, 0x0B)); /* MOVN rd, rt, AT */ \
-} while (0)
+#define EMIT_PMAXW(rd, rs, rt)                                            \
+    do                                                                    \
+    {                                                                     \
+        emit(MK_R(0, (rs), (rt), REG_AT, 0, 0x2A)); /* SLT AT, rs, rt */  \
+        emit(MK_R(0, (rt), REG_AT, (rd), 0, 0x0B)); /* MOVN rd, rt, AT */ \
+    } while (0)
 
 /* PMINW(rd,rs,rt) = MIN(rs,rt)→rd.  All callers have rd==rs.
  * PSP fallback: SLT AT,rt,rs; MOVN rd,rt,AT  (if rt<rs: rd=rt) */
-#define EMIT_PMINW(rd, rs, rt) do { \
-    emit(MK_R(0, (rt), (rs), REG_AT, 0, 0x2A)); /* SLT AT, rt, rs */ \
-    emit(MK_R(0, (rt), REG_AT, (rd), 0, 0x0B)); /* MOVN rd, rt, AT */ \
-} while (0)
+#define EMIT_PMINW(rd, rs, rt)                                            \
+    do                                                                    \
+    {                                                                     \
+        emit(MK_R(0, (rt), (rs), REG_AT, 0, 0x2A)); /* SLT AT, rt, rs */  \
+        emit(MK_R(0, (rt), REG_AT, (rd), 0, 0x0B)); /* MOVN rd, rt, AT */ \
+    } while (0)
 
 #else /* PLATFORM_PS2 (R5900) */
 #define EMIT_MULT1(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x18))
@@ -442,11 +453,11 @@ static inline void emit(uint32_t inst)
 #define EMIT_SQC2(vft, off, base) emit(MK_I(0x3E, (base), (vft), (off)))
 
 /* VU0 upper instruction builder: (0x12<<26)|(1<<25)|(dest<<21)|(ft<<16)|(fs<<11)|(fd<<6)|func */
-#define MK_COP2(dest, ft, fs, fd, func) \
+#define MK_COP2(dest, ft, fs, fd, func)                      \
     ((0x12u << 26) | (1u << 25) | ((uint32_t)(dest) << 21) | \
-     ((uint32_t)(ft) << 16) | ((uint32_t)(fs) << 11) | \
+     ((uint32_t)(ft) << 16) | ((uint32_t)(fs) << 11) |       \
      ((uint32_t)(fd) << 6) | (uint32_t)(func))
-#define VU_DEST_XYZ 0xE  /* dest mask: x|y|z (bits 24|23|22) */
+#define VU_DEST_XYZ 0xE /* dest mask: x|y|z (bits 24|23|22) */
 
 /* VU0 matrix×vector sequence: VMULAX.xyz→VMADDAY.xyz→VMADDZ.xyz→VADD.xyz
  * ACC variants use fd as sub-opcode: 6=VMULA, 2=VMADDA. func=0x3C|bc. */
@@ -462,10 +473,74 @@ static inline void emit(uint32_t inst)
  * VCALLMSR: launch micro at address in CMSAR0 */
 #define EMIT_CTC2(rt, rd) emit((0x12u << 26) | (0x06u << 21) | ((uint32_t)(rt) << 16) | ((uint32_t)(rd) << 11))
 #define EMIT_CFC2(rt, rd) emit((0x12u << 26) | (0x02u << 21) | ((uint32_t)(rt) << 16) | ((uint32_t)(rd) << 11))
-#define EMIT_VCALLMSR()   emit(0x4A000039u)
-#define EMIT_SYNC_L()     emit(0x0000000Fu)
+#define EMIT_VCALLMSR() emit(0x4A000039u)
+#define EMIT_SYNC_L() emit(0x0000000Fu)
 #endif /* ENABLE_VU0_MICRO */
 #endif /* PLATFORM_PS2 — VU0/COP2 macro emitters */
+
+/* ================================================================
+ *  VFPU emitters (PSP only) — GTE inline matrix multiply
+ *
+ *  VFPU register allocation for GTE MVMVA:
+ *    M000 (C000/C010/C020): 3×3 matrix rows (pre-scaled by 1/4096)
+ *    C100: input vertex (int32 → float via vi2f)
+ *    C200: translation vector (float)
+ *    C300: result (float → int32 via vf2in)
+ *
+ *  Scalar names: S{col}{row}0 — e.g. S100=col1/row0=4, S110=col1/row1=5
+ *  Quad names:   C{col}{row}0 — e.g. C100=col1=4, C300=col3=12
+ * ================================================================ */
+#ifdef PLATFORM_PSP
+
+/* VFPU register numbering (column vectors for quad loads, scalars for mtv/mfv) */
+#define VFPU_C000 0  /* Matrix row 1 */
+#define VFPU_C010 1  /* Matrix row 2 */
+#define VFPU_C020 2  /* Matrix row 3 */
+#define VFPU_C100 4  /* Input vertex */
+#define VFPU_C200 8  /* Translation */
+#define VFPU_C300 12 /* Result */
+#define VFPU_S100 4  /* Vertex X */
+#define VFPU_S110 5  /* Vertex Y */
+#define VFPU_S120 6  /* Vertex Z */
+#define VFPU_S300 12 /* Result MAC1 */
+#define VFPU_S310 13 /* Result MAC2 */
+#define VFPU_S320 14 /* Result MAC3 */
+
+/* lv.q vt, offset(rs) — load 128-bit quad to VFPU column register.
+ * Encoding: [31:26]=0x36 | [25:21]=rs | [20:16]=vt | [15:2]=offset>>2 | [1:0]=0 */
+#define EMIT_LV_Q(vt, off, rs) \
+    emit(0xD8000000u | ((uint32_t)(rs) << 21) | ((uint32_t)(vt) << 16) | ((uint32_t)(off) & 0xFFFCu))
+
+/* sv.q vt, offset(rs) — store 128-bit quad from VFPU column register.
+ * Encoding: [31:26]=0x3E | [25:21]=rs | [20:16]=vt | [15:2]=offset>>2 | [1:0]=0 */
+#define EMIT_SV_Q(vt, off, rs) \
+    emit(0xF8000000u | ((uint32_t)(rs) << 21) | ((uint32_t)(vt) << 16) | ((uint32_t)(off) & 0xFFFCu))
+
+/* mtv rt, vd — move GPR to VFPU scalar.
+ * Encoding: 0x48E00000 | [20:16]=rt | [7:0]=vd */
+#define EMIT_MTV(rt, vd) emit(0x48E00000u | ((uint32_t)(rt) << 16) | (uint32_t)(vd))
+
+/* mfv rt, vs — move VFPU scalar to GPR.
+ * Encoding: 0x48600000 | [20:16]=rt | [7:0]=vs */
+#define EMIT_MFV(rt, vs) emit(0x48600000u | ((uint32_t)(rt) << 16) | (uint32_t)(vs))
+
+/* vi2f.q vd, vs, 0 — int32 → float conversion (quad, scale=0).
+ * Encoding verified: vi2f.q C100,C100,0 = 0xD2808484 */
+#define EMIT_VI2F_Q(vd, vs) emit(0xD2800000u | ((uint32_t)(vd) << 8) | (uint32_t)(vs) | 0x00008080u)
+
+/* vf2in.q vd, vs, 0 — float → int32 nearest (quad, scale=0).
+ * Encoding verified: vf2in.q C300,C300,0 = 0xD2008C8C */
+#define EMIT_VF2IN_Q(vd, vs) emit(0xD2000000u | ((uint32_t)(vd) << 8) | (uint32_t)(vs) | 0x00008080u)
+
+/* vtfm3.t vd, ms, vs — 3×3 matrix × vector.
+ * Fixed encoding: vtfm3.t C300, M000, C100 = 0xF104800C */
+#define EMIT_VTFM3_T_C300_M000_C100() emit(0xF104800Cu)
+
+/* vadd.t vd, vs, vt — vector add (triple).
+ * Fixed encoding: vadd.t C300, C300, C200 = 0x60088C0C */
+#define EMIT_VADD_T_C300_C300_C200() emit(0x60088C0Cu)
+
+#endif /* PLATFORM_PSP — VFPU emitters */
 
 /* ================================================================
  *  Function prototypes — dynarec_emit.c
