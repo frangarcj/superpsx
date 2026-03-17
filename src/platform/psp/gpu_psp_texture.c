@@ -13,6 +13,7 @@
 #include <pspge.h>
 #include <psputils.h>
 #include <string.h>
+#include <stdio.h>
 
 /* ── EDRAM Texture Page Cache ────────────────────────────────────
  *  64 slots × 64KB in main RAM (static array).  GE reads from uncached
@@ -173,6 +174,8 @@ static void setup_psx_texture(uint32_t clut_word)
                            &psx_vram_shadow[row * 1024 + tpx], 128);
             }
             sceKernelDcacheWritebackRange(slot_ptr, 256 * 128);
+            gpu_frame_stats.tex_upload_4bpp++;
+            gpu_frame_stats.tex_upload_rows += copy_h;
             need_flush = 1;
         } else if (slot_ptr != cached_tex_base) {
             need_flush = 1;
@@ -221,7 +224,8 @@ static void setup_psx_texture(uint32_t clut_word)
             cached_ge_tex_mode = GU_PSM_T4;
         }
 #ifdef ENABLE_PSP_STRIDE_HACK
-        sceGuTexImage(0, 256, 512, 1024, tex_ptr);
+        /* Height 1024 is needed for T4 (V*4) to reach all 256 PSX rows */
+        sceGuTexImage(0, 256, 1024, 1024, tex_ptr);
         cached_tex_base = tex_ptr;
         tex_v_scale = 4.0f;
 #else
@@ -257,6 +261,8 @@ static void setup_psx_texture(uint32_t clut_word)
                            &psx_vram_shadow[row * 1024 + tpx], 256);
             }
             sceKernelDcacheWritebackRange(slot_ptr, 256 * 256);
+            gpu_frame_stats.tex_upload_8bpp++;
+            gpu_frame_stats.tex_upload_rows += copy_h;
             need_flush = 1;
         } else if (slot_ptr != cached_tex_base) {
             need_flush = 1;

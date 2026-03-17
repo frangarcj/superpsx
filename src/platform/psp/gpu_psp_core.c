@@ -120,6 +120,7 @@ unsigned int __attribute__((aligned(16))) display_list[2][262144];
 uint8_t __attribute__((aligned(64))) vpool_buf[2][VPOOL_SIZE];
 int vpool_offset;
 int dl_active = 0;
+int sync_id[2] = {0, 0};
 
 /* ── GPU Core Implementation ────────────────────────────────────── */
 
@@ -163,8 +164,8 @@ void GPU_Backend_Init(void)
     sceGuFinish();
     sceGuSync(0, 0);
 
-    /* Clear PSX VRAM region in EDRAM */
-    memset((void *)((uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET),
+    /* Clear PSX VRAM region in EDRAM (uncached) */
+    memset((void *)(((uintptr_t)sceGeEdramGetAddr() | 0x40000000) + PSP_VRAM_OFFSET),
            0, 1024 * 512 * 2);
 
     sceDisplayWaitVblankStart();
@@ -195,8 +196,10 @@ void GPU_Backend_Flush(void)
     sceKernelDcacheWritebackRange(vpool_buf[dl_active], vpool_offset);
     sceGuFinish();
 
-    sceGuSendList(GU_TAIL, display_list[dl_active], NULL);
-    sceGuSync(0, 0);  /* must sync — CPU VRAM access follows */
+    sync_id[dl_active] = sceGuSendList(GU_TAIL, display_list[dl_active], NULL);
+    /* We must sync here because most callers of Flush() follow with CPU VRAM access */
+    sceGeListSync(sync_id[dl_active], 0);
+
     vpool_offset = 0;
     sceGuStart(GU_SEND, display_list[dl_active]);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
@@ -391,18 +394,24 @@ void GPU_Backend_UpdateDisplay(void)
     sceKernelDcacheWritebackRange(vpool_buf[dl_active], vpool_offset);
     sceGuFinish();
 
-    sceGuSendList(GU_TAIL, display_list[dl_active], NULL);
-    /* No sync — GE processes blit while CPU starts next frame.
-     * Double-buffered DL+vpool: CPU writes to [dl_active^1],
-     * GE reads from [dl_active]. Safe because the buffer we switch
-     * TO was last sent 2+ UpdateDisplay calls ago (already finished). */
+    sync_id[dl_active] = sceGuSendList(GU_TAIL, display_list[dl_active], NULL);
+    /* NO SYNC HERE — GE processes blit while CPU starts next frame.
+     * We will check for sync_id[new_dl] when we restart the list below. */
     sceGuSwapBuffers();
 
     /* Toggle back buffer for next frame */
     back_fb_offset = (back_fb_offset == PSP_FB0_OFFSET) ? PSP_FB1_OFFSET : PSP_FB0_OFFSET;
 
-    /* ── Switch to other DL+vpool and restart PSX VRAM list ────── */
+    /* ── Switch to other DL+vpool ────── */
     dl_active ^= 1;
+
+    /* Only wait if the other buffer is STILL active in the GE (rare at 333MHz) */
+    if (sync_id[dl_active] != 0)
+    {
+        sceGeListSync(sync_id[dl_active], 0);
+    }
+
+    memset(&gpu_frame_stats, 0, sizeof(gpu_frame_stats));
     vpool_offset = 0;
     sceGuStart(GU_SEND, display_list[dl_active]);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
@@ -486,7 +495,7 @@ void GPU_Backend_ClearVRAM(int clip_x1, int clip_y1, int clip_x2, int clip_y2)
     (void)clip_y1;
     (void)clip_x2;
     (void)clip_y2;
-    memset((void *)((uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET),
+    memset((void *)(((uintptr_t)sceGeEdramGetAddr() | 0x40000000) + PSP_VRAM_OFFSET),
            0, 1024 * 512 * 2);
     if (psx_vram_shadow)
         memset(psx_vram_shadow, 0, 1024 * 512 * 2);

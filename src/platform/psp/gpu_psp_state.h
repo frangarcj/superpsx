@@ -74,6 +74,7 @@ typedef struct {
 extern uint8_t vpool_buf[2][VPOOL_SIZE];
 extern int vpool_offset;
 extern int dl_active;
+extern int sync_id[2];
 
 /* Forward declare flush — implemented in gpu_psp_core.c */
 void GPU_Backend_Flush(void);

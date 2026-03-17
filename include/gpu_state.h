@@ -174,6 +174,7 @@ typedef struct {
     uint32_t tex_key_change;    /* texture key changes (triggers setup) */
     uint32_t vbatch_flushes;    /* vertex batch flushes (sceGuDrawArray calls) */
     uint32_t vbatch_verts;      /* total vertices submitted */
+    uint32_t vram_readbacks;    /* VRAM->RAM readbacks (stalls) */
 } gpu_frame_stats_t;
 extern gpu_frame_stats_t gpu_frame_stats;
 int Decode_TexPage_Cached(int tex_format,

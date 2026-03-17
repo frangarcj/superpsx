@@ -2,9 +2,9 @@
  * gpu_psp_vram.c — PSP VRAM transfer operations
  *
  * Handles HOST→LOCAL / LOCAL→HOST / LOCAL→LOCAL VRAM transfers
- * via CPU memcpy to/from EDRAM + shadow RAM synchronization.
+ * via GE BitBlt (sceGuCopyImage) or CPU fallback.
  *
- * Equivalent to gpu_ps2_vram.c on the PS2 platform.
+ * All operations handle PSX VRAM 1024x512 coordinate wrapping.
  */
 #include "gpu_state.h"
 #include "gpu_psp_state.h"
@@ -14,7 +14,7 @@
 #include <psputils.h>
 #include <string.h>
 
-#define VRAM_BASE_PTR ((void *)((uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET))
+#define VRAM_BASE_PTR ((void *)(((uintptr_t)sceGeEdramGetAddr() | 0x40000000) + PSP_VRAM_OFFSET))
 
 /* ── VRAM Transfer Operations ──────────────────────────────────── */
 
@@ -28,21 +28,17 @@ void GPU_Backend_StartVRAMTransfer(int x, int y, int w, int h) {
 
 void GPU_Backend_UploadShadowVRAM(int x, int y, int w, int h) {
     if (!psx_vram_shadow || w <= 0 || h <= 0) return;
-    /* In SEND mode, flush pending GE draws before CPU EDRAM write.
-     * Otherwise deferred GE draws overwrite this data when executed. */
     GPU_Backend_Flush();
     for (int row = 0; row < h; row++) {
-        uint16_t *src = &psx_vram_shadow[(y + row) * 1024 + x];
-        uint16_t *dst = (uint16_t *)VRAM_BASE_PTR + (y + row) * 1024 + x;
+        int ry = (y + row) & 511;
+        uint16_t *src = &psx_vram_shadow[ry * 1024 + (x & 1023)];
+        uint16_t *dst = (uint16_t *)VRAM_BASE_PTR + ry * 1024 + (x & 1023);
         memcpy(dst, src, w * 2);
     }
-    /* Flush dcache so GE sees shadow→EDRAM copy */
-    uint16_t *edram_vram = (uint16_t *)VRAM_BASE_PTR;
-    sceKernelDcacheWritebackRange(
-        &edram_vram[y * 1024 + x],
-        (uint32_t)(w * 2 + (h - 1) * 1024 * 2));
-
-    /* Invalidate texture cache — shadow data changed in this region */
+    /* Flush dcache so GE sees shadow→EDRAM copy. 
+     * Since it might wrap, it's safer to just flush the whole region if wrapping is complex,
+     * but here we just flush the bounding box which covers the wrap. */
+    sceKernelDcacheWritebackRange(VRAM_BASE_PTR, 1024 * 512 * 2);
     Prim_InvalidateTexCache_Region(x, y, w, h);
 }
 
@@ -54,33 +50,60 @@ void GPU_Backend_UploadRegionFast(uint32_t coords, uint32_t dims,
     int h = dims >> 16;
     if (w <= 0 || h <= 0) return;
     (void)word_count;
-    GPU_Backend_Flush();
 
-    uint16_t *edram_vram = (uint16_t *)VRAM_BASE_PTR;
-    for (int row = 0; row < h; row++) {
+    /* Use GE to copy from RAM to EDRAM. Split if it wraps 512 rows. */
+    for (int row = 0; row < h; ) {
         int ry = (y + row) & 511;
-        memcpy(&edram_vram[ry * 1024 + x], (uint16_t *)data_ptr + row * w, w * 2);
-        if (psx_vram_shadow)
-            memcpy(&psx_vram_shadow[ry * 1024 + x], (uint16_t *)data_ptr + row * w, w * 2);
+        int rows_to_edge = 512 - ry;
+        int current_h = (h - row < rows_to_edge) ? h - row : rows_to_edge;
+
+        if ((x & 7) == 0 && (w & 7) == 0) {
+            sceGuCopyImage(GU_PSM_5551, 0, 0, w, current_h, w, (uint16_t *)data_ptr + row * w, x & 1023, ry, 1024, VRAM_BASE_PTR);
+        } else {
+            GPU_Backend_Flush();
+            uint16_t *dst = (uint16_t *)VRAM_BASE_PTR + ry * 1024 + (x & 1023);
+            memcpy(dst, (uint16_t *)data_ptr + row * w, w * 2 * current_h);
+        }
+        row += current_h;
     }
 
-    sceKernelDcacheWritebackRange(
-        &edram_vram[(y & 511) * 1024 + x],
-        (uint32_t)(w * 2 + (h - 1) * 1024 * 2));
+    /* Keep shadow in sync (CPU write) */
+    if (psx_vram_shadow) {
+        for (int row = 0; row < h; row++) {
+            int ry = (y + row) & 511;
+            memcpy(&psx_vram_shadow[ry * 1024 + (x & 1023)], (uint16_t *)data_ptr + row * w, w * 2);
+        }
+    }
 
     Prim_InvalidateTexCache_Region(x, y, w, h);
 }
 
 void GPU_Backend_VRAMCopy(int sx, int sy, int dx, int dy, int w, int h) {
     if (w <= 0 || h <= 0) return;
-    GPU_Backend_Flush();
-    /* Copy within EDRAM PSX VRAM (GE render target) */
-    for (int row = 0; row < h; row++) {
-        uint16_t *src = (uint16_t *)VRAM_BASE_PTR + ((sy + row) & 511) * 1024 + (sx & 1023);
-        uint16_t *dst = (uint16_t *)VRAM_BASE_PTR + ((dy + row) & 511) * 1024 + (dx & 1023);
-        memmove(dst, src, w * 2);
+
+    /* PSX VRAM wraps 1024x512. Split if we cross the 512-row boundary. */
+    for (int row = 0; row < h; ) {
+        int sy_cur = (sy + row) & 511;
+        int dy_cur = (dy + row) & 511;
+        int rows_to_edge = 512 - sy_cur;
+        if (512 - dy_cur < rows_to_edge) rows_to_edge = 512 - dy_cur;
+        int current_h = (h - row < rows_to_edge) ? h - row : rows_to_edge;
+
+        /* Hardware BitBlt if aligned. Otherwise fallback to CPU. */
+        if (((sx | dx) & 7) == 0 && (w & 7) == 0) {
+            sceGuCopyImage(GU_PSM_5551, sx & 1023, sy_cur, w, current_h, 1024, VRAM_BASE_PTR, dx & 1023, dy_cur, 1024, VRAM_BASE_PTR);
+        } else {
+            GPU_Backend_Flush();
+            uint16_t *vram = (uint16_t *)VRAM_BASE_PTR;
+            for (int r = 0; r < current_h; r++) {
+                memmove(&vram[(dy_cur + r) * 1024 + (dx & 1023)],
+                        &vram[(sy_cur + r) * 1024 + (sx & 1023)], w * 2);
+            }
+        }
+        row += current_h;
     }
-    /* Keep shadow in sync */
+
+    /* Keep shadow in sync via CPU */
     if (psx_vram_shadow) {
         for (int row = 0; row < h; row++) {
             uint16_t *src = &psx_vram_shadow[((sy + row) & 511) * 1024 + (sx & 1023)];
@@ -88,75 +111,67 @@ void GPU_Backend_VRAMCopy(int sx, int sy, int dx, int dy, int w, int h) {
             memmove(dst, src, w * 2);
         }
     }
-    /* Flush dcache for destination region */
-    uint16_t *edram_dst = (uint16_t *)VRAM_BASE_PTR + ((dy & 511) * 1024 + (dx & 1023));
-    sceKernelDcacheWritebackRange(edram_dst,
-        (uint32_t)(w * 2 + (h - 1) * 1024 * 2));
 
     Prim_InvalidateTexCache_Region(dx, dy, w, h);
 }
 
 void GPU_Backend_VRAMWrite(uint32_t word) {
-    /* No-op: gpu_commands.c already writes to psx_vram_shadow and increments
-     * vram_tx_pixel.  GPU_Backend_VRAMFlush() will copy shadow → EDRAM. */
+    /* No-op: handled by gpu_commands.c + VRAMFlush */
     (void)word;
 }
 
 void GPU_Backend_VRAMFlush(void) {
-    /* After A0 VRAM transfer completes, sync shadow RAM → EDRAM
-     * so the data is available as a texture source for GE draws. */
     if (!psx_vram_shadow || vram_tx_w <= 0 || vram_tx_h <= 0) return;
-
-    GPU_Backend_Flush();
 
     int tx = vram_tx_x, ty = vram_tx_y;
     int tw = vram_tx_w, th = vram_tx_h;
 
-    uint16_t *edram_vram = (uint16_t *)VRAM_BASE_PTR;
-    for (int row = 0; row < th; row++) {
-        int y = (ty + row) & 511;
-        memcpy(&edram_vram[y * 1024 + tx],
-               &psx_vram_shadow[y * 1024 + tx],
-               tw * 2);
-    }
+    /* Expand to 8-pixel boundaries for GE performance (16-byte alignment) */
+    int x1 = tx & ~7;
+    int x2 = (tx + tw + 7) & ~7;
+    int aligned_w = x2 - x1;
+    if (x1 + aligned_w > 1024) aligned_w = 1024 - x1;
 
-    sceKernelDcacheWritebackRange(
-        &edram_vram[ty * 1024 + tx],
-        (uint32_t)(tw * 2 + (th - 1) * 1024 * 2));
+    for (int row = 0; row < th; ) {
+        int ry = (ty + row) & 511;
+        int rows_to_edge = 512 - ry;
+        int current_h = (th - row < rows_to_edge) ? th - row : rows_to_edge;
+
+        /* Always use GE BitBlt for Flush. It handles unaligned, but aligned is faster. */
+        sceKernelDcacheWritebackRange(&psx_vram_shadow[ry * 1024 + x1], aligned_w * 2 + (current_h - 1) * 1024 * 2);
+        sceGuCopyImage(GU_PSM_5551, x1, ry, aligned_w, current_h, 1024, psx_vram_shadow, x1, ry, 1024, VRAM_BASE_PTR);
+        
+        row += current_h;
+    }
 
     Prim_InvalidateTexCache_Region(tx, ty, tw, th);
 }
 
 void GPU_Backend_VRAMReadback(int x, int y, int w, int h) {
-    /* Read from EDRAM PSX VRAM back to shadow for CPU access (C0 StoreImage). */
     if (!psx_vram_shadow || w <= 0 || h <= 0) return;
 
-    /* Need to finish pending GE draws first */
-    Prim_FlushBatch();
-    sceKernelDcacheWritebackRange(vpool_buf[dl_active], vpool_offset);
-    sceGuFinish();
-    sceGuSendList(GU_TAIL, display_list[dl_active], NULL);
-    sceGuSync(0, 0);
+    GPU_Backend_Flush();
 
-    uint16_t *edram_vram = (uint16_t *)VRAM_BASE_PTR;
-    for (int row = 0; row < h; row++) {
+    /* Expand to 8-pixel boundaries for GE performance */
+    int x1 = x & ~7;
+    int x2 = (x + w + 7) & ~7;
+    int aligned_w = x2 - x1;
+    if (x1 + aligned_w > 1024) aligned_w = 1024 - x1;
+
+    for (int row = 0; row < h; ) {
         int ry = (y + row) & 511;
-        int rx = x & 1023;
-        memcpy(&psx_vram_shadow[ry * 1024 + rx],
-               &edram_vram[ry * 1024 + rx],
-               w * 2);
+        int rows_to_edge = 512 - ry;
+        int current_h = (h - row < rows_to_edge) ? h - row : rows_to_edge;
+
+        /* GE Readback: EDRAM -> RAM */
+        sceGuCopyImage(GU_PSM_5551, x1, ry, aligned_w, current_h, 1024, VRAM_BASE_PTR, x1, ry, 1024, psx_vram_shadow);
+        row += current_h;
     }
 
-    /* Re-open display list for further draws (SEND mode) */
-    vpool_offset = 0;
-    sceGuStart(GU_SEND, display_list[dl_active]);
-    sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
-    sceGuScissor(draw_clip_x1, draw_clip_y1,
-                 draw_clip_x2 - draw_clip_x1 + 1, draw_clip_y2 - draw_clip_y1 + 1);
-    sceGuEnable(GU_SCISSOR_TEST);
+    /* Wait for GE to finish and invalidate dcache so CPU sees new data */
+    GPU_Backend_FlushSync();
+    sceKernelDcacheInvalidateRange(&psx_vram_shadow[(y & 511) * 1024 + x1], aligned_w * 2 + (h - 1) * 1024 * 2);
 }
-
-/* ── Debug VRAM Dump (stubs on PSP) ────────────────────────────── */
 
 void DumpVRAM(const char *filename) { (void)filename; }
 void DumpShadowVRAM(const char *filename) { (void)filename; }
