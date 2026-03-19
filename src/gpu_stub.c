@@ -23,11 +23,6 @@ int fb_width = 640;
 int fb_height = 480;
 int fb_psm = 0;
 
-unsigned __int128 gif_packet_buf[2][GIF_BUFFER_SIZE];
-gif_qword_t *fast_gif_ptr = NULL;
-gif_qword_t *gif_buffer_end_safe = NULL;
-int current_buffer = 0;
-
 int draw_offset_x = 0;
 int draw_offset_y = 0;
 int draw_clip_x1 = 0;
@@ -84,14 +79,9 @@ int gpu_cmd_ptr = 0;
 int gpu_transfer_words = 0;
 int gpu_transfer_total = 0;
 
-unsigned __int128 buf_image[1024];
-int buf_image_ptr = 0;
-
 uint32_t vram_gen_counter = 0;
 
 uint64_t gpu_busy_until = 0;
-
-gs_state_t gs_state = {0};
 
 gpu_frame_stats_t gpu_frame_stats = {0};
 
@@ -306,9 +296,17 @@ void GPU_Backend_InvalidateState(void) {}
 
 int GPU_Backend_TryFastPoly(uint32_t *cmd_buffer) { (void)cmd_buffer; return 0; }
 
-/* ── Audio backend stubs ─────────────────────────────────────────── */
-int Audio_Backend_Init(void) { return 0; }
-int Audio_Backend_Configure(int sr, int bits, int ch, int vol)
-{ (void)sr; (void)bits; (void)ch; (void)vol; return 0; }
-void Audio_Backend_Play(const int16_t *buf, int sz) { (void)buf; (void)sz; }
-void Audio_Backend_Shutdown(void) {}
+/* Audio stubs NOT needed — platform audio_*_backend.c is always compiled */
+
+/* ── OSD stubs (osd_*.c is part of GPU_SOURCES, excluded in headless) ── */
+
+#include "osd.h"
+#include <stdarg.h>
+
+void osd_init(void) {}
+void osd_printf(int x, int y, uint32_t color, const char *fmt, ...)
+{ (void)x; (void)y; (void)color; (void)fmt; }
+void osd_boot_log(const char *fmt, ...) { (void)fmt; }
+void osd_draw(void) {}
+void osd_clear(void) {}
+void osd_set_enabled(int enabled) { (void)enabled; }

@@ -12,7 +12,7 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  build:
+  build-ps2:
     runs-on: ubuntu-latest
     container: ps2dev/ps2dev:latest
 
@@ -59,7 +59,7 @@ jobs:
             stuck_detection: "OFF"
             lto: "ON"
 
-    name: "${{ matrix.name }}"
+    name: "PS2 - ${{ matrix.name }}"
 
     steps:
     - uses: actions/checkout@v4
@@ -92,6 +92,59 @@ jobs:
       if: ${{ success() }}
       uses: actions/upload-artifact@v4
       with:
-        name: superpsx-${{ matrix.name }}-${{ steps.slug.outputs.sha8 }}
+        name: superpsx-ps2-${{ matrix.name }}-${{ steps.slug.outputs.sha8 }}
         path: |
           build/superpsx.elf
+
+  build-psp:
+    runs-on: ubuntu-latest
+    container: pspdev/pspdev:latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "Default"
+            host_log: "OFF"
+            debug_log: "OFF"
+          - name: "Debug"
+            host_log: "OFF"
+            debug_log: "ON"
+          - name: "Release"
+            host_log: "OFF"
+            debug_log: "OFF"
+            lto: "ON"
+
+    name: "PSP - ${{ matrix.name }}"
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        apk update
+        apk add cmake make
+
+    - name: Configure with CMake
+      run: |
+        cmake -B build-psp \
+          -DCMAKE_TOOLCHAIN_FILE=$PSPDEV/psp/share/pspdev.cmake \
+          -DENABLE_HOST_LOG=${{ matrix.host_log }} \
+          -DENABLE_DEBUG_LOG=${{ matrix.debug_log }} \
+          -DENABLE_LTO=${{ matrix.lto || 'OFF' }}
+
+    - name: Build project with CMake
+      run: |
+        cmake --build build-psp -j $(getconf _NPROCESSORS_ONLN)
+
+    - name: Get short SHA
+      id: slug
+      run: echo "sha8=$(echo ${GITHUB_SHA} | cut -c1-8)" >> $GITHUB_OUTPUT
+
+    - name: Upload artifacts
+      if: ${{ success() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: superpsx-psp-${{ matrix.name }}-${{ steps.slug.outputs.sha8 }}
+        path: |
+          build-psp/EBOOT.PBP
