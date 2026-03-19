@@ -313,12 +313,14 @@ void GPU_Backend_UpdateDisplay(void)
             }
             else
             {
-                int out_w = PSP_SCREEN_W;
-                int out_h = (src_h * PSP_SCREEN_W) / src_w;
-                if (out_h > PSP_SCREEN_H)
+                /* True 4:3 — PSX display is always 4:3 regardless of pixel
+                 * resolution (320/512/640 all map to the same CRT width). */
+                int out_h = PSP_SCREEN_H;
+                int out_w = (out_h * 4) / 3;
+                if (out_w > PSP_SCREEN_W)
                 {
-                    out_h = PSP_SCREEN_H;
-                    out_w = (src_w * PSP_SCREEN_H) / src_h;
+                    out_w = PSP_SCREEN_W;
+                    out_h = (out_w * 3) / 4;
                 }
                 blit_cache.out_w = out_w;
                 blit_cache.out_h = out_h;
