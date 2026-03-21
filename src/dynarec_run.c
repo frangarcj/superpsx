@@ -28,6 +28,7 @@
 #include "loader.h"
 #include "config.h"
 #include "profiler.h"
+#include "interpreter.h"
 
 /* ================================================================
  *  Constants and Result Codes
@@ -1062,8 +1063,16 @@ void Run_CPU(void)
                 bios_last_pc = cpu.pc;
                 bios_same_count = 0;
             }
-            if (run_jit_chain(deadline) == RUN_RES_BREAK)
-                break;
+            if (psx_config.interpreter)
+            {
+                if (run_interpreter_chain(deadline) == RUN_RES_BREAK)
+                    break;
+            }
+            else
+            {
+                if (run_jit_chain(deadline) == RUN_RES_BREAK)
+                    break;
+            }
         }
 
         if (global_cycles >= scheduler_cached_earliest)
@@ -1082,8 +1091,16 @@ void Run_CPU(void)
 
         while (global_cycles < deadline)
         {
-            if (run_jit_chain(deadline) == RUN_RES_BREAK)
-                break;
+            if (psx_config.interpreter)
+            {
+                if (run_interpreter_chain(deadline) == RUN_RES_BREAK)
+                    break;
+            }
+            else
+            {
+                if (run_jit_chain(deadline) == RUN_RES_BREAK)
+                    break;
+            }
             /* A hardware write (e.g. DMA CHCR) may have scheduled a new
              * event with a deadline earlier than our current batch deadline.
              * Break out so the outer loop re-reads scheduler_cached_earliest

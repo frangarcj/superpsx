@@ -51,6 +51,7 @@ int load_config_file(void)
     psx_config.cdrom_fast = 0;
     psx_config.display_mode = 0;
     psx_config.display_filter = 0;
+    psx_config.interpreter = 0;
     strncpy(psx_config.bios_path, BIOS_PATH_DEFAULT, sizeof(psx_config.bios_path) - 1);
     psx_config.bios_path[sizeof(psx_config.bios_path) - 1] = '\0';
 
@@ -201,6 +202,11 @@ int load_config_file(void)
         {
             psx_config.display_filter = (atoi(val) != 0 && strcasecmp(val, "false") != 0);
             printf("CONFIG: display_filter = %d\n", psx_config.display_filter);
+        }
+        else if (strcasecmp(key, "interpreter") == 0)
+        {
+            psx_config.interpreter = (atoi(val) != 0 && strcasecmp(val, "false") != 0);
+            printf("CONFIG: interpreter = %d\n", psx_config.interpreter);
         }
         line = next;
     }

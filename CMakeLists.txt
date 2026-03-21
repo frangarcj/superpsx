@@ -134,6 +134,7 @@ set(SUPERPSX_SOURCES
     src/iso_image.c
     src/iso_fs.c
     src/profiler.c
+    src/interpreter.c
 )
 
 # ============================================================================
@@ -394,6 +395,7 @@ set(PLAYGROUND_SOURCES
     src/dynarec_compile.c
     src/dynarec_insn.c
     src/dynarec_run.c
+    src/interpreter.c
 )
 
 if(TARGET_PSP)

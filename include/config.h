@@ -25,6 +25,7 @@ typedef struct {
     int  cdrom_fast;          /* 1 = minimal CDROM pending delays (default 0) */
     int  display_mode;        /* 0=4:3 aspect, 1=stretch fill, 2=integer (default 0) */
     int  display_filter;      /* 1 = bilinear filter (default 0 = nearest) */
+    int  interpreter;         /* 1 = use interpreter instead of DRC (default 0) */
 } PSXConfig;
 
 extern PSXConfig psx_config;

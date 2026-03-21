@@ -25,6 +25,7 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
 
 #include "playground.h"
 #include "platform.h"
+#include "interpreter.h"
 
 /* ================================================================
  *  Globals used by the framework
@@ -241,6 +242,12 @@ void pg_run_jit(uint32_t pc, int32_t cycles)
     int max_dispatches = 200;
     int first_block = 1;
 
+    if (psx_config.interpreter)
+    {
+        run_interpreter_chain(cycles);
+        return;
+    }
+
     while (cpu.cycles_left > 0 && max_dispatches-- > 0)
     {
         uint32_t curr_pc = cpu.pc;
@@ -305,6 +312,18 @@ int main(int argc, char *argv[])
     /* 1. Initialise memory (allocates psx_ram, psx_bios, mem_lut) */
     Init_Memory();
     Init_MemoryLUT();
+
+    /* Load config manually to pick up interpreter flag */
+    FILE *f = fopen("superpsx.ini", "r");
+    if (f) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            if (strncmp(line, "interpreter=", 12) == 0) {
+                psx_config.interpreter = atoi(line + 12);
+            }
+        }
+        fclose(f);
+    }
 
     /* 2. Initialise CPU struct */
     Init_CPU();
