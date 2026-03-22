@@ -475,6 +475,7 @@ void pg_run_gte_tests(void);      /* test_gte.c    */
 void pg_run_expansion_tests(void); /* test_expansion.c */
 void pg_run_vu0_micro_tests(void); /* test_vu0_micro.c */
 void pg_run_gte_compare_tests(void); /* test_gte_compare.c */
+void pg_run_sio_tests(void);      /* test_sio.c    */
 
 /* Master runner — calls all category runners above */
 void pg_run_all_tests(void);

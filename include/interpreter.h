@@ -8,4 +8,8 @@
  * otherwise returns RUN_RES_NORMAL. */
 int run_interpreter_chain(uint64_t deadline);
 
+/* Reset interpreter-internal state (branch pipeline).
+ * Call before starting a new isolated execution context. */
+void interpreter_reset_state(void);
+
 #endif /* INTERPRETER_H */

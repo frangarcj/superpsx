@@ -34,6 +34,8 @@ typedef struct
     uint32_t current_pc;          /* PC of the currently executing instruction (for exceptions) */
     uint32_t load_delay_reg;      /* Load delay slot: target register index (0=none) */
     uint32_t load_delay_val;      /* Load delay slot: pending value */
+    uint32_t load_commit_reg;     /* Load delay slot: value to test against current insn */
+    uint32_t load_commit_val;
     uint32_t i_stat;              /* Interrupt Status Register */
     uint32_t i_mask;              /* Interrupt Mask Register */
     uint32_t block_aborted;       /* Set by PSX_Exception mid-block; checked by JIT */
@@ -53,7 +55,9 @@ typedef struct
 #define CPU_CURRENT_PC (32 * 4 + 12 + 32 * 4 + 32 * 4 + 32 * 4)
 #define CPU_LOAD_DELAY_REG (CPU_CURRENT_PC + 4)
 #define CPU_LOAD_DELAY_VAL (CPU_CURRENT_PC + 8)
-#define CPU_I_STAT (CPU_LOAD_DELAY_VAL + 4)
+#define CPU_LOAD_COMMIT_REG (CPU_CURRENT_PC + 12)
+#define CPU_LOAD_COMMIT_VAL (CPU_CURRENT_PC + 16)
+#define CPU_I_STAT (CPU_LOAD_COMMIT_VAL + 4)
 #define CPU_I_MASK (CPU_I_STAT + 4)
 #define CPU_BLOCK_ABORTED (CPU_I_MASK + 4)
 #define CPU_BRANCH_COND (CPU_BLOCK_ABORTED + 4)
@@ -200,14 +204,6 @@ void CDROM_Write(uint32_t addr, uint32_t data);
 /* Set by scheduler when CD-ROM int_flag is active and signal delay expired.
  * Checked inline in dynarec loop for cheap level-triggered re-assertion. */
 extern uint8_t cdrom_irq_active;
-
-/* SIO (controller) delayed IRQ7 support.
- * The PSX BIOS kernel acknowledges any old IRQ7 ~100 cycles after sending a
- * byte, then waits for the new IRQ7.  Firing IRQ7 immediately would cause the
- * acknowledge to clear the pending IRQ before the kernel polls for it.
- * Set to the global_cycles deadline at which IRQ7 should actually fire;
- * 0 means no pending SIO IRQ. */
-extern volatile uint64_t sio_irq_delay_cycle;
 
 /* GPU (IRQ1) deferred interrupt support.
  * On real PSX hardware the GPU command FIFO is processed asynchronously:

@@ -12,6 +12,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
+
 #include "dynarec.h"
 #include "platform.h"
 #include "gpu_backend.h"
@@ -129,7 +130,7 @@ static uint64_t perf_last_report_cycle = 0;
 static uint32_t perf_last_report_tick = 0;
 
 /* Main execution flow state */
-static int binary_loaded = 0;
+int binary_loaded = 0;
 static uint32_t run_iterations = 0;
 static uint32_t idle_skip_pc = 0;
 static uint32_t idle_skip_count = 0;
@@ -606,9 +607,6 @@ static inline void handle_performance_report(void)
 
 static inline void sync_hardware_and_interrupts(void)
 {
-    /* Check and dispatch hardware interrupts.
-     * CD-ROM IRQ re-assertion is now handled in the I_STAT ack path
-     * (hardware.c).  SIO IRQ delay is now a scheduler event. */
     if (CheckInterrupts())
     {
         cpu.cop0[PSX_COP0_CAUSE] |= (1 << 10);

@@ -39,17 +39,56 @@ PGTestCtx pg_ctx;
  * ================================================================ */
 
 /* --- Hardware / IO --- */
+/* Track HW accesses for SIO timing tests */
+static uint32_t hw_read_log[64];
+static uint32_t hw_write_log[64];  /* addr in [0], data in [1] pairs */
+static int hw_read_count = 0;
+static int hw_write_count = 0;
+static uint32_t hw_read_return_val = 0; /* Value returned by ReadHardware */
+static uint32_t hw_read_seq[64];       /* Sequence of return values */
+static int hw_read_seq_len = 0;
+static int hw_read_seq_idx = 0;
+
+void pg_reset_hw_log(void)
+{
+    hw_read_count = 0;
+    hw_write_count = 0;
+    hw_read_return_val = 0;
+    hw_read_seq_len = 0;
+    hw_read_seq_idx = 0;
+}
+
+int pg_get_hw_read_count(void) { return hw_read_count; }
+int pg_get_hw_write_count(void) { return hw_write_count / 2; }
+uint32_t pg_get_hw_read_addr(int idx) { return (idx < hw_read_count) ? hw_read_log[idx] : 0; }
+uint32_t pg_get_hw_write_addr(int idx) { return (idx*2 < hw_write_count) ? hw_write_log[idx*2] : 0; }
+uint32_t pg_get_hw_write_data(int idx) { return (idx*2+1 < hw_write_count) ? hw_write_log[idx*2+1] : 0; }
+void pg_set_hw_read_value(uint32_t val) { hw_read_return_val = val; }
+
+void pg_set_hw_read_sequence(const uint32_t *values, int count)
+{
+    for (int i = 0; i < count && i < 64; i++)
+        hw_read_seq[i] = values[i];
+    hw_read_seq_len = count < 64 ? count : 64;
+    hw_read_seq_idx = 0;
+}
+
 uint32_t ReadHardware(uint32_t addr)
 {
-    (void)addr;
-    return 0;
+    if (hw_read_count < 64)
+        hw_read_log[hw_read_count++] = addr;
+    if (hw_read_seq_len > 0 && hw_read_seq_idx < hw_read_seq_len)
+        return hw_read_seq[hw_read_seq_idx++];
+    return hw_read_return_val;
 }
 void WriteHardware(uint32_t addr,
                    uint32_t data, int width)
 {
-    (void)addr;
-    (void)data;
     (void)width;
+    if (hw_write_count + 1 < 64) {
+        hw_write_log[hw_write_count++] = addr;
+        hw_write_log[hw_write_count++] = data;
+    }
 }
 void SignalInterrupt(uint32_t irq) { (void)irq; }
 
@@ -100,7 +139,6 @@ void SPU_DMA_Read(uint32_t a, int n)
 uint32_t sio_data = 0;
 int sio_tx_pending = 0;
 int sio_selected = 0;
-volatile uint64_t sio_irq_delay_cycle = 0;
 uint32_t SIO_Read(uint32_t a)
 {
     (void)a;
@@ -287,7 +325,15 @@ void pg_run_jit(uint32_t pc, int32_t cycles)
         }
 
         int32_t remaining = ((block_func_t)block)(&cpu, psx_ram, psx_bios, cpu.cycles_left);
+        uint32_t cycles_taken = (uint32_t)(cpu.cycles_left - remaining);
+        if (cycles_taken == 0)
+            cycles_taken = 8;
+        global_cycles += cycles_taken;
         cpu.cycles_left = remaining;
+
+        /* Dispatch scheduler events that may have become due */
+        if (global_cycles >= scheduler_cached_earliest)
+            Scheduler_DispatchEvents(global_cycles);
 
         if (cpu.block_aborted)
         {
