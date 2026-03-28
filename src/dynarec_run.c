@@ -625,12 +625,14 @@ void sync_hardware_and_interrupts(void)
         uint32_t sr = cpu.cop0[PSX_COP0_SR];
         if ((sr & 1) && (sr & (1 << 10)))
         {
+            cpu.irq_pending = 0;
             PSX_Exception(0);
         }
     }
     else
     {
         cpu.cop0[PSX_COP0_CAUSE] &= ~(1 << 10);
+        cpu.irq_pending = 0;
     }
 }
 
@@ -1122,23 +1124,6 @@ void Run_CPU(void)
         uint64_t deadline = Scheduler_NextDeadlineFast();
         if (deadline == UINT64_MAX)
             deadline = global_cycles + 1024;
-
-        /* During MCD exchange, cap the deadline to prevent HBlank
-         * event accumulation.  The interpreter dispatches events
-         * every ~2 cycles (per-instruction), so the ISR cascade
-         * resolves quickly.  In DRC, the outer loop deadline can be
-         * 69K+ cycles (one HBlank batch), allowing many events to
-         * stack up and starve lower-priority IRQ sources like SIO.
-         * Cap to 2048 cycles to match interpreter granularity. */
-        {
-            extern int sio_state;
-            if (sio_state > 0)
-            {
-                uint64_t mcd_dl = global_cycles + 2048;
-                if (mcd_dl < deadline)
-                    deadline = mcd_dl;
-            }
-        }
 
         while (global_cycles < deadline)
         {

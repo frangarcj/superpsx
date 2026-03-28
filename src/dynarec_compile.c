@@ -838,10 +838,22 @@ void emit_branch_epilogue(uint32_t target_pc)
 
     /* Update cpu.pc IMMEDIATELY, before any potential abort check */
     emit_load_imm32(REG_T8, target_pc);
+    EMIT_SW(REG_T8, CPU_PC, REG_S0);
 
-    /* If remaining cycles <= 0, abort to C scheduler */
-    emit(MK_I(0x07, REG_S2, REG_ZERO, 2)); /* BGTZ s2, +2 */
-    EMIT_SW(REG_T8, CPU_PC, REG_S0);       /* delay slot: always executes (P9) */
+    /* Two-check abort sequence: cycles exhausted OR IRQ pending.
+     * Layout:
+     *   BLEZ  s2, +3          → J abort (cycles <= 0)
+     *   LW    AT, IRQ(S0)     (delay: always loads irq_pending)
+     *   BEQ   AT, ZERO, +3    → direct_link (no IRQ)
+     *   NOP                   (delay)
+     *   J     abort_trampoline (cycles<=0 OR IRQ pending)
+     *   NOP                   (J delay)
+     *   [direct_link]
+     */
+    emit(MK_I(0x06, REG_S2, REG_ZERO, 3)); /* BLEZ s2, +3 → J abort */
+    EMIT_LW(REG_AT, CPU_IRQ_PENDING, REG_S0); /* delay: load irq_pending */
+    EMIT_BEQ(REG_AT, REG_ZERO, 3);         /* BEQ at, zero, +3 → direct_link */
+    EMIT_NOP();
     EMIT_J_ABS((uint32_t)abort_trampoline_addr);
     EMIT_NOP(); /* Delay slot */
 

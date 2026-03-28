@@ -11,8 +11,8 @@
  */
 #include "playground.h"
 
-/* Forward declaration for SIO tests */
-void pg_run_sio_tests(void);
+/* Forward declaration for SIO tests (test_sio.c — not yet implemented) */
+/* void pg_run_sio_tests(void); */
 
 void pg_run_all_tests(void)
 {
@@ -22,7 +22,7 @@ void pg_run_all_tests(void)
     pg_run_block_tests();
     pg_run_dirty_tests();
     pg_run_gte_tests();
-    pg_run_sio_tests();
+    /* pg_run_sio_tests(); — test_sio.c not yet implemented */
 #ifdef PLATFORM_PS2
     pg_run_vu0_micro_tests();
     pg_run_gte_compare_tests();

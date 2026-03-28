@@ -117,8 +117,6 @@ set(SUPERPSX_SOURCES
     src/hardware.c
     src/dma.c
     src/mdec.c
-    src/mdec_ipu.c
-    src/mdec_vfpu.c
     src/memorycard.c
     src/sio.c
     src/timers.c
@@ -139,6 +137,14 @@ set(SUPERPSX_SOURCES
     src/profiler.c
     src/interpreter.c
 )
+
+# Platform-specific MDEC backends
+if(TARGET_PS2)
+    list(APPEND SUPERPSX_SOURCES src/mdec_ipu.c)
+endif()
+if(TARGET_PSP)
+    list(APPEND SUPERPSX_SOURCES src/mdec_vfpu.c)
+endif()
 
 # ============================================================================
 # VU0 Micro Program Assembly Pipeline (PS2 only)

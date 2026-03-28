@@ -27,6 +27,7 @@ static inline void sio_flush_deferred_vblank(void)
     if (sio_deferred_vblank)
     {
         cpu.i_stat |= 1; /* VBlank bit 0 */
+        cpu.irq_pending = (cpu.i_stat & cpu.i_mask & 0x7FF) != 0;
         sio_deferred_vblank = 0;
     }
 }

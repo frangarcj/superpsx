@@ -43,6 +43,7 @@ typedef struct
     uint32_t initial_cycles_left; /* Used to compute elapsed cycles during JIT execution */
     uint32_t cycles_left;         /* Maintained by JIT, sync'd to cpu on C calls */
     int32_t  cycles_left_correction; /* Accumulated S2 trim from mid-chain SIO capping */
+    uint32_t irq_pending;         /* Non-zero when (i_stat & i_mask & 0x7FF) != 0; checked by JIT at block boundaries */
 } R3000CPU;
 
 /* Struct offsets for asm code generation */
@@ -64,6 +65,7 @@ typedef struct
 #define CPU_BRANCH_COND (CPU_BLOCK_ABORTED + 4)
 #define CPU_INITIAL_CYCLES_LEFT (CPU_BRANCH_COND + 4)
 #define CPU_CYCLES_LEFT (CPU_INITIAL_CYCLES_LEFT + 4)
+#define CPU_IRQ_PENDING (CPU_CYCLES_LEFT + 8) /* skip cycles_left_correction */
 
 /* COP0 register indices */
 #define PSX_COP0_SR 12
