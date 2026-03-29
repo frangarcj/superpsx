@@ -18,7 +18,7 @@ static uint16_t sio_baud = 0;
 int sio_tx_pending = 0; /* 1 = RX data available */
 
 /* Controller protocol state machine — partially exposed for JIT */
-int sio_state = 0;               /* Current byte index in protocol */
+int sio_state = 0;                /* Current byte index in protocol */
 uint32_t sio_deferred_vblank = 0; /* VBlank deferred during MCD data xfer */
 
 /* Flush any deferred VBlank when leaving MCD data transfer phase */
@@ -45,14 +45,17 @@ static uint16_t serial_mode = 0;
 static uint16_t serial_ctrl = 0;
 static uint16_t serial_baud = 0;
 
-#define SIO_IRQ_DELAY     500   /* Pad IRQ delay */
-#define SIO_MCD_IRQ_DELAY 1500  /* Memcard IRQ delay (longer — BIOS needs time) */
+#define SIO_IRQ_DELAY 500      /* Pad IRQ delay */
+#define SIO_MCD_IRQ_DELAY 1500 /* Memcard IRQ delay (longer — BIOS needs time) */
 volatile uint64_t sio_irq_delay_cycle = 0;
 int sio_irq_pending = 0;
-int sio_ack_latch = 0;          /* 1 = ACK pulse ready, consumed on STAT read */
+int sio_ack_latch = 0; /* 1 = ACK pulse ready, consumed on STAT read */
 
 /* SIO trace for debugging memory card protocol — disabled for performance */
-#define SIO_TRACE(fmt, ...) do {} while(0)
+#define SIO_TRACE(fmt, ...) \
+    do                      \
+    {                       \
+    } while (0)
 
 /* ---- Scheduler-driven SIO IRQ delay ---- */
 static void Sched_SIO_IRQ_Callback(int ticks_late)
@@ -61,8 +64,8 @@ static void Sched_SIO_IRQ_Callback(int ticks_late)
     SIO_TRACE("IRQ CB fired cy=%llu pending=%d dev=%d state=%d\n",
               (unsigned long long)global_cycles, sio_irq_pending, sio_device, sio_state);
     sio_irq_delay_cycle = 0;
-    sio_irq_pending = 0;    /* IRQ delivered — no longer pending */
-    sio_stat |= (1 << 9);   /* Latch IRQ flag — BIOS checks this to confirm SIO source */
+    sio_irq_pending = 0;  /* IRQ delivered — no longer pending */
+    sio_stat |= (1 << 9); /* Latch IRQ flag — BIOS checks this to confirm SIO source */
     SignalInterrupt(7);
 }
 
@@ -80,7 +83,8 @@ static inline void sio_assert_ack(void)
 {
     sio_ack_latch = 1;
     int32_t delay;
-    if (sio_device == 2) {
+    if (sio_device == 2)
+    {
         /* Memcard: longer delay, NO sio_irq_pending (no block_aborted) */
         delay = SIO_MCD_IRQ_DELAY;
         uint64_t deadline = global_cycles + partial_block_cycles + delay;
@@ -89,7 +93,9 @@ static inline void sio_assert_ack(void)
                   (unsigned long long)deadline, (unsigned long long)scheduler_cached_earliest);
         sio_irq_delay_cycle = deadline;
         Scheduler_ScheduleEvent(SCHED_EVENT_SIO_IRQ, deadline, Sched_SIO_IRQ_Callback);
-    } else {
+    }
+    else
+    {
         /* Pad: shorter delay + irq_pending for ack4 abort */
         delay = SIO_IRQ_DELAY;
         sio_irq_pending = 1;
@@ -98,7 +104,8 @@ static inline void sio_assert_ack(void)
     /* Cap remaining block cycles so the JIT returns to the outer
      * loop before the scheduled SIO IRQ deadline. */
     int32_t target = delay + 200;
-    if ((int32_t)cpu.cycles_left > target) {
+    if ((int32_t)cpu.cycles_left > target)
+    {
         cpu.cycles_left_correction += ((int32_t)cpu.cycles_left - target);
         cpu.cycles_left = (uint32_t)target;
     }
@@ -132,7 +139,8 @@ static inline uint32_t SIO_Read_Inner(uint32_t phys)
             if (sio_device == 2)
             {
                 /* Memcard: ACK latch model (consume on read) */
-                if (sio_ack_latch) {
+                if (sio_ack_latch)
+                {
                     stat |= 0x80;
                     sio_ack_latch = 0;
                 }
@@ -276,9 +284,12 @@ static inline void SIO_Write_Inner(uint32_t phys, uint32_t data)
             if (!MCD_IsIdle(sio_port))
             {
                 sio_assert_ack();
-            } else {
+            }
+            else
+            {
                 int target = 200;
-                if ((int32_t)cpu.cycles_left > target) {
+                if ((int32_t)cpu.cycles_left > target)
+                {
                     cpu.cycles_left_correction += ((int32_t)cpu.cycles_left - target);
                     cpu.cycles_left = target;
                 }

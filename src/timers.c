@@ -564,6 +564,10 @@ uint32_t Timers_Read(uint32_t addr)
     }
     case 1:
     {
+        /* Sync counter before returning mode — ensures target-reached (bit 11)
+         * and overflow (bit 12) flags are up-to-date even without scheduler
+         * events (lazy scheduling when no IRQ enabled). */
+        Timer_SyncValue(t);
         uint32_t mode = timers[t].mode;
         timers[t].mode &= ~((1 << 11) | (1 << 12));
         return mode;

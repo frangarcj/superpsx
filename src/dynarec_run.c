@@ -1067,50 +1067,50 @@ void Run_CPU(void)
     static uint32_t bios_last_pc = 0;
     static uint32_t bios_same_count = 0;
 
-    /* Phase 1: BIOS */
+    /* ================================================================
+     * Main dispatch loop: one chain → dispatch → sync per iteration.
+     * Budget = delta to next scheduled event.  After each chain exit,
+     * dispatch all due events and deliver pending interrupts.
+     * This guarantees mid-block events (SIO ACK, DMA) are handled
+     * within one chain latency.
+     * ================================================================ */
+
     printf("DYNAREC: Phase 1 - BIOS Booting...\n");
     while (!binary_loaded)
     {
-        uint64_t deadline = Scheduler_NextDeadlineFast();
-        if (deadline == UINT64_MAX)
-            deadline = global_cycles + 1024;
+        if (handle_bios_boot_hook(cpu.pc))
+            continue;
 
-        while (global_cycles < deadline)
+        /* Stuck detection */
+        bios_trace_count++;
+        if (cpu.pc == bios_last_pc)
         {
-            if (handle_bios_boot_hook(cpu.pc))
-                break;
-            bios_trace_count++;
-            if (cpu.pc == bios_last_pc)
+            bios_same_count++;
+            if (bios_same_count == 10000)
             {
-                bios_same_count++;
-                if (bios_same_count == 10000)
-                {
-                    printf("[BIOS-STUCK] PC=%08X stuck for 10000 iters at cycle %llu\n",
-                           (unsigned)cpu.pc, (unsigned long long)global_cycles);
-                    /* Dump some register state */
-                    printf("[BIOS-STUCK] regs: v0=%08X v1=%08X a0=%08X a1=%08X sp=%08X ra=%08X\n",
-                           (unsigned)cpu.regs[2], (unsigned)cpu.regs[3],
-                           (unsigned)cpu.regs[4], (unsigned)cpu.regs[5],
-                           (unsigned)cpu.regs[29], (unsigned)cpu.regs[31]);
-                    fflush(stdout);
-                }
-            }
-            else
-            {
-                bios_last_pc = cpu.pc;
-                bios_same_count = 0;
-            }
-            if (psx_config.interpreter)
-            {
-                if (run_interpreter_chain(deadline) == RUN_RES_BREAK)
-                    break;
-            }
-            else
-            {
-                if (run_jit_chain(deadline) == RUN_RES_BREAK)
-                    break;
+                printf("[BIOS-STUCK] PC=%08X stuck for 10000 iters at cycle %llu\n",
+                       (unsigned)cpu.pc, (unsigned long long)global_cycles);
+                printf("[BIOS-STUCK] regs: v0=%08X v1=%08X a0=%08X a1=%08X sp=%08X ra=%08X\n",
+                       (unsigned)cpu.regs[2], (unsigned)cpu.regs[3],
+                       (unsigned)cpu.regs[4], (unsigned)cpu.regs[5],
+                       (unsigned)cpu.regs[29], (unsigned)cpu.regs[31]);
+                fflush(stdout);
             }
         }
+        else
+        {
+            bios_last_pc = cpu.pc;
+            bios_same_count = 0;
+        }
+
+        uint64_t deadline = scheduler_cached_earliest;
+        if (deadline == UINT64_MAX || deadline <= global_cycles)
+            deadline = global_cycles + 1024;
+
+        if (psx_config.interpreter)
+            run_interpreter_chain(deadline);
+        else
+            run_jit_chain(deadline);
 
         if (global_cycles >= scheduler_cached_earliest)
             Scheduler_DispatchEvents(global_cycles);
@@ -1118,33 +1118,19 @@ void Run_CPU(void)
         scheduler_interrupt_chain = 0;
         sync_hardware_and_interrupts();
     }
+
     printf("DYNAREC: Phase 2 - Main Execution...\n");
     while (true)
     {
-        uint64_t deadline = Scheduler_NextDeadlineFast();
-        if (deadline == UINT64_MAX)
+        uint64_t deadline = scheduler_cached_earliest;
+        if (deadline == UINT64_MAX || deadline <= global_cycles)
             deadline = global_cycles + 1024;
 
-        while (global_cycles < deadline)
-        {
-            if (run_jit_chain(deadline) == RUN_RES_BREAK)
-                break;
-            /* A hardware write (e.g. DMA CHCR) may have scheduled a new
-             * event with a deadline earlier than our current batch deadline.
-             * Break out so the outer loop re-reads scheduler_cached_earliest
-             * and uses the closer deadline for the next batch. */
-            if (scheduler_cached_earliest < deadline)
-                break;
-            /* An event callback (or IO write) signalled an interrupt —
-             * break out to dispatch events and deliver the IRQ promptly. */
-            if (scheduler_interrupt_chain)
-                break;
-        }
+        run_jit_chain(deadline);
 
         if (global_cycles >= scheduler_cached_earliest)
         {
             PROF_PUSH(PROF_SCHEDULER);
-            /* Log dispatch when SIO event is active or SIO IRQ is pending */
             Scheduler_DispatchEvents(global_cycles);
             PROF_POP(PROF_SCHEDULER);
         }
