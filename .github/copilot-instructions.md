@@ -35,11 +35,15 @@ perl -e 'alarm 20; exec @ARGV' make -C build run \
 pkill -f pcsx2 2>/dev/null; \
 grep 'Result:' ./build/cpu_out.txt | head -3
 
-# Timer test — 20s is enough
-perl -e 'alarm 20; exec @ARGV' make -C build run \
+# Timer test — 40s needed; compare line-by-line against PSX reference
+perl -e 'alarm 40; exec @ARGV' make -C build run \
   GAMEARGS=tests/timers/timers.exe > ./build/timer_out.txt 2>&1; \
 pkill -f pcsx2 2>/dev/null; \
-tail -5 ./build/timer_out.txt
+awk '/timers test/,/Done\./' ./build/timer_out.txt \
+  | sed -E 's/\x1b\[[0-9;]*m//g' | sed -E 's/^\[[ 0-9.]+\] //' \
+  | grep -v '^Set GS\|^Update\|^Frame rate\|^ResetGraph\|^$\|^make' \
+  > ./build/timer_clean.txt; \
+diff ./build/timer_clean.txt tests/timers/psx.log | head -80
 
 # Crash Bandicoot (manual test — ask user)
 make -C build run GAMEARGS=isos/CrashBandicoot/CrashBandicoot.cue

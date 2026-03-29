@@ -97,9 +97,9 @@ static uint32_t count_active_cycles_hblank(uint64_t from, uint64_t to)
     return active;
 }
 
-static void Timer_Callback0(void);
-static void Timer_Callback1(void);
-static void Timer_Callback2(void);
+static void Timer_Callback0(int ticks_late);
+static void Timer_Callback1(int ticks_late);
+static void Timer_Callback2(int ticks_late);
 static const sched_callback_t timer_callbacks[3] = {Timer_Callback0, Timer_Callback1, Timer_Callback2};
 
 static void timer_update_divider_cache(int t)
@@ -515,9 +515,9 @@ static void Timer_FireEvent(int t)
     Timer_ScheduleOne(t);
 }
 
-static void Timer_Callback0(void) { Timer_FireEvent(0); }
-static void Timer_Callback1(void) { Timer_FireEvent(1); }
-static void Timer_Callback2(void) { Timer_FireEvent(2); }
+static void Timer_Callback0(int ticks_late) { (void)ticks_late; Timer_FireEvent(0); }
+static void Timer_Callback1(int ticks_late) { (void)ticks_late; Timer_FireEvent(1); }
+static void Timer_Callback2(int ticks_late) { (void)ticks_late; Timer_FireEvent(2); }
 
 uint32_t Timers_Read(uint32_t addr)
 {

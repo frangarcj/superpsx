@@ -21,6 +21,7 @@ uint32_t partial_block_cycles = 0;
 int scheduler_unlimited_speed = 0;
 uint64_t scheduler_cached_earliest = UINT64_MAX;
 int scheduler_earliest_id = -1;
+volatile int scheduler_interrupt_chain = 0;
 
 /* ---- Init ---- */
 void Scheduler_Init(void)
@@ -30,5 +31,6 @@ void Scheduler_Init(void)
     partial_block_cycles = 0;
     scheduler_cached_earliest = UINT64_MAX;
     scheduler_earliest_id = -1;
+    scheduler_interrupt_chain = 0;
     printf("Scheduler initialized (%d event slots)\n", SCHED_EVENT_COUNT);
 }

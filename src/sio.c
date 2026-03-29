@@ -28,6 +28,8 @@ static inline void sio_flush_deferred_vblank(void)
     {
         cpu.i_stat |= 1; /* VBlank bit 0 */
         cpu.irq_pending = (cpu.i_stat & cpu.i_mask & 0x7FF) != 0;
+        if (cpu.irq_pending)
+            scheduler_interrupt_chain = 1;
         sio_deferred_vblank = 0;
     }
 }
@@ -53,8 +55,9 @@ int sio_ack_latch = 0;          /* 1 = ACK pulse ready, consumed on STAT read */
 #define SIO_TRACE(fmt, ...) do {} while(0)
 
 /* ---- Scheduler-driven SIO IRQ delay ---- */
-static void Sched_SIO_IRQ_Callback(void)
+static void Sched_SIO_IRQ_Callback(int ticks_late)
 {
+    (void)ticks_late;
     SIO_TRACE("IRQ CB fired cy=%llu pending=%d dev=%d state=%d\n",
               (unsigned long long)global_cycles, sio_irq_pending, sio_device, sio_state);
     sio_irq_delay_cycle = 0;

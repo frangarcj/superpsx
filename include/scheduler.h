@@ -77,7 +77,8 @@
 #define SCHED_EVENT_COUNT 10
 
 /* ---- Callback type ---- */
-typedef void (*sched_callback_t)(void);
+/* ticks_late = how many cycles past the scheduled deadline the event fired. */
+typedef void (*sched_callback_t)(int ticks_late);
 
 /* ---- Event slot (visible for inlining) ---- */
 typedef struct
@@ -95,6 +96,7 @@ extern volatile uint32_t chain_cycles_acc;
 extern int scheduler_unlimited_speed;
 extern uint64_t scheduler_cached_earliest;
 extern int scheduler_earliest_id;
+extern volatile int scheduler_interrupt_chain; /* Set by SignalInterrupt when irq_pending; forces C loop exit */
 extern uint64_t hblank_frame_start_cycle; /* in dynarec_run.c */
 
 /* ---- Init (in scheduler.c) ---- */
@@ -150,6 +152,24 @@ static inline void Scheduler_RemoveEvent(int event_id)
         sched_recompute_cached();
 }
 
+/* Invoke a scheduled event immediately (e.g. from an IO write handler).
+ * Fires the callback with ticks_late = current_cycle - deadline (0 if early),
+ * deactivates the event, and recomputes the cached earliest. */
+static inline void Scheduler_InvokeEarly(int event_id, uint64_t current_cycle)
+{
+    if (!sched_events[event_id].active)
+        return;
+    int ticks_late = 0;
+    if (current_cycle > sched_events[event_id].deadline)
+        ticks_late = (int)(current_cycle - sched_events[event_id].deadline);
+    sched_callback_t cb = sched_events[event_id].callback;
+    sched_events[event_id].active = 0;
+    if (event_id == scheduler_earliest_id)
+        sched_recompute_cached();
+    if (cb)
+        cb(ticks_late);
+}
+
 static inline uint64_t Scheduler_NextDeadline(void)
 {
     return scheduler_cached_earliest;
@@ -171,9 +191,10 @@ static inline void Scheduler_DispatchEvents(uint64_t current_cycle)
             if (i == scheduler_earliest_id)
                 needed_recompute = 1;
 
+            int ticks_late = (int)(current_cycle - sched_events[i].deadline);
             sched_events[i].active = 0;
             if (sched_events[i].callback)
-                sched_events[i].callback();
+                sched_events[i].callback(ticks_late);
         }
     }
     if (needed_recompute)

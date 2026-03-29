@@ -675,8 +675,9 @@ static inline bool handle_bios_boot_hook(uint32_t pc)
  *  Scheduler Integration
  * ================================================================ */
 
-static void Sched_HBlank_Callback(void)
+static void Sched_HBlank_Callback(int ticks_late)
 {
+    (void)ticks_late;
     uint32_t remaining = SCANLINES_PER_FRAME - hblank_scanline;
     uint32_t batch = (remaining < HBLANK_BATCH_SIZE) ? remaining : HBLANK_BATCH_SIZE;
 
@@ -1114,10 +1115,9 @@ void Run_CPU(void)
         if (global_cycles >= scheduler_cached_earliest)
             Scheduler_DispatchEvents(global_cycles);
 
+        scheduler_interrupt_chain = 0;
         sync_hardware_and_interrupts();
     }
-
-    /* Phase 2: Main Execution */
     printf("DYNAREC: Phase 2 - Main Execution...\n");
     while (true)
     {
@@ -1135,6 +1135,10 @@ void Run_CPU(void)
              * and uses the closer deadline for the next batch. */
             if (scheduler_cached_earliest < deadline)
                 break;
+            /* An event callback (or IO write) signalled an interrupt —
+             * break out to dispatch events and deliver the IRQ promptly. */
+            if (scheduler_interrupt_chain)
+                break;
         }
 
         if (global_cycles >= scheduler_cached_earliest)
@@ -1145,6 +1149,7 @@ void Run_CPU(void)
             PROF_POP(PROF_SCHEDULER);
         }
 
+        scheduler_interrupt_chain = 0;
         sync_hardware_and_interrupts();
     }
 }

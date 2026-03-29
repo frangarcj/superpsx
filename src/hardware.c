@@ -57,6 +57,8 @@ void SignalInterrupt(uint32_t irq)
 #endif
     cpu.i_stat |= (1 << irq);
     cpu.irq_pending = (cpu.i_stat & cpu.i_mask & 0x7FF) != 0;
+    if (cpu.irq_pending)
+        scheduler_interrupt_chain = 1;
 }
 
 uint32_t ReadHardware(uint32_t phys)
@@ -180,12 +182,16 @@ void WriteHardware(uint32_t phys, uint32_t data, int size)
                 return; /* SignalInterrupt already updates irq_pending */
             }
             cpu.irq_pending = (cpu.i_stat & cpu.i_mask & 0x7FF) != 0;
+            if (cpu.irq_pending)
+                scheduler_interrupt_chain = 1;
             return;
         }
         if (phys == 0x1F801074)
         {
             cpu.i_mask = data & 0xFFFF07FF;
             cpu.irq_pending = (cpu.i_stat & cpu.i_mask & 0x7FF) != 0;
+            if (cpu.irq_pending)
+                scheduler_interrupt_chain = 1;
             DLOG("I_MASK = %08X (VSync=%d CD=%d Timer0=%d Timer1=%d Timer2=%d)\n",
                  (unsigned)cpu.i_mask, (int)(cpu.i_mask & 1), (int)((cpu.i_mask >> 2) & 1),
                  (int)((cpu.i_mask >> 4) & 1), (int)((cpu.i_mask >> 5) & 1), (int)((cpu.i_mask >> 6) & 1));

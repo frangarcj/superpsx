@@ -25,7 +25,7 @@ static uint64_t dma_pending_deadline = 0;
  * We use a conservative 16 cycles/word so tests see non-zero transfer time. */
 #define SPU_DMA_CYCLES_PER_WORD 8U
 
-static void DMA_FireCompletion(void);
+static void DMA_FireCompletion(int ticks_late);
 
 static void dma_complete_channel(int ch)
 {
@@ -41,8 +41,9 @@ static void dma_complete_channel(int ch)
   }
 }
 
-static void DMA_FireCompletion(void)
+static void DMA_FireCompletion(int ticks_late)
 {
+  (void)ticks_late;
   int ch = dma_pending_channel;
   if (ch >= 0 && ch < 7)
     dma_complete_channel(ch);

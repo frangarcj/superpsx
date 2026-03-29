@@ -128,10 +128,10 @@ static struct
 uint8_t cdrom_irq_active = 0;
 
 /* ---- Forward declarations for scheduler ---- */
-static void CDROM_EventCallback(void);
-static void CDROM_PendingCallback(void);
-static void CDROM_DeferredCallback(void);
-static void CDROM_DeferredIRQActivate(void);
+static void CDROM_EventCallback(int ticks_late);
+static void CDROM_PendingCallback(int ticks_late);
+static void CDROM_DeferredCallback(int ticks_late);
+static void CDROM_DeferredIRQActivate(int ticks_late);
 
 /* ---- Speed-aware read delay based on mode bit 7 ---- */
 static inline uint32_t cdrom_read_delay(void)
@@ -166,11 +166,12 @@ void CDROM_InsertDisc(void)
 }
 
 /* ---- Shell close recovery stages ---- */
-static void cdrom_shell_close_stage2(void);
-static void cdrom_shell_close_stage3(void);
+static void cdrom_shell_close_stage2(int ticks_late);
+static void cdrom_shell_close_stage3(int ticks_late);
 
-static void cdrom_shell_close_stage2(void)
+static void cdrom_shell_close_stage2(int ticks_late)
 {
+    (void)ticks_late;
     /* Stage 2: ShellOpen clears, motor still on */
     cdrom.stat = 0x10; /* ShellOpen only (motor spinning down check) */
     Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_PENDING,
@@ -178,8 +179,9 @@ static void cdrom_shell_close_stage2(void)
                             cdrom_shell_close_stage3);
 }
 
-static void cdrom_shell_close_stage3(void)
+static void cdrom_shell_close_stage3(int ticks_late)
 {
+    (void)ticks_late;
     /* Stage 3: fully ready */
     cdrom.disc_present = 1;
     cdrom.stat = 0x00; /* All clear — idle, ready */
@@ -783,8 +785,9 @@ uint32_t CDROM_Read(uint32_t addr)
 }
 
 /* ---- CD-ROM event callback (called by scheduler) ---- */
-static void CDROM_EventCallback(void)
+static void CDROM_EventCallback(int ticks_late)
 {
+    (void)ticks_late;
     if (!cdrom.reading)
         return;
 
@@ -862,8 +865,9 @@ static void CDROM_EventCallback(void)
 }
 
 /* ---- Pending response callback ---- */
-static void CDROM_PendingCallback(void)
+static void CDROM_PendingCallback(int ticks_late)
 {
+    (void)ticks_late;
     if (cdrom.has_pending && cdrom.int_flag == 0)
         cdrom_deliver_pending();
 }
@@ -880,8 +884,9 @@ void CDROM_ScheduleEvent(void)
 }
 
 /* ---- Scheduler callback: deliver deferred first response ---- */
-static void CDROM_DeferredCallback(void)
+static void CDROM_DeferredCallback(int ticks_late)
 {
+    (void)ticks_late;
     if (cdrom.has_deferred)
         cdrom_deliver_deferred();
 }
@@ -897,8 +902,9 @@ static inline int cdrom_irq_should_signal(void)
 }
 
 /* ---- Scheduler callback: activate IRQ after signal delay ---- */
-static void CDROM_DeferredIRQActivate(void)
+static void CDROM_DeferredIRQActivate(int ticks_late)
 {
+    (void)ticks_late;
     /* Always mark IRQ as active (level-triggered).  If int_enable doesn't
      * currently allow signaling, the interrupt will fire when the game
      * writes int_enable to unmask it (see int_enable write handler). */
