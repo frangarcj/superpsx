@@ -140,13 +140,17 @@ static void emit_deferred_taken_all(void)
         dirty_const_mask = e->saved_dirty_mask;
         dyn_dirty_mask = e->saved_dyn_dirty;
 
-        /* Emit standard branch epilogue inline */
+        /* Emit standard branch epilogue inline with two-check abort:
+         * cycles exhausted OR IRQ pending.  Matches emit_branch_epilogue(). */
         flush_dirty_consts();
         dyn_flush_dirty_slots(); /* D: deferred taken — dirty-only */
         emit(MK_I(0x09, REG_S2, REG_S2, (int16_t)(-(int)e->cycle_count)));
         emit_load_imm32(REG_T8, e->target_pc);
-        emit(MK_I(0x07, REG_S2, REG_ZERO, 2)); /* BGTZ s2, +2 */
-        EMIT_SW(REG_T8, CPU_PC, REG_S0);       /* delay slot: always executes (P9) */
+        EMIT_SW(REG_T8, CPU_PC, REG_S0);
+        emit(MK_I(0x06, REG_S2, REG_ZERO, 3)); /* BLEZ s2, +3 → abort */
+        EMIT_LW(REG_AT, CPU_IRQ_PENDING, REG_S0); /* delay: load irq_pending */
+        EMIT_BEQ(REG_AT, REG_ZERO, 3);         /* BEQ at, zero, +3 → direct_link */
+        EMIT_NOP();
         EMIT_J_ABS((uint32_t)abort_trampoline_addr);
         EMIT_NOP();
         emit_direct_link(e->target_pc);
@@ -810,7 +814,7 @@ void emit_block_epilogue(void)
     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
     EMIT_MOVE(REG_V0, REG_S2);
     dyn_flush_dirty_slots(); /* E: block epilogue — dirty-only */
-    emit_flush_pinned();
+    emit_flush_pinned_selective(block_pinned_dirty_mask);
     EMIT_LW(REG_FP, 68, REG_SP);
     EMIT_LW(REG_S7, 60, REG_SP);
     EMIT_LW(REG_S6, 56, REG_SP);
