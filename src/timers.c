@@ -404,8 +404,21 @@ static void Timer_SyncValue(int t)
 
     if ((mode & (1 << 3)) && target > 0)
     {
+        /* PSX hardware reset-at-target: after the counter reaches the
+         * target value, it resets to 0 with a 1-tick dead period where
+         * the counter reads as 0 before incrementing.  Effective period
+         * is target + 2 (not target + 1).  Internally value = target + 1
+         * represents the dead-0 phase; external reads map it back to 0.
+         * This matches PSX reference: value 0 appears 2x as often as
+         * other values in the counter distribution test. */
         if (val < target && new_val >= target)
         {
+            wrapped_target = 1;
+            timers[t].mode |= (1 << 11);
+        }
+        else if (val == target + 1 && ticks > (uint32_t)target)
+        {
+            /* From dead-0 phase, counter wraps through target */
             wrapped_target = 1;
             timers[t].mode |= (1 << 11);
         }
@@ -417,9 +430,8 @@ static void Timer_SyncValue(int t)
                 timers[t].mode |= (1 << 12);
                 wrapped_overflow = 1;
             }
-            new_val = (new_val - target) - 1;
-            if (new_val > target)
-                new_val %= (target + 1);
+            uint32_t period = target + 2;
+            new_val %= period;
         }
         timers[t].value = new_val;
     }
@@ -466,6 +478,18 @@ static void Timer_ScheduleOne(int t)
     if (timer_stopped_cache[t])
         return;
 
+    /* No scheduler event needed when no timer IRQ can fire.
+     * The counter value syncs lazily via Timer_SyncValue on reads.
+     * This prevents frequent timer events (every ~target cycles) from
+     * starving the JIT with tiny cycle budgets. */
+    int irq_can_fire = (mode & ((1 << 4) | (1 << 5))) &&
+                       ((mode & (1 << 6)) || !timer_irq_fired[t]);
+    if (!irq_can_fire)
+    {
+        Scheduler_RemoveEvent(SCHED_EVENT_TIMER0 + t);
+        return;
+    }
+
     if (divider == 0)
         divider = 1;
 
@@ -475,7 +499,7 @@ static void Timer_ScheduleOne(int t)
         if (val <= target)
             ticks_to_event = (target + 1) - val;
         else
-            ticks_to_event = 1; /* Fallback if somehow past target */
+            ticks_to_event = (target + 2); /* dead-0: full period to next crossing */
     }
     else
     {
@@ -529,8 +553,15 @@ uint32_t Timers_Read(uint32_t addr)
     switch (reg)
     {
     case 0:
+    {
         Timer_SyncValue(t);
-        return timers[t].value & 0xFFFF;
+        uint32_t v = timers[t].value;
+        uint32_t tgt = timers[t].target & 0xFFFF;
+        /* Map dead-0 phase (internal value = target+1) to 0 for reads */
+        if ((timers[t].mode & (1 << 3)) && tgt > 0 && v > tgt)
+            v = 0;
+        return v & 0xFFFF;
+    }
     case 1:
     {
         uint32_t mode = timers[t].mode;

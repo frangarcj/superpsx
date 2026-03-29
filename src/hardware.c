@@ -69,45 +69,44 @@ uint32_t ReadHardware(uint32_t phys)
      * compact jump table for the outer switch (32 entries max).
      */
     uint32_t off = phys - 0x1F801000; /* 0x0000-0x1FFF */
+    uint32_t result = 0;
 
     switch (off >> 8)
     {
     case 0x00: /* 0x1F801000-0x1F8010FF: memctrl, SIO, IRQ, DMA */
         if (phys < 0x1F801024)
-            return mem_ctrl[(phys - 0x1F801000) >> 2];
-        if (phys >= 0x1F801040 && phys <= 0x1F80105E)
-            return SIO_Read(phys);
-        if (phys == 0x1F801060)
-            return ram_size;
-        if (phys == 0x1F801070)
-            return cpu.i_stat;
-        if (phys == 0x1F801074)
-            return cpu.i_mask;
-        if (phys >= 0x1F801080)
-            return DMA_Read(phys);
-        return 0;
+            result = mem_ctrl[(phys - 0x1F801000) >> 2];
+        else if (phys >= 0x1F801040 && phys <= 0x1F80105E)
+            result = SIO_Read(phys);
+        else if (phys == 0x1F801060)
+            result = ram_size;
+        else if (phys == 0x1F801070)
+            result = cpu.i_stat;
+        else if (phys == 0x1F801074)
+            result = cpu.i_mask;
+        else if (phys >= 0x1F801080)
+            result = DMA_Read(phys);
+        break;
 
     case 0x01: /* 0x1F801100-0x1F8011FF: Timers */
-        return Timers_Read(phys);
+        result = Timers_Read(phys);
+        break;
 
     case 0x08: /* 0x1F801800-0x1F8018FF: CDROM, GPU, MDEC */
         if (phys <= 0x1F801803)
         {
             uint32_t byte_val = CDROM_Read(phys) & 0xFF;
-            return byte_val | (byte_val << 8) | (byte_val << 16) | (byte_val << 24);
+            result = byte_val | (byte_val << 8) | (byte_val << 16) | (byte_val << 24);
         }
-        if (phys == 0x1F801810)
-        {
-            uint32_t val = GPU_Read();
-            return val;
-        }
-        if (phys == 0x1F801814)
-            return GPU_ReadStatus();
-        if (phys == 0x1F801820)
-            return MDEC_ReadData();
-        if (phys == 0x1F801824)
-            return MDEC_ReadStatus();
-        return 0;
+        else if (phys == 0x1F801810)
+            result = GPU_Read();
+        else if (phys == 0x1F801814)
+            result = GPU_ReadStatus();
+        else if (phys == 0x1F801820)
+            result = MDEC_ReadData();
+        else if (phys == 0x1F801824)
+            result = MDEC_ReadStatus();
+        break;
 
     case 0x0C: /* 0x1F801C00-0x1F801CFF: SPU (low half) */
     case 0x0D: /* 0x1F801D00-0x1F801DFF: SPU (high half) */
@@ -115,7 +114,8 @@ uint32_t ReadHardware(uint32_t phys)
         uint32_t sreg = (phys - 0x1F801C00) >> 1;
         uint32_t lo = SPU_ReadReg(sreg);
         uint32_t hi = ((phys + 2) < 0x1F801E00) ? SPU_ReadReg(sreg + 1) : 0;
-        return lo | (hi << 16);
+        result = lo | (hi << 16);
+        break;
     }
 
     case 0x10:
@@ -134,11 +134,20 @@ uint32_t ReadHardware(uint32_t phys)
     case 0x1D:
     case 0x1E:
     case 0x1F:
-        return 0xFFFFFFFF;
+        result = 0xFFFFFFFF;
+        break;
 
     default:
-        return 0;
+        break;
     }
+
+    /* PSX I/O bus penalty: hardware register reads are slower than RAM due
+     * to bus wait states (COM_DELAY register).  Deduct from cpu.cycles_left
+     * so the JIT's cycle tracking reflects the bus stall.  The mem_slow
+     * trampoline reloads S2 from cpu.cycles_left after the C call. */
+    cpu.cycles_left -= 1;
+
+    return result;
 }
 
 void WriteHardware(uint32_t phys, uint32_t data, int size)
