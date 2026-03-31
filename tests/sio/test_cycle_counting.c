@@ -27,13 +27,15 @@
 #include "scheduler.h"
 
 /* ---- Global state that scheduler.h declares extern ---- */
-SchedEvent sched_events[SCHED_EVENT_COUNT];
+int sched_active[SCHED_EVENT_COUNT];
+uint64_t sched_deadline[SCHED_EVENT_COUNT];
+sched_callback_t sched_callback[SCHED_EVENT_COUNT];
 uint64_t global_cycles = 0;
 uint32_t partial_block_cycles = 0;
 volatile uint32_t chain_cycles_acc = 0;
-int scheduler_unlimited_speed = 0;
-uint64_t scheduler_cached_earliest = UINT64_MAX;
-int scheduler_earliest_id = -1;
+int sched_unlimited_speed = 0;
+uint64_t sched_cached_earliest = UINT64_MAX;
+int sched_earliest_id = -1;
 uint64_t hblank_frame_start_cycle = 0;
 
 /* ---- Stub: CPU state ---- */
@@ -77,7 +79,7 @@ PSXConfig psx_config = {
 static void advance_cycles(uint64_t delta)
 {
     global_cycles += delta;
-    Scheduler_DispatchEvents(global_cycles);
+    Sched_Tick(global_cycles);
 }
 
 /* ---- Full reset ---- */
@@ -87,8 +89,8 @@ static void full_reset(void)
     memset(_psx_ram_buf, 0, sizeof(_psx_ram_buf));
     global_cycles = 1000000;
     partial_block_cycles = 0;
-    scheduler_cached_earliest = UINT64_MAX;
-    scheduler_earliest_id = -1;
+    sched_cached_earliest = UINT64_MAX;
+    sched_earliest_id = -1;
     irq7_count = 0;
     irq7_cycle = 0;
 
@@ -506,7 +508,7 @@ static void test_end_to_end_sio_block(void)
     /* Now the scheduler should fire the SIO IRQ */
     /* The IRQ was scheduled at gc_before_block + 1500. After block exit,
      * global_cycles = gc_before_block + 1500, so dispatch should fire it. */
-    Scheduler_DispatchEvents(global_cycles);
+    Sched_Tick(global_cycles);
     CHECK_EQ(irq7_count, 1, "SIO IRQ fires exactly at block exit");
 
     TEST_END("end_to_end_sio_block");

@@ -94,15 +94,17 @@ unsigned __int128 buf_image[1024];
 int buf_image_ptr = 0;
 
 uint64_t global_cycles = 0;
-uint64_t scheduler_cached_earliest = 0;
+uint64_t sched_cached_earliest = 0;
 
 /* Dummy RAM mapping */
 uint8_t *psx_ram = NULL;
 
 /* Scheduler stubs */
-int scheduler_earliest_id = 0;
+int sched_earliest_id = 0;
 #include "scheduler.h"
-SchedEvent sched_events[SCHED_EVENT_COUNT];
+int sched_active[SCHED_EVENT_COUNT];
+uint64_t sched_deadline[SCHED_EVENT_COUNT];
+sched_callback_t sched_callback[SCHED_EVENT_COUNT];
 
 /* --- MOCKS --- */
 

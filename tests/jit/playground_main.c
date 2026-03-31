@@ -333,8 +333,8 @@ void pg_run_jit(uint32_t pc, int32_t cycles)
         cpu.cycles_left = remaining;
 
         /* Dispatch scheduler events that may have become due */
-        if (global_cycles >= scheduler_cached_earliest)
-            Scheduler_DispatchEvents(global_cycles);
+        if (global_cycles >= sched_cached_earliest)
+            Sched_Tick(global_cycles);
 
         if (cpu.block_aborted)
         {
