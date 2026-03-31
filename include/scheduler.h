@@ -43,14 +43,14 @@ extern SchedEvent sched_events[SCHED_EVENT_COUNT];
 extern uint64_t global_cycles;
 extern uint32_t partial_block_cycles;
 extern volatile uint32_t chain_cycles_acc;
-extern int scheduler_unlimited_speed;
-extern uint64_t scheduler_cached_earliest;
-extern int scheduler_earliest_id;
-extern volatile int scheduler_interrupt_chain; /* Set by SignalInterrupt when irq_pending; forces C loop exit */
+extern int sched_unlimited_speed;
+extern uint64_t sched_cached_earliest;
+extern int sched_earliest_id;
+extern volatile int sched_interrupt_chain; /* Set by SignalInterrupt when irq_pending; forces C loop exit */
 extern uint64_t hblank_frame_start_cycle; /* in dynarec_run.c */
 
 /* ---- Init (in scheduler.c) ---- */
-void Scheduler_Init(void);
+void Sched_Init(void);
 
 /* ---- Inline helpers ---- */
 
@@ -67,23 +67,23 @@ static inline void sched_recompute_cached(void)
             earliest_id = i;
         }
     }
-    scheduler_cached_earliest = earliest;
-    scheduler_earliest_id = earliest_id;
+    sched_cached_earliest = earliest;
+    sched_earliest_id = earliest_id;
 }
 
-static inline void Scheduler_ScheduleEvent(int event_id, uint64_t absolute_cycle,
+static inline void Sched_Add(int event_id, uint64_t absolute_cycle,
                                            sched_callback_t cb)
 {
-    int was_earliest = (event_id == scheduler_earliest_id);
+    int was_earliest = (event_id == sched_earliest_id);
 
     sched_events[event_id].active = 1;
     sched_events[event_id].deadline = absolute_cycle;
     sched_events[event_id].callback = cb;
 
-    if (absolute_cycle <= scheduler_cached_earliest)
+    if (absolute_cycle <= sched_cached_earliest)
     {
-        scheduler_cached_earliest = absolute_cycle;
-        scheduler_earliest_id = event_id;
+        sched_cached_earliest = absolute_cycle;
+        sched_earliest_id = event_id;
     }
     else if (was_earliest)
     {
@@ -93,16 +93,16 @@ static inline void Scheduler_ScheduleEvent(int event_id, uint64_t absolute_cycle
     }
 }
 
-static inline void Scheduler_RemoveEvent(int event_id)
+static inline void Sched_Remove(int event_id)
 {
-    int was_earliest = (event_id == scheduler_earliest_id);
+    int was_earliest = (event_id == sched_earliest_id);
     sched_events[event_id].active = 0;
 
     if (was_earliest)
         sched_recompute_cached();
 }
 
-static inline void Scheduler_DispatchEvents(uint64_t current_cycle)
+static inline void Sched_Tick(uint64_t current_cycle)
 {
     int i;
     int needed_recompute = 0;
@@ -110,7 +110,7 @@ static inline void Scheduler_DispatchEvents(uint64_t current_cycle)
     {
         if (sched_events[i].active && sched_events[i].deadline <= current_cycle)
         {
-            if (i == scheduler_earliest_id)
+            if (i == sched_earliest_id)
                 needed_recompute = 1;
 
             int ticks_late = (int)(current_cycle - sched_events[i].deadline);

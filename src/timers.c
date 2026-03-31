@@ -486,7 +486,7 @@ static void Timer_ScheduleOne(int t)
                        ((mode & (1 << 6)) || !timer_irq_fired[t]);
     if (!irq_can_fire)
     {
-        Scheduler_RemoveEvent(SCHED_EVENT_TIMER0 + t);
+        Sched_Remove(SCHED_EVENT_TIMER0 + t);
         return;
     }
 
@@ -521,7 +521,7 @@ static void Timer_ScheduleOne(int t)
     else
         deadline = EFFECTIVE_CYCLES + (uint64_t)ticks_to_event * divider;
 
-    Scheduler_ScheduleEvent(SCHED_EVENT_TIMER0 + t, deadline, timer_callbacks[t]);
+    Sched_Add(SCHED_EVENT_TIMER0 + t, deadline, timer_callbacks[t]);
 }
 
 static void Timer_Callback0(int ticks_late) { (void)ticks_late; Timer_ScheduleOne(0); }

@@ -739,7 +739,7 @@ static void Sched_HBlank_Callback(int ticks_late)
     if (hblank_ideal_deadline <= global_cycles)
         hblank_ideal_deadline = global_cycles + 1;
 
-    Scheduler_ScheduleEvent(SCHED_EVENT_HBLANK, hblank_ideal_deadline, Sched_HBlank_Callback);
+    Sched_Add(SCHED_EVENT_HBLANK, hblank_ideal_deadline, Sched_HBlank_Callback);
 }
 
 /* ================================================================
@@ -808,8 +808,8 @@ int run_jit_chain(uint64_t deadline)
         /* Clamp skip to nearest scheduler event so we never leap
          * over a pending SIO IRQ or timer callback. */
         uint64_t skip_target = deadline;
-        if (scheduler_cached_earliest < skip_target)
-            skip_target = scheduler_cached_earliest;
+        if (sched_cached_earliest < skip_target)
+            skip_target = sched_cached_earliest;
         if (skip_target > global_cycles)
         {
 #ifdef ENABLE_SUBSYSTEM_PROFILER
@@ -959,8 +959,8 @@ int run_jit_chain(uint64_t deadline)
                 /* Clamp skip to nearest scheduler event so we never leap
                  * over a pending SIO IRQ or timer callback. */
                 uint64_t idle_skip_target = deadline;
-                if (scheduler_cached_earliest < idle_skip_target)
-                    idle_skip_target = scheduler_cached_earliest;
+                if (sched_cached_earliest < idle_skip_target)
+                    idle_skip_target = sched_cached_earliest;
                 if (idle_skip_target > global_cycles)
                 {
 #ifdef ENABLE_SUBSYSTEM_PROFILER
@@ -1045,7 +1045,7 @@ void Run_CPU(void)
     cpu.cop0[PSX_COP0_SR] = 0x10400000;
     cpu.cop0[PSX_COP0_PRID] = 0x00000002;
 
-    Scheduler_Init();
+    Sched_Init();
 
     hblank_scanline = 0;
     perf_frame_count = 0;
@@ -1054,7 +1054,7 @@ void Run_CPU(void)
     cycles_per_hblank_runtime = psx_config.region_pal ? CYCLES_PER_HBLANK_PAL : CYCLES_PER_HBLANK_NTSC;
     hblank_frame_start_cycle = global_cycles;
     hblank_ideal_deadline = global_cycles + HBLANK_BATCH_SIZE * cycles_per_hblank_runtime;
-    Scheduler_ScheduleEvent(SCHED_EVENT_HBLANK, hblank_ideal_deadline, Sched_HBlank_Callback);
+    Sched_Add(SCHED_EVENT_HBLANK, hblank_ideal_deadline, Sched_HBlank_Callback);
 
     Timer_ScheduleAll();
 
@@ -1104,7 +1104,7 @@ void Run_CPU(void)
             bios_same_count = 0;
         }
 
-        uint64_t deadline = scheduler_cached_earliest;
+        uint64_t deadline = sched_cached_earliest;
         if (deadline == UINT64_MAX || deadline <= global_cycles)
             deadline = global_cycles + 1024;
 
@@ -1113,30 +1113,30 @@ void Run_CPU(void)
         else
             run_jit_chain(deadline);
 
-        if (global_cycles >= scheduler_cached_earliest)
-            Scheduler_DispatchEvents(global_cycles);
+        if (global_cycles >= sched_cached_earliest)
+            Sched_Tick(global_cycles);
 
-        scheduler_interrupt_chain = 0;
+        sched_interrupt_chain = 0;
         sync_hardware_and_interrupts();
     }
 
     printf("DYNAREC: Phase 2 - Main Execution...\n");
     while (true)
     {
-        uint64_t deadline = scheduler_cached_earliest;
+        uint64_t deadline = sched_cached_earliest;
         if (deadline == UINT64_MAX || deadline <= global_cycles)
             deadline = global_cycles + 1024;
 
         run_jit_chain(deadline);
 
-        if (global_cycles >= scheduler_cached_earliest)
+        if (global_cycles >= sched_cached_earliest)
         {
             PROF_PUSH(PROF_SCHEDULER);
-            Scheduler_DispatchEvents(global_cycles);
+            Sched_Tick(global_cycles);
             PROF_POP(PROF_SCHEDULER);
         }
 
-        scheduler_interrupt_chain = 0;
+        sched_interrupt_chain = 0;
         sync_hardware_and_interrupts();
     }
 }

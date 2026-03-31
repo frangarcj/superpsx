@@ -81,8 +81,8 @@ int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                 global_cycles += dma_cost;
                 gpu_busy_until = global_cycles + gpu_cost;
                 /* Dispatch pending scheduler events (HBlank, timers) */
-                if (global_cycles >= scheduler_cached_earliest)
-                    Scheduler_DispatchEvents(global_cycles);
+                if (global_cycles >= sched_cached_earliest)
+                    Sched_Tick(global_cycles);
             }
         }
         else
@@ -120,8 +120,8 @@ int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
             {
                 uint64_t dma_cost = (uint64_t)total_words * DMA_CYCLES_PER_WORD;
                 global_cycles += dma_cost;
-                if (global_cycles >= scheduler_cached_earliest)
-                    Scheduler_DispatchEvents(global_cycles);
+                if (global_cycles >= sched_cached_earliest)
+                    Sched_Tick(global_cycles);
             }
         }
         PROF_POP(PROF_GPU_DMA);
@@ -296,8 +296,8 @@ int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
             /* Dispatch pending scheduler events so HBlank/timers fire during
              * the DMA window — this is what makes Timer1 (HBlank) advance
              * while the GPU is working, enabling the benchmark to measure FPS. */
-            while (global_cycles >= scheduler_cached_earliest)
-                Scheduler_DispatchEvents(global_cycles);
+            while (global_cycles >= sched_cached_earliest)
+                Sched_Tick(global_cycles);
         }
 
         PROF_POP(PROF_GPU_DMA);

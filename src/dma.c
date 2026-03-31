@@ -62,7 +62,7 @@ static inline void dma_check_pending(void)
   {
     int ch = dma_pending_channel;
     dma_pending_channel = -1;
-    Scheduler_RemoveEvent(SCHED_EVENT_DMA);
+    Sched_Remove(SCHED_EVENT_DMA);
     dma_complete_channel(ch);
   }
 }
@@ -259,7 +259,7 @@ void DMA_Write(uint32_t addr, uint32_t data)
             dma_pending_deadline = DMA_EFFECTIVE_CYCLES + delay_cycles;
 
             /* Scheduler fallback for IRQ-based completion */
-            Scheduler_ScheduleEvent(SCHED_EVENT_DMA,
+            Sched_Add(SCHED_EVENT_DMA,
                                     global_cycles + delay_cycles,
                                     DMA_FireCompletion);
           }

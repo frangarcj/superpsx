@@ -457,7 +457,7 @@ int run_interpreter_chain(uint64_t deadline) {
             return 0;
         }
 
-        if (global_cycles >= scheduler_cached_earliest && branch_state == 0) {
+        if (global_cycles >= sched_cached_earliest && branch_state == 0) {
             return 0;
         }
     }

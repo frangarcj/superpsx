@@ -179,8 +179,8 @@ uint32_t GPU_ReadStatus(void)
         global_cycles = gpu_busy_until;
         gpu_busy_until = 0;
         /* Dispatch all scheduler events that occurred during the GPU work */
-        while (global_cycles >= scheduler_cached_earliest)
-            Scheduler_DispatchEvents(global_cycles);
+        while (global_cycles >= sched_cached_earliest)
+            Sched_Tick(global_cycles);
     }
 
     /* Force bits: 28 (ready DMA), 26 (ready CMD), 13 (interlace field).

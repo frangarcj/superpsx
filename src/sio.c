@@ -29,7 +29,7 @@ static inline void sio_flush_deferred_vblank(void)
         cpu.i_stat |= 1; /* VBlank bit 0 */
         cpu.irq_pending = (cpu.i_stat & cpu.i_mask & 0x7FF) != 0;
         if (cpu.irq_pending)
-            scheduler_interrupt_chain = 1;
+            sched_interrupt_chain = 1;
         sio_deferred_vblank = 0;
     }
 }
@@ -73,7 +73,7 @@ static inline void sio_schedule_irq(void)
 {
     uint64_t deadline = global_cycles + partial_block_cycles + SIO_IRQ_DELAY;
     sio_irq_delay_cycle = deadline;
-    Scheduler_ScheduleEvent(SCHED_EVENT_SIO_IRQ, deadline, Sched_SIO_IRQ_Callback);
+    Sched_Add(SCHED_EVENT_SIO_IRQ, deadline, Sched_SIO_IRQ_Callback);
 }
 
 /* Assert ACK: set latch + schedule IRQ with device-appropriate delay.
@@ -90,9 +90,9 @@ static inline void sio_assert_ack(void)
         uint64_t deadline = global_cycles + partial_block_cycles + delay;
         SIO_TRACE("ACK MCD: gc=%llu pbc=%u delay=%u -> deadline=%llu cached_earliest=%llu\n",
                   (unsigned long long)global_cycles, partial_block_cycles, SIO_MCD_IRQ_DELAY,
-                  (unsigned long long)deadline, (unsigned long long)scheduler_cached_earliest);
+                  (unsigned long long)deadline, (unsigned long long)sched_cached_earliest);
         sio_irq_delay_cycle = deadline;
-        Scheduler_ScheduleEvent(SCHED_EVENT_SIO_IRQ, deadline, Sched_SIO_IRQ_Callback);
+        Sched_Add(SCHED_EVENT_SIO_IRQ, deadline, Sched_SIO_IRQ_Callback);
     }
     else
     {
@@ -114,7 +114,7 @@ static inline void sio_assert_ack(void)
 static inline void sio_cancel_irq(void)
 {
     sio_irq_delay_cycle = 0;
-    Scheduler_RemoveEvent(SCHED_EVENT_SIO_IRQ);
+    Sched_Remove(SCHED_EVENT_SIO_IRQ);
 }
 
 static inline uint32_t SIO_Read_Inner(uint32_t phys)

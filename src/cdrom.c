@@ -178,7 +178,7 @@ static void cdrom_shell_close_stage2(int ticks_late)
     (void)ticks_late;
     /* Stage 2: ShellOpen clears, motor still on */
     cdrom.stat = 0x10; /* ShellOpen only (motor spinning down check) */
-    Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_PENDING,
+    Sched_Add(SCHED_EVENT_CDROM_PENDING,
                             global_cycles + 2000000U,
                             cdrom_shell_close_stage3);
 }
@@ -210,7 +210,7 @@ void CDROM_EjectDisc(void)
 
     /* Schedule I_STAT assertion */
     cdrom_irq_active = 0;
-    Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_IRQ,
+    Sched_Add(SCHED_EVENT_CDROM_IRQ,
                             global_cycles + 800,
                             CDROM_DeferredIRQActivate);
     DLOG("Disc ejected — INT5 sent\n");
@@ -223,7 +223,7 @@ void CDROM_CloseShell(void)
     cdrom.stat = 0x12; /* STAT_MOTOR_ON | STAT_SHELL_OPEN */
 
     /* Schedule stage 2 after motor spinup: ShellOpen → clear */
-    Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_PENDING,
+    Sched_Add(SCHED_EVENT_CDROM_PENDING,
                             global_cycles + 2000000U,
                             cdrom_shell_close_stage2);
     DLOG("Shell closing — motor spinup\n");
@@ -258,7 +258,7 @@ static void cdrom_queue_response(const uint8_t *data, int count, uint8_t irq_typ
     cdrom.deferred_int = irq_type;
     cdrom.has_deferred = 1;
     cdrom.busy = 1; /* Stay busy until response is delivered */
-    Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_DEFERRED,
+    Sched_Add(SCHED_EVENT_CDROM_DEFERRED,
                             global_cycles + 4000,
                             CDROM_DeferredCallback);
 }
@@ -336,7 +336,7 @@ static void cdrom_execute_command(uint8_t cmd)
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 acknowledge */
         /* Schedule seek completion: ~300ms for initial seek */
-        Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
+        Sched_Add(SCHED_EVENT_CDROM,
                                 global_cycles + 10000000ULL,
                                 CDROM_EventCallback);
         break;
@@ -654,7 +654,7 @@ static void cdrom_execute_command(uint8_t cmd)
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
         /* Schedule seek completion */
-        Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
+        Sched_Add(SCHED_EVENT_CDROM,
                                 global_cycles + 10000000ULL,
                                 CDROM_EventCallback);
         break;
@@ -702,7 +702,7 @@ static void cdrom_deliver_pending(void)
     /* Schedule I_STAT assertion after signal propagation delay.
      * Sets cdrom_irq_active so the dynarec inline check picks it up. */
     cdrom_irq_active = 0;
-    Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_IRQ,
+    Sched_Add(SCHED_EVENT_CDROM_IRQ,
                             global_cycles + 800,
                             CDROM_DeferredIRQActivate);
 }
@@ -724,7 +724,7 @@ static void cdrom_deliver_deferred(void)
     /* Schedule I_STAT assertion after signal propagation delay.
      * Sets cdrom_irq_active so the dynarec inline check picks it up. */
     cdrom_irq_active = 0;
-    Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_IRQ,
+    Sched_Add(SCHED_EVENT_CDROM_IRQ,
                             global_cycles + 800,
                             CDROM_DeferredIRQActivate);
 }
@@ -801,7 +801,7 @@ static void CDROM_EventCallback(int ticks_late)
         cdrom.seek_pending = 0;
         cdrom_set_stat(0x22); /* Reading + Motor On */
         /* Schedule first sector delivery using speed-aware timing */
-        Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
+        Sched_Add(SCHED_EVENT_CDROM,
                                 global_cycles + cdrom_read_delay(),
                                 CDROM_EventCallback);
         return;
@@ -813,7 +813,7 @@ static void CDROM_EventCallback(int ticks_late)
         /* Previous INT not acknowledged yet — reschedule for half a read
          * cycle to give the game time to process it.
          * This prevents sector data from being overwritten before ACK. */
-        Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
+        Sched_Add(SCHED_EVENT_CDROM,
                                 global_cycles + cdrom_read_delay() / 2,
                                 CDROM_EventCallback);
         return;
@@ -863,7 +863,7 @@ static void CDROM_EventCallback(int ticks_late)
         delay *= 30;
         cdrom.location_changed = 0;
     }
-    Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
+    Sched_Add(SCHED_EVENT_CDROM,
                             global_cycles + delay,
                             CDROM_EventCallback);
 }
@@ -881,7 +881,7 @@ void CDROM_ScheduleEvent(void)
 {
     if (cdrom.reading)
     {
-        Scheduler_ScheduleEvent(SCHED_EVENT_CDROM,
+        Sched_Add(SCHED_EVENT_CDROM,
                                 global_cycles + cdrom_read_delay(),
                                 CDROM_EventCallback);
     }
@@ -997,7 +997,7 @@ void CDROM_Write(uint32_t addr, uint32_t data)
             if (cdrom.int_flag == 0)
             {
                 cdrom_irq_active = 0;                         /* No longer level-triggering */
-                Scheduler_RemoveEvent(SCHED_EVENT_CDROM_IRQ); /* Cancel pending signal */
+                Sched_Remove(SCHED_EVENT_CDROM_IRQ); /* Cancel pending signal */
             }
             if (val & 0x40)
             {
@@ -1011,7 +1011,7 @@ void CDROM_Write(uint32_t addr, uint32_t data)
                 uint64_t deliver_at = cdrom.pending_deadline;
                 if (deliver_at <= global_cycles)
                     deliver_at = global_cycles + 200; /* Already ready — small handshake */
-                Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_PENDING,
+                Sched_Add(SCHED_EVENT_CDROM_PENDING,
                                         deliver_at,
                                         CDROM_PendingCallback);
             }

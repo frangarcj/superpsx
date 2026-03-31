@@ -546,15 +546,15 @@ uint32_t GPU_Read(void)
 uint32_t GPU_ReadStatus(void)
 {
     extern uint64_t global_cycles;
-    extern uint64_t scheduler_cached_earliest;
-    extern void Scheduler_DispatchEvents(uint64_t now);
+    extern uint64_t sched_cached_earliest;
+    extern void Sched_Tick(uint64_t now);
 
     if (global_cycles < gpu_busy_until)
     {
         global_cycles = gpu_busy_until;
         gpu_busy_until = 0;
-        while (global_cycles >= scheduler_cached_earliest)
-            Scheduler_DispatchEvents(global_cycles);
+        while (global_cycles >= sched_cached_earliest)
+            Sched_Tick(global_cycles);
     }
 
     uint32_t final_stat = gpu_stat | 0x14002000;
