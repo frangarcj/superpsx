@@ -948,6 +948,7 @@ uint32_t *compile_block(uint32_t psx_pc)
 
     reset_vregs();
     cold_slow_reset();
+    overflow_cold_reset();
     BlockScanResult scan;
     block_scan(psx_code, SCAN_MAX_INSNS, &scan);
     block_pinned_dirty_mask = scan.pinned_written_mask;
@@ -1615,6 +1616,9 @@ uint32_t *compile_block(uint32_t psx_pc)
 
     /* Emit all deferred (cold) slow paths at the end of the block */
     cold_slow_emit_all();
+
+    /* P23: Emit deferred overflow exception cold entries + shared stub */
+    overflow_cold_emit_all();
 
     /* Emit TLB backpatch stubs (range-checked cold paths for TLB misses) */
     if (psx_tlb_base)

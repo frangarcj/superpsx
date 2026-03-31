@@ -113,6 +113,95 @@ int BIOS_HLE_C(void)
 }
 
 /* ================================================================
+ * P23: Overflow exception cold queue
+ * ================================================================
+ * Instead of inlining the full exception path (12 words) at each
+ * ADD/SUB/ADDI overflow check, defer to a shared stub at block end.
+ * Per-site cost: BLTZ+NOP (inline) + 3-5 words (cold entry).
+ * Shared stub: ~10-16 words (once per block).
+ * Saves ~8 words per additional overflow instruction in a block.
+ */
+#define MAX_OVERFLOW_COLD 32
+
+typedef struct {
+    uint32_t *branch_patch;   /* BLTZ placeholder to patch */
+    uint32_t psx_pc;          /* PSX PC for cpu.current_pc */
+    int16_t  cycle_offset;    /* Cycles consumed up to this point */
+    int      restore_psx;     /* PSX register to restore (-1 = none) */
+} OverflowColdEntry;
+
+static OverflowColdEntry overflow_cold[MAX_OVERFLOW_COLD];
+static int overflow_cold_count;
+
+void overflow_cold_reset(void) { overflow_cold_count = 0; }
+
+void overflow_cold_emit_all(void)
+{
+    if (overflow_cold_count == 0)
+        return;
+
+    /* Emit shared stub FIRST so per-site entries can J to it */
+    uint32_t *shared_stub = code_ptr;
+
+    /* AT = psx_pc (loaded by per-site code) */
+    EMIT_SW(REG_AT, CPU_CURRENT_PC, REG_S0);
+
+    /* Save -cycle_offset (T9) to stack — C call will clobber T9 */
+    EMIT_SW(REG_T9, 76, REG_SP);
+
+    /* Flush ALL assigned dynamic slots unconditionally.
+     * Overflow always aborts, so non-dirty slots are harmless. */
+    if (dyn_slots_active)
+    {
+        for (int s = 0; s < DYN_SLOT_COUNT; s++)
+        {
+            if (dyn_slot_psx[s] >= 0)
+                EMIT_SW(REG_T0 + s, CPU_REG(dyn_slot_psx[s]), REG_S0);
+        }
+    }
+
+    /* Call Helper_Overflow_Exception via full C-call trampoline */
+    emit_load_imm32(REG_T8, (uint32_t)Helper_Overflow_Exception);
+    EMIT_JAL_ABS((uint32_t)call_c_trampoline_addr);
+    EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0); /* delay slot */
+
+    /* Unconditional abort — overflow exception ALWAYS sets block_aborted */
+    EMIT_LW(REG_T9, 76, REG_SP);              /* restore -cycle_offset */
+    EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+    emit(MK_R(0, REG_S2, REG_T9, REG_S2, 0, 0x21)); /* delay: ADDU S2, S2, T9 */
+
+    /* Emit per-site cold entries (each Js backward to shared_stub) */
+    for (int i = 0; i < overflow_cold_count; i++)
+    {
+        OverflowColdEntry *e = &overflow_cold[i];
+
+        /* Patch BLTZ to jump here */
+        int32_t off = (int32_t)(code_ptr - e->branch_patch - 1);
+        *e->branch_patch = (*e->branch_patch & 0xFFFF0000) | ((uint32_t)off & 0xFFFF);
+
+        /* Restore PSX register (pre-ALU value from cpu.regs[]) */
+        if (e->restore_psx > 0)
+        {
+            if (psx_pinned_reg[e->restore_psx])
+                EMIT_LW(psx_pinned_reg[e->restore_psx],
+                         CPU_REG(e->restore_psx), REG_S0);
+            else
+                dyn_reload_one_slot(e->restore_psx);
+        }
+
+        /* Load psx_pc into AT */
+        emit_load_imm32(REG_AT, e->psx_pc);
+
+        /* J shared_stub with -cycle_offset in delay slot */
+        emit(MK_J(2, (uint32_t)shared_stub >> 2));
+        emit(MK_I(0x09, REG_ZERO, REG_T9,
+                   (uint16_t)(-(int16_t)e->cycle_offset)));
+    }
+
+    overflow_cold_count = 0;
+}
+
+/* ================================================================
  * COP Usable (CU) exception check — shared helper
  * ================================================================
  * Emit inline SR bit test for COPn.  If CUn is disabled, the cold
@@ -155,31 +244,6 @@ static void emit_cu_check(int cop_num, uint32_t psx_pc)
     /* Patch BNE offset */
     *skip = (*skip & 0xFFFF0000) | ((uint32_t)(code_ptr - skip - 1) & 0xFFFF);
 }
-
-/* ---- Overflow exception cold path (ADD/SUB/ADDI) ---- */
-static void emit_overflow_exception(uint32_t psx_pc)
-{
-    RegStatus saved_vregs[32];
-    uint32_t saved_dirty = dirty_const_mask;
-    uint8_t saved_dyn_dirty = dyn_dirty_mask;
-    uint32_t saved_smrv = smrv_known_ram;
-    uint32_t saved_align = align_known_mask;
-    int saved_t8 = t8_cached_psx_reg, saved_t9 = t9_cached_psx_reg;
-    memcpy(saved_vregs, vregs, sizeof(vregs));
-
-    emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
-    emit_call_c((uint32_t)Helper_Overflow_Exception);
-    emit_abort_check(emit_cycle_offset);
-
-    memcpy(vregs, saved_vregs, sizeof(vregs));
-    dirty_const_mask = saved_dirty;
-    dyn_dirty_mask = saved_dyn_dirty;
-    smrv_known_ram = saved_smrv;
-    align_known_mask = saved_align;
-    t8_cached_psx_reg = saved_t8;
-    t9_cached_psx_reg = saved_t9;
-}
-
 
 /* ---- Main instruction emitter ---- */
 int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
@@ -443,24 +507,19 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit(MK_R(0, d, sr, sr, 0, 0x26));                /* XOR  sr, d, sr  (result^rs) */
             emit(MK_R(0, REG_AT, sr, REG_AT, 0, 0x24));       /* AND  AT, AT, sr */
 
-            /* BGEZ AT, @no_overflow — placeholder, patched after cold path */
-            uint32_t *bgez_patch = code_ptr;
-            emit(0);
+            /* P23: BLTZ AT, @overflow_cold — deferred to block end */
+            uint32_t *bltz_patch = code_ptr;
+            emit(MK_I(0x01, REG_AT, 0x00, 0)); /* BLTZ AT, +? (placeholder) */
             EMIT_NOP();
 
-            /* ---- Cold path: overflow exception (rarely taken) ---- */
+            /* Queue cold entry for block-end emission */
             {
-                /* Restore rd from cpu.regs[] (flushed above before ADDU). */
-                if (rd != 0 && psx_pinned_reg[rd])
-                    EMIT_LW(psx_pinned_reg[rd], CPU_REG(rd), REG_S0);
-                else
-                    dyn_reload_one_slot(rd);
-
-                emit_overflow_exception(psx_pc);
+                OverflowColdEntry *e = &overflow_cold[overflow_cold_count++];
+                e->branch_patch = bltz_patch;
+                e->psx_pc = psx_pc;
+                e->cycle_offset = emit_cycle_offset;
+                e->restore_psx = rd;
             }
-
-            /* Patch BGEZ: skip from patch_loc+1 to current code_ptr */
-            *bgez_patch = MK_I(1, REG_AT, 1, (int16_t)(code_ptr - bgez_patch - 1));
 
             /* @no_overflow: invalidate scratch cache (XOR/NOR clobbered them) */
             reg_cache_invalidate();
@@ -532,20 +591,18 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit(MK_R(0, d, sr, sr, 0, 0x26));          /* XOR  sr, d, sr */
             emit(MK_R(0, REG_AT, sr, REG_AT, 0, 0x24)); /* AND  AT, AT, sr */
 
-            uint32_t *bgez_patch = code_ptr;
-            emit(0);
+            /* P23: BLTZ AT, @overflow_cold — deferred to block end */
+            uint32_t *bltz_patch = code_ptr;
+            emit(MK_I(0x01, REG_AT, 0x00, 0));
             EMIT_NOP();
 
             {
-                if (rd != 0 && psx_pinned_reg[rd])
-                    EMIT_LW(psx_pinned_reg[rd], CPU_REG(rd), REG_S0);
-                else
-                    dyn_reload_one_slot(rd);
-
-                emit_overflow_exception(psx_pc);
+                OverflowColdEntry *e = &overflow_cold[overflow_cold_count++];
+                e->branch_patch = bltz_patch;
+                e->psx_pc = psx_pc;
+                e->cycle_offset = emit_cycle_offset;
+                e->restore_psx = rd;
             }
-
-            *bgez_patch = MK_I(1, REG_AT, 1, (int16_t)(code_ptr - bgez_patch - 1));
 
             reg_cache_invalidate();
             emit_sync_reg(rd, d);
@@ -714,20 +771,18 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         emit(MK_R(0, d, sr, sr, 0, 0x26));                /* XOR  sr, d, sr */
         emit(MK_R(0, REG_AT, sr, REG_AT, 0, 0x24));       /* AND  AT, AT, sr */
 
-        uint32_t *bgez_patch = code_ptr;
-        emit(0);
+        /* P23: BLTZ AT, @overflow_cold — deferred to block end */
+        uint32_t *bltz_patch = code_ptr;
+        emit(MK_I(0x01, REG_AT, 0x00, 0));
         EMIT_NOP();
 
         {
-            if (rt != 0 && psx_pinned_reg[rt])
-                EMIT_LW(psx_pinned_reg[rt], CPU_REG(rt), REG_S0);
-            else
-                dyn_reload_one_slot(rt);
-
-            emit_overflow_exception(psx_pc);
+            OverflowColdEntry *e = &overflow_cold[overflow_cold_count++];
+            e->branch_patch = bltz_patch;
+            e->psx_pc = psx_pc;
+            e->cycle_offset = emit_cycle_offset;
+            e->restore_psx = rt;
         }
-
-        *bgez_patch = MK_I(1, REG_AT, 1, (int16_t)(code_ptr - bgez_patch - 1));
 
         reg_cache_invalidate();
         emit_sync_reg(rt, d);

@@ -678,6 +678,9 @@ void cold_slow_push(uint32_t *branches[], int num_branches,
                     uint32_t psx_pc, int16_t cycle_offset,
                     uint8_t size, uint8_t type, uint8_t has_abort,
                     uint8_t saved_dirty);
+/* P23: Overflow exception cold queue (dynarec_insn.c) */
+void overflow_cold_reset(void);
+void overflow_cold_emit_all(void);
 void tlb_patch_emit_all(void);
 int TLB_Backpatch(uint32_t epc);
 extern int tlb_bp_map_count;
