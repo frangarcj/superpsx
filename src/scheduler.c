@@ -14,7 +14,9 @@
  */
 
 /* ---- Shared state (accessed by inline functions in scheduler.h) ---- */
-SchedEvent sched_events[SCHED_EVENT_COUNT];
+int sched_active[SCHED_EVENT_COUNT];
+uint64_t sched_deadline[SCHED_EVENT_COUNT];
+sched_callback_t sched_callback[SCHED_EVENT_COUNT];
 
 uint64_t global_cycles = 0;
 uint32_t partial_block_cycles = 0;
@@ -26,7 +28,9 @@ volatile int sched_interrupt_chain = 0;
 /* ---- Init ---- */
 void Sched_Init(void)
 {
-    memset(sched_events, 0, sizeof(sched_events));
+    memset(sched_active, 0, sizeof(sched_active));
+    memset(sched_deadline, 0, sizeof(sched_deadline));
+    memset(sched_callback, 0, sizeof(sched_callback));
     global_cycles = 0;
     partial_block_cycles = 0;
     sched_cached_earliest = UINT64_MAX;

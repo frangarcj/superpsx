@@ -30,16 +30,12 @@
 /* ticks_late = how many cycles past the scheduled deadline the event fired. */
 typedef void (*sched_callback_t)(int ticks_late);
 
-/* ---- Event slot (visible for inlining) ---- */
-typedef struct
-{
-    int active;
-    uint64_t deadline;
-    sched_callback_t callback;
-} SchedEvent;
+/* ---- Event state (SoA layout for cache locality) ---- */
+extern int sched_active[SCHED_EVENT_COUNT];
+extern uint64_t sched_deadline[SCHED_EVENT_COUNT];
+extern sched_callback_t sched_callback[SCHED_EVENT_COUNT];
 
 /* ---- Shared state (defined in scheduler.c) ---- */
-extern SchedEvent sched_events[SCHED_EVENT_COUNT];
 extern uint64_t global_cycles;
 extern uint32_t partial_block_cycles;
 extern volatile uint32_t chain_cycles_acc;
@@ -61,9 +57,9 @@ static inline void sched_recompute_cached(void)
     int i;
     for (i = 0; i < SCHED_EVENT_COUNT; i++)
     {
-        if (sched_events[i].active && sched_events[i].deadline < earliest)
+        if (sched_active[i] && sched_deadline[i] < earliest)
         {
-            earliest = sched_events[i].deadline;
+            earliest = sched_deadline[i];
             earliest_id = i;
         }
     }
@@ -76,9 +72,9 @@ static inline void Sched_Add(int event_id, uint64_t absolute_cycle,
 {
     int was_earliest = (event_id == sched_earliest_id);
 
-    sched_events[event_id].active = 1;
-    sched_events[event_id].deadline = absolute_cycle;
-    sched_events[event_id].callback = cb;
+    sched_active[event_id] = 1;
+    sched_deadline[event_id] = absolute_cycle;
+    sched_callback[event_id] = cb;
 
     if (absolute_cycle <= sched_cached_earliest)
     {
@@ -96,7 +92,7 @@ static inline void Sched_Add(int event_id, uint64_t absolute_cycle,
 static inline void Sched_Remove(int event_id)
 {
     int was_earliest = (event_id == sched_earliest_id);
-    sched_events[event_id].active = 0;
+    sched_active[event_id] = 0;
 
     if (was_earliest)
         sched_recompute_cached();
@@ -108,15 +104,15 @@ static inline void Sched_Tick(uint64_t current_cycle)
     int needed_recompute = 0;
     for (i = 0; i < SCHED_EVENT_COUNT; i++)
     {
-        if (sched_events[i].active && sched_events[i].deadline <= current_cycle)
+        if (sched_active[i] && sched_deadline[i] <= current_cycle)
         {
             if (i == sched_earliest_id)
                 needed_recompute = 1;
 
-            int ticks_late = (int)(current_cycle - sched_events[i].deadline);
-            sched_events[i].active = 0;
-            if (sched_events[i].callback)
-                sched_events[i].callback(ticks_late);
+            int ticks_late = (int)(current_cycle - sched_deadline[i]);
+            sched_active[i] = 0;
+            if (sched_callback[i])
+                sched_callback[i](ticks_late);
         }
     }
     if (needed_recompute)
