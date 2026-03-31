@@ -593,9 +593,11 @@ void SPU_WriteReg(uint32_t offset, uint16_t value)
         }
         break;
 
-    /* ENDX (0x1F801D9C-0x1F801D9F) — read-only on real hardware, writes ignored */
+    /* ENDX (0x1F801D9C-0x1F801D9F) — writing any value clears all 24 ENDX bits (psx-spx) */
     case 0xCE:
     case 0xCF:
+        SPU_CatchUp();
+        endx = 0;
         break;
 
     /* Sound RAM IRQ Address (0x1F801DA4) */
@@ -682,6 +684,10 @@ uint16_t SPU_ReadReg(uint32_t offset)
             case 5:
                 return v->adsr_hi;
             case 6:
+                /* ENVX: catch up SPU so envelope reflects current cycle.
+                 * Without this, games polling ENVX right after Key On see 0
+                 * and assume the voice is dead (missing SFX). */
+                SPU_CatchUp();
                 return v->adsr_level;
             case 7:
                 return v->repeat_addr;
@@ -703,10 +709,12 @@ uint16_t SPU_ReadReg(uint32_t offset)
     case 0xC5:
         return key_on_hi;
 
-    /* ENDX (0x1F801D9C) — NOT cleared on read */
+    /* ENDX (0x1F801D9C) — catch up so game sees current voice-done status */
     case 0xCE:
+        SPU_CatchUp();
         return (uint16_t)(endx & 0xFFFF);
     case 0xCF:
+        SPU_CatchUp();
         return (uint16_t)((endx >> 16) & 0xFFFF);
 
     case 0xD3:
