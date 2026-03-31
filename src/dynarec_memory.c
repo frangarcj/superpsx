@@ -768,13 +768,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     reg_cache_invalidate();
 }
 
-void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t offset)
-{
-    /* emit_memory_read with is_signed=1 handles signed loads natively on the
-     * Direct address fast path (lb/lh) and adds SLL/SRA sign extension on the slow path.
-     * Both const-address and direct paths are fully handled internally. */
-    emit_memory_read(size, rt_psx, rs_psx, offset, 1);
-}
+
 
 void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
 {

@@ -656,7 +656,6 @@ void Free_PageTable(void);
  *  Function prototypes — dynarec_memory.c
  * ================================================================ */
 void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_signed);
-void emit_memory_read_signed(int size, int rt_psx, int rs_psx, int16_t offset);
 void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset);
 void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int use_load_delay);
 void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset);

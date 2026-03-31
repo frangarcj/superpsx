@@ -156,6 +156,30 @@ static void emit_cu_check(int cop_num, uint32_t psx_pc)
     *skip = (*skip & 0xFFFF0000) | ((uint32_t)(code_ptr - skip - 1) & 0xFFFF);
 }
 
+/* ---- Overflow exception cold path (ADD/SUB/ADDI) ---- */
+static void emit_overflow_exception(uint32_t psx_pc)
+{
+    RegStatus saved_vregs[32];
+    uint32_t saved_dirty = dirty_const_mask;
+    uint8_t saved_dyn_dirty = dyn_dirty_mask;
+    uint32_t saved_smrv = smrv_known_ram;
+    uint32_t saved_align = align_known_mask;
+    int saved_t8 = t8_cached_psx_reg, saved_t9 = t9_cached_psx_reg;
+    memcpy(saved_vregs, vregs, sizeof(vregs));
+
+    emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
+    emit_call_c((uint32_t)Helper_Overflow_Exception);
+    emit_abort_check(emit_cycle_offset);
+
+    memcpy(vregs, saved_vregs, sizeof(vregs));
+    dirty_const_mask = saved_dirty;
+    dyn_dirty_mask = saved_dyn_dirty;
+    smrv_known_ram = saved_smrv;
+    align_known_mask = saved_align;
+    t8_cached_psx_reg = saved_t8;
+    t9_cached_psx_reg = saved_t9;
+}
+
 
 /* ---- Main instruction emitter ---- */
 int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
@@ -432,25 +456,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 else
                     dyn_reload_one_slot(rd);
 
-                RegStatus saved_vregs[32];
-                uint32_t saved_dirty = dirty_const_mask;
-                uint8_t saved_dyn_dirty = dyn_dirty_mask;
-                uint32_t saved_smrv_ov = smrv_known_ram;
-                uint32_t saved_align_ov = align_known_mask;
-                int saved_t8 = t8_cached_psx_reg, saved_t9 = t9_cached_psx_reg;
-                memcpy(saved_vregs, vregs, sizeof(vregs));
-
-                emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
-                emit_call_c((uint32_t)Helper_Overflow_Exception);
-                emit_abort_check(emit_cycle_offset);
-
-                memcpy(vregs, saved_vregs, sizeof(vregs));
-                dirty_const_mask = saved_dirty;
-                dyn_dirty_mask = saved_dyn_dirty;
-                smrv_known_ram = saved_smrv_ov;
-                align_known_mask = saved_align_ov;
-                t8_cached_psx_reg = saved_t8;
-                t9_cached_psx_reg = saved_t9;
+                emit_overflow_exception(psx_pc);
             }
 
             /* Patch BGEZ: skip from patch_loc+1 to current code_ptr */
@@ -537,25 +543,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 else
                     dyn_reload_one_slot(rd);
 
-                RegStatus saved_vregs[32];
-                uint32_t saved_dirty = dirty_const_mask;
-                uint8_t saved_dyn_dirty = dyn_dirty_mask;
-                uint32_t saved_smrv_ov = smrv_known_ram;
-                uint32_t saved_align_ov = align_known_mask;
-                int saved_t8 = t8_cached_psx_reg, saved_t9 = t9_cached_psx_reg;
-                memcpy(saved_vregs, vregs, sizeof(vregs));
-
-                emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
-                emit_call_c((uint32_t)Helper_Overflow_Exception);
-                emit_abort_check(emit_cycle_offset);
-
-                memcpy(vregs, saved_vregs, sizeof(vregs));
-                dirty_const_mask = saved_dirty;
-                dyn_dirty_mask = saved_dyn_dirty;
-                smrv_known_ram = saved_smrv_ov;
-                align_known_mask = saved_align_ov;
-                t8_cached_psx_reg = saved_t8;
-                t9_cached_psx_reg = saved_t9;
+                emit_overflow_exception(psx_pc);
             }
 
             *bgez_patch = MK_I(1, REG_AT, 1, (int16_t)(code_ptr - bgez_patch - 1));
@@ -738,25 +726,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             else
                 dyn_reload_one_slot(rt);
 
-            RegStatus saved_vregs[32];
-            uint32_t saved_dirty = dirty_const_mask;
-            uint8_t saved_dyn_dirty = dyn_dirty_mask;
-            uint32_t saved_smrv_ov = smrv_known_ram;
-            uint32_t saved_align_ov = align_known_mask;
-            int saved_t8 = t8_cached_psx_reg, saved_t9 = t9_cached_psx_reg;
-            memcpy(saved_vregs, vregs, sizeof(vregs));
-
-            emit_imm_to_cpu_field(CPU_CURRENT_PC, psx_pc);
-            emit_call_c((uint32_t)Helper_Overflow_Exception);
-            emit_abort_check(emit_cycle_offset);
-
-            memcpy(vregs, saved_vregs, sizeof(vregs));
-            dirty_const_mask = saved_dirty;
-            dyn_dirty_mask = saved_dyn_dirty;
-            smrv_known_ram = saved_smrv_ov;
-            align_known_mask = saved_align_ov;
-            t8_cached_psx_reg = saved_t8;
-            t9_cached_psx_reg = saved_t9;
+            emit_overflow_exception(psx_pc);
         }
 
         *bgez_patch = MK_I(1, REG_AT, 1, (int16_t)(code_ptr - bgez_patch - 1));
@@ -942,11 +912,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* Load instructions */
     case 0x20:
         mark_vreg_var(rt);
-        emit_memory_read_signed(1, rt, rs, imm);
+        emit_memory_read(1, rt, rs, imm, 1);
         break; /* LB */
     case 0x21:
         mark_vreg_var(rt);
-        emit_memory_read_signed(2, rt, rs, imm);
+        emit_memory_read(2, rt, rs, imm, 1);
         break; /* LH */
     case 0x23:
         mark_vreg_var(rt);
