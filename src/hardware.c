@@ -1,9 +1,5 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include <stdint.h>
-#ifdef PLATFORM_PS2
-#include <kernel.h>
-#endif
 #include "superpsx.h"
 #include "scheduler.h"
 #include "psx_dma.h"
@@ -17,6 +13,54 @@
 #undef LOG_TAG
 #endif
 #define LOG_TAG "HW"
+
+/* PSX I/O register addresses */
+#define PSX_MEM_CTRL_BASE  0x1F801000
+#define PSX_MEM_CTRL_END   0x1F801024
+#define PSX_SIO_BASE       0x1F801040
+#define PSX_SIO_END        0x1F80105E
+#define PSX_RAM_SIZE_REG   0x1F801060
+#define PSX_I_STAT         0x1F801070
+#define PSX_I_MASK         0x1F801074
+#define PSX_DMA_BASE       0x1F801080
+#define PSX_SPU_BASE       0x1F801C00
+#define PSX_SPU_END        0x1F801E00
+#define PSX_IRQ_VALID_MASK 0x7FF
+#define PSX_I_MASK_VALID   0xFFFF07FF
+
+/* Cap cycles_left to 0 when IRQ becomes pending during JIT block execution.
+ * This mirrors DuckStation's downcount=0 pattern on IRQ assertion.
+ * cycles_left_correction tracks the trimmed cycles so run_jit_chain stays accurate. */
+static inline void cap_cycles_for_irq(void)
+{
+    int be = psx_block_exception;
+    if (be && (int32_t)cpu.cycles_left > 0)
+    {
+        cpu.cycles_left_correction += (int32_t)cpu.cycles_left;
+        cpu.cycles_left = 0;
+    }
+}
+
+static inline uint32_t spu_register_offset(uint32_t phys)
+{
+    return (phys - PSX_SPU_BASE) >> 1;
+}
+
+/* Handle SIO IRQ acknowledgement when I_STAT bit 7 is cleared while
+ * a deferred SIO IRQ is pending.  Fires the interrupt immediately.
+ * Returns 1 if SIO IRQ was consumed (caller should early-return). */
+static inline int handle_sio_irq_ack(uint32_t data)
+{
+    if (sio_irq_pending && !(data & (1 << 7)))
+    {
+        sio_irq_pending = 0;
+        sio_irq_delay_cycle = 0;
+        Sched_Remove(SCHED_EVENT_SIO_IRQ);
+        SignalInterrupt(7);
+        return 1;
+    }
+    return 0;
+}
 
 /* Memory Control */
 static uint32_t mem_ctrl[9];           /* 0x1F801000-0x1F801020 */
@@ -37,42 +81,12 @@ void SignalInterrupt(uint32_t irq)
 {
     if (irq > 10)
         return;
-    /* Defer VBlank (bit 0) while MCD data transfer is in progress.
-     * The BIOS ISR event dispatch loop processes VBlank callbacks which
-     * take ~84K cycles, starving SIO byte processing and causing the
-     * BIOS MCD exchange to time out.  Deferring VBlank until the
-     * exchange completes avoids this race.
-     * TODO: re-enable once Crash Bandicoot regression is fixed. */
-#if 0
-    if (irq == 0)
-    {
-        extern int sio_state;
-        if (sio_state >= 11)
-        {
-            extern uint32_t sio_deferred_vblank;
-            sio_deferred_vblank = 1;
-            return;
-        }
-    }
-#endif
     cpu.i_stat |= (1 << irq);
-    cpu.irq_pending = (cpu.i_stat & cpu.i_mask & 0x7FF) != 0;
+    cpu.irq_pending = (cpu.i_stat & cpu.i_mask & PSX_IRQ_VALID_MASK) != 0;
     if (cpu.irq_pending)
     {
         sched_interrupt_chain = 1;
-        /* Force immediate dispatch: cap cycles_left to 0 so the JIT block
-         * exits at the next BLEZ check after any C-call path that reloads S2
-         * from cpu.cycles_left (memory slow-path, SIO write).  This mirrors
-         * DuckStation's downcount=0 pattern on IRQ assertion.
-         * Only apply during block execution (psx_block_exception==1) to avoid
-         * corrupting cycle accounting between blocks.
-         * cycles_left_correction tracks the trimmed cycles so that
-         * run_jit_chain's cycles_taken computation stays accurate. */
-        if (psx_block_exception && (int32_t)cpu.cycles_left > 0)
-        {
-            cpu.cycles_left_correction += (int32_t)cpu.cycles_left;
-            cpu.cycles_left = 0;
-        }
+        cap_cycles_for_irq();
     }
 }
 
@@ -83,23 +97,23 @@ uint32_t ReadHardware(uint32_t phys)
      * then fine-grained checks within each block.  The compiler generates a
      * compact jump table for the outer switch (32 entries max).
      */
-    uint32_t off = phys - 0x1F801000; /* 0x0000-0x1FFF */
+    uint32_t off = phys - PSX_MEM_CTRL_BASE; /* 0x0000-0x1FFF */
     uint32_t result = 0;
 
     switch (off >> 8)
     {
     case 0x00: /* 0x1F801000-0x1F8010FF: memctrl, SIO, IRQ, DMA */
-        if (phys < 0x1F801024)
-            result = mem_ctrl[(phys - 0x1F801000) >> 2];
-        else if (phys >= 0x1F801040 && phys <= 0x1F80105E)
-            result = SIO_Read(phys);
-        else if (phys == 0x1F801060)
-            result = ram_size;
-        else if (phys == 0x1F801070)
+        if (phys == PSX_I_STAT)
             result = cpu.i_stat;
-        else if (phys == 0x1F801074)
+        else if (phys == PSX_I_MASK)
             result = cpu.i_mask;
-        else if (phys >= 0x1F801080)
+        else if (phys < PSX_MEM_CTRL_END)
+            result = mem_ctrl[(phys - PSX_MEM_CTRL_BASE) >> 2];
+        else if (phys >= PSX_SIO_BASE && phys <= PSX_SIO_END)
+            result = SIO_Read(phys);
+        else if (phys == PSX_RAM_SIZE_REG)
+            result = ram_size;
+        else if (phys >= PSX_DMA_BASE)
             result = DMA_Read(phys);
         break;
 
@@ -126,9 +140,9 @@ uint32_t ReadHardware(uint32_t phys)
     case 0x0C: /* 0x1F801C00-0x1F801CFF: SPU (low half) */
     case 0x0D: /* 0x1F801D00-0x1F801DFF: SPU (high half) */
     {
-        uint32_t sreg = (phys - 0x1F801C00) >> 1;
+        uint32_t sreg = spu_register_offset(phys);
         uint32_t lo = SPU_ReadReg(sreg);
-        uint32_t hi = ((phys + 2) < 0x1F801E00) ? SPU_ReadReg(sreg + 1) : 0;
+        uint32_t hi = ((phys + 2) < PSX_SPU_END) ? SPU_ReadReg(sreg + 1) : 0;
         result = lo | (hi << 16);
         break;
     }
@@ -167,27 +181,27 @@ uint32_t ReadHardware(uint32_t phys)
 
 void WriteHardware(uint32_t phys, uint32_t data, int size)
 {
-    uint32_t off = phys - 0x1F801000;
+    uint32_t off = phys - PSX_MEM_CTRL_BASE;
 
     switch (off >> 8)
     {
     case 0x00: /* 0x1F801000-0x1F8010FF: memctrl, SIO, IRQ, DMA */
-        if (phys < 0x1F801024)
+        if (phys < PSX_MEM_CTRL_END)
         {
-            mem_ctrl[(phys - 0x1F801000) >> 2] = data;
+            mem_ctrl[(phys - PSX_MEM_CTRL_BASE) >> 2] = data;
             return;
         }
-        if (phys >= 0x1F801040 && phys <= 0x1F80105E)
+        if (phys >= PSX_SIO_BASE && phys <= PSX_SIO_END)
         {
             SIO_Write(phys, data);
             return;
         }
-        if (phys == 0x1F801060)
+        if (phys == PSX_RAM_SIZE_REG)
         {
             ram_size = data;
             return;
         }
-        if (phys == 0x1F801070)
+        if (phys == PSX_I_STAT)
         {
             cpu.i_stat &= data;
             /* CD-ROM level-triggered re-assertion: if the game acknowledged
@@ -195,47 +209,31 @@ void WriteHardware(uint32_t phys, uint32_t data, int size)
              * immediately (replaces per-loop polling). */
             if (cdrom_irq_active && !(cpu.i_stat & (1 << 2)))
                 cpu.i_stat |= (1 << 2);
-            /* Inline SIO IRQ check: if SIO IRQ was pending and bit 7 is now
-             * cleared, fire the SIO interrupt immediately. */
-            if (sio_irq_pending && !(data & (1 << 7)))
-            {
-                sio_irq_pending = 0;
-                sio_irq_delay_cycle = 0;
-                Sched_Remove(SCHED_EVENT_SIO_IRQ);
-                SignalInterrupt(7);
-                return; /* SignalInterrupt already updates irq_pending */
-            }
-            cpu.irq_pending = (cpu.i_stat & cpu.i_mask & 0x7FF) != 0;
+            if (handle_sio_irq_ack(data))
+                return;           /* SignalInterrupt already updates irq_pending */
+            cpu.irq_pending = (cpu.i_stat & cpu.i_mask & PSX_IRQ_VALID_MASK) != 0;
             if (cpu.irq_pending)
             {
                 sched_interrupt_chain = 1;
-                if (psx_block_exception && (int32_t)cpu.cycles_left > 0)
-                {
-                    cpu.cycles_left_correction += (int32_t)cpu.cycles_left;
-                    cpu.cycles_left = 0;
-                }
+                cap_cycles_for_irq();
             }
             return;
         }
-        if (phys == 0x1F801074)
+        if (phys == PSX_I_MASK)
         {
-            cpu.i_mask = data & 0xFFFF07FF;
-            cpu.irq_pending = (cpu.i_stat & cpu.i_mask & 0x7FF) != 0;
+            cpu.i_mask = data & PSX_I_MASK_VALID;
+            cpu.irq_pending = (cpu.i_stat & cpu.i_mask & PSX_IRQ_VALID_MASK) != 0;
             if (cpu.irq_pending)
             {
                 sched_interrupt_chain = 1;
-                if (psx_block_exception && (int32_t)cpu.cycles_left > 0)
-                {
-                    cpu.cycles_left_correction += (int32_t)cpu.cycles_left;
-                    cpu.cycles_left = 0;
-                }
+                cap_cycles_for_irq();
             }
             DLOG("I_MASK = %08X (VSync=%d CD=%d Timer0=%d Timer1=%d Timer2=%d)\n",
                  (unsigned)cpu.i_mask, (int)(cpu.i_mask & 1), (int)((cpu.i_mask >> 2) & 1),
                  (int)((cpu.i_mask >> 4) & 1), (int)((cpu.i_mask >> 5) & 1), (int)((cpu.i_mask >> 6) & 1));
             return;
         }
-        if (phys >= 0x1F801080)
+        if (phys >= PSX_DMA_BASE)
         {
 #ifdef ENABLE_VRAM_DUMP
             if (phys >= 0x1F801090 && phys <= 0x1F80109F) {
@@ -286,11 +284,11 @@ void WriteHardware(uint32_t phys, uint32_t data, int size)
     case 0x0C: /* 0x1F801C00-0x1F801CFF: SPU (low half) */
     case 0x0D: /* 0x1F801D00-0x1F801DFF: SPU (high half) */
     {
-        uint32_t soff = (phys - 0x1F801C00) >> 1;
+        uint32_t soff = spu_register_offset(phys);
         SPU_WriteReg(soff, (uint16_t)data);
         /* For 32-bit word writes, always write the upper halfword too even if
          * it is zero (a zero upper halfword is a valid register value). */
-        if (size == 4 && (phys + 2) < 0x1F801E00)
+        if (size == 4 && (phys + 2) < PSX_SPU_END)
             SPU_WriteReg(soff + 1, (uint16_t)(data >> 16));
         return;
     }
