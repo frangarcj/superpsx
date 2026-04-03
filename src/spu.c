@@ -46,6 +46,7 @@ typedef struct
     int16_t prev[2];       /* ADPCM decode history: prev[0]=s-1, prev[1]=s-2 */
     int16_t decoded[28];   /* Decoded samples from current ADPCM block */
     int block_decoded;     /* 1 = decoded[] is valid for current_addr */
+    int loop_pending;      /* 1 = loop-end reached, block advance should jump to repeat_addr */
 
     /* ADSR envelope state */
     int32_t adsr_vol;     /* Current ADSR envelope volume: 0..0x7FFF */
@@ -444,16 +445,19 @@ static inline __attribute__((always_inline)) void decode_adpcm_block(SPU_Voice *
     }
     if (flags & 0x01)
     {
-        /* Loop end */
+        /* Loop end — set ENDX bit and schedule loop or stop.
+         * Don't modify current_addr here; the block advance code will
+         * apply the loop jump after all 28 samples are consumed. */
         endx |= (1 << (v - voices));
         if (flags & 0x02)
         {
-            /* Loop repeat: jump to repeat address */
-            v->current_addr = (uint32_t)v->repeat_addr << 3;
+            /* Loop repeat: defer jump to repeat_addr until block advance */
+            v->loop_pending = 1;
         }
         else
         {
-            /* No loop: stop voice */
+            /* No loop: stop voice after last sample of this block */
+            v->loop_pending = 0;
             v->active = 0;
         }
     }
@@ -478,6 +482,7 @@ static void process_key_on(uint32_t kon)
             v->prev[0] = 0;
             v->prev[1] = 0;
             v->block_decoded = 0;
+            v->loop_pending = 0;
             /* Initialize ADSR envelope: Attack phase, volume 0 */
             v->adsr_vol = 0;
             v->adsr_phase = ADSR_ATTACK;
@@ -938,8 +943,16 @@ void SPU_GenerateChunk(int num_samples)
                 do
                 {
                     v->sample_pos -= (28 << 12);
-                    v->current_addr += 16;
-                    v->current_addr &= (SPU_RAM_SIZE - 1);
+                    if (__builtin_expect(v->loop_pending, 0))
+                    {
+                        v->current_addr = (uint32_t)v->repeat_addr << 3;
+                        v->loop_pending = 0;
+                    }
+                    else
+                    {
+                        v->current_addr += 16;
+                        v->current_addr &= (SPU_RAM_SIZE - 1);
+                    }
                 } while ((v->sample_pos >> 12) >= 28);
                 v->block_decoded = 0;
             }
@@ -991,8 +1004,16 @@ void SPU_GenerateChunk(int num_samples)
                 do
                 {
                     v->sample_pos -= (28 << 12);
-                    v->current_addr += 16;
-                    v->current_addr &= (SPU_RAM_SIZE - 1);
+                    if (__builtin_expect(v->loop_pending, 0))
+                    {
+                        v->current_addr = (uint32_t)v->repeat_addr << 3;
+                        v->loop_pending = 0;
+                    }
+                    else
+                    {
+                        v->current_addr += 16;
+                        v->current_addr &= (SPU_RAM_SIZE - 1);
+                    }
                 } while ((v->sample_pos >> 12) >= 28);
                 v->block_decoded = 0;
             }
