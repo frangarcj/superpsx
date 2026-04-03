@@ -47,6 +47,7 @@ typedef struct
     int16_t decoded[28];   /* Decoded samples from current ADPCM block */
     int block_decoded;     /* 1 = decoded[] is valid for current_addr */
     int loop_pending;      /* 1 = loop-end reached, block advance should jump to repeat_addr */
+    int ignore_loop;       /* 1 = game wrote loop_addr register; ignore ADPCM flag 4 */
 
     /* ADSR envelope state */
     int32_t adsr_vol;     /* Current ADSR envelope volume: 0..0x7FFF */
@@ -74,6 +75,10 @@ static uint16_t spu_stat;      /* SPUSTAT */
 static uint16_t transfer_addr; /* Transfer address register (raw value) */
 static uint32_t transfer_ptr;  /* Actual byte address in SPU RAM */
 static uint16_t data_fifo;     /* Data transfer FIFO register */
+
+/* KOFF protection: suppress KOFF within ~1 sample of KON (same channel) */
+static uint64_t last_keyon_cycles;   /* Cycle count when last KON was written */
+static uint32_t last_kon_mask;       /* 24-bit mask of channels keyed on */
 
 /* Reverb / noise / misc registers — stored but not processed */
 static uint16_t spu_reg_store[256];
@@ -331,6 +336,8 @@ void SPU_Init(void)
     main_vol_r = 0;
     key_on_lo = 0;
     key_on_hi = 0;
+    last_keyon_cycles = 0;
+    last_kon_mask = 0;
     endx = 0;
     spu_cnt = 0;
     spu_stat = 0;
@@ -438,7 +445,7 @@ static inline __attribute__((always_inline)) void decode_adpcm_block(SPU_Voice *
     v->block_decoded = 1;
 
     /* Handle loop flags */
-    if (flags & 0x04)
+    if ((flags & 0x04) && !v->ignore_loop)
     {
         /* Loop start — set repeat address */
         v->repeat_addr = (uint16_t)(addr >> 3);
@@ -477,12 +484,13 @@ static void process_key_on(uint32_t kon)
         {
             SPU_Voice *v = &voices[i];
             v->active = 1;
-            v->current_addr = (uint32_t)v->start_addr << 3;
+            v->current_addr = (uint32_t)(v->start_addr & ~1) << 3; /* Align to 16-byte ADPCM block */
             v->sample_pos = 0;
             v->prev[0] = 0;
             v->prev[1] = 0;
             v->block_decoded = 0;
             v->loop_pending = 0;
+            v->ignore_loop = 0;
             /* Initialize ADSR envelope: Attack phase, volume 0 */
             v->adsr_vol = 0;
             v->adsr_phase = ADSR_ATTACK;
@@ -559,6 +567,7 @@ void SPU_WriteReg(uint32_t offset, uint16_t value)
                 break;
             case 7:
                 v->repeat_addr = value;
+                v->ignore_loop = 1; /* Game explicitly set loop address */
                 break;
             }
         }
@@ -580,6 +589,8 @@ void SPU_WriteReg(uint32_t offset, uint16_t value)
         key_on_lo = value;
         if (value) {
             SPU_CatchUp();
+            last_keyon_cycles = global_cycles + partial_block_cycles;
+            last_kon_mask = (last_kon_mask & 0xFF0000) | (uint32_t)value;
             process_key_on((uint32_t)value);
         }
         break;
@@ -587,6 +598,8 @@ void SPU_WriteReg(uint32_t offset, uint16_t value)
         key_on_hi = value;
         if (value) {
             SPU_CatchUp();
+            last_keyon_cycles = global_cycles + partial_block_cycles;
+            last_kon_mask = (last_kon_mask & 0x00FFFF) | ((uint32_t)value << 16);
             process_key_on((uint32_t)value << 16);
         }
         break;
@@ -595,13 +608,22 @@ void SPU_WriteReg(uint32_t offset, uint16_t value)
     case 0xC6: /* KOFF low (0x1F801D8C) */
         if (value) {
             SPU_CatchUp();
-            process_key_off((uint32_t)value);
+            /* Suppress KOFF within ~1 sample (786 cycles) of KON for same channel */
+            uint64_t now_c6 = global_cycles + partial_block_cycles;
+            if (now_c6 - last_keyon_cycles < 786)
+                value &= ~(uint16_t)(last_kon_mask & 0xFFFF);
+            if (value)
+                process_key_off((uint32_t)value);
         }
         break;
     case 0xC7: /* KOFF high (0x1F801D8E) */
         if (value) {
             SPU_CatchUp();
-            process_key_off((uint32_t)value << 16);
+            uint64_t now_c7 = global_cycles + partial_block_cycles;
+            if (now_c7 - last_keyon_cycles < 786)
+                value &= ~(uint16_t)((last_kon_mask >> 16) & 0xFF);
+            if (value)
+                process_key_off((uint32_t)value << 16);
         }
         break;
 
