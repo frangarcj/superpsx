@@ -76,9 +76,11 @@ static uint16_t transfer_addr; /* Transfer address register (raw value) */
 static uint32_t transfer_ptr;  /* Actual byte address in SPU RAM */
 static uint16_t data_fifo;     /* Data transfer FIFO register */
 
-/* KOFF protection: suppress KOFF within ~1 sample of KON (same channel) */
-static uint64_t last_keyon_cycles;   /* Cycle count when last KON was written */
-static uint32_t last_kon_mask;       /* 24-bit mask of channels keyed on */
+/* Deferred KON: voices are flagged for start, not started immediately.
+ * Actual start happens in SPU_GenerateChunk.  If KOFF arrives before
+ * mixing, it cancels the pending KON (matching real HW: KON wins when
+ * KON and KOFF arrive in the same sample tick). */
+static uint32_t pending_kon;   /* 24-bit mask of channels awaiting KON */
 
 /* Reverb / noise / misc registers — stored but not processed */
 static uint16_t spu_reg_store[256];
@@ -336,8 +338,7 @@ void SPU_Init(void)
     main_vol_r = 0;
     key_on_lo = 0;
     key_on_hi = 0;
-    last_keyon_cycles = 0;
-    last_kon_mask = 0;
+    pending_kon = 0;
     endx = 0;
     spu_cnt = 0;
     spu_stat = 0;
@@ -504,6 +505,15 @@ static void process_key_on(uint32_t kon)
     }
 }
 
+/* ---- Flush deferred KON — called before generating samples or reading ENVX ---- */
+static void flush_pending_kon(void)
+{
+    if (pending_kon) {
+        process_key_on(pending_kon);
+        pending_kon = 0;
+    }
+}
+
 /* ---- Process Key Off for all set bits ---- */
 static void process_key_off(uint32_t koff)
 {
@@ -584,46 +594,42 @@ void SPU_WriteReg(uint32_t offset, uint16_t value)
         main_vol_r = (int16_t)value;
         break;
 
-    /* Key On (0x1F801D88-0x1F801D8B) — catch up SPU then process */
+    /* Key On (0x1F801D88-0x1F801D8B) — deferred to next mixing chunk */
     case 0xC4: /* KON low (0x1F801D88) */
         key_on_lo = value;
         if (value) {
             SPU_CatchUp();
-            last_keyon_cycles = global_cycles + partial_block_cycles;
-            last_kon_mask = (last_kon_mask & 0xFF0000) | (uint32_t)value;
-            process_key_on((uint32_t)value);
+            pending_kon |= (uint32_t)value & 0xFFFF;
         }
         break;
     case 0xC5: /* KON high (0x1F801D8A) */
         key_on_hi = value;
         if (value) {
             SPU_CatchUp();
-            last_keyon_cycles = global_cycles + partial_block_cycles;
-            last_kon_mask = (last_kon_mask & 0x00FFFF) | ((uint32_t)value << 16);
-            process_key_on((uint32_t)value << 16);
+            pending_kon |= ((uint32_t)value & 0xFF) << 16;
         }
         break;
 
-    /* Key Off (0x1F801D8C-0x1F801D8F) — catch up SPU then process */
+    /* Key Off (0x1F801D8C-0x1F801D8F) — cancel pending KON, then release */
     case 0xC6: /* KOFF low (0x1F801D8C) */
         if (value) {
             SPU_CatchUp();
-            /* Suppress KOFF within ~1 sample (786 cycles) of KON for same channel */
-            uint64_t now_c6 = global_cycles + partial_block_cycles;
-            if (now_c6 - last_keyon_cycles < 786)
-                value &= ~(uint16_t)(last_kon_mask & 0xFFFF);
-            if (value)
-                process_key_off((uint32_t)value);
+            /* Channels with pending KON: cancel the KOFF (KON wins) */
+            uint32_t koff_lo = (uint32_t)value & ~pending_kon;
+            /* Channels with pending KON that also get KOFF: cancel the KON too
+             * (game wrote KON then KOFF before mixing → net effect = nothing) */
+            pending_kon &= ~(uint32_t)value;
+            if (koff_lo)
+                process_key_off(koff_lo);
         }
         break;
     case 0xC7: /* KOFF high (0x1F801D8E) */
         if (value) {
             SPU_CatchUp();
-            uint64_t now_c7 = global_cycles + partial_block_cycles;
-            if (now_c7 - last_keyon_cycles < 786)
-                value &= ~(uint16_t)((last_kon_mask >> 16) & 0xFF);
-            if (value)
-                process_key_off((uint32_t)value << 16);
+            uint32_t koff_hi = ((uint32_t)value << 16) & ~pending_kon;
+            pending_kon &= ~((uint32_t)value << 16);
+            if (koff_hi)
+                process_key_off(koff_hi);
         }
         break;
 
@@ -1108,8 +1114,10 @@ void SPU_CatchUp(void)
         target = SAMPLES_PER_FRAME;
 
     int pending = target - spu_samples_generated;
-    if (pending > 0)
+    if (pending > 0) {
+        flush_pending_kon();
         SPU_GenerateChunk(pending);
+    }
 }
 
 /* ---- Frame start: reset cycle tracker for catch-up ---- */
@@ -1129,6 +1137,7 @@ void SPU_GenerateSamples(void)
     }
 
     /* Generate any remaining samples for this frame */
+    flush_pending_kon();
     int remaining = SAMPLES_PER_FRAME - spu_samples_generated;
     if (remaining > 0)
         SPU_GenerateChunk(remaining);
