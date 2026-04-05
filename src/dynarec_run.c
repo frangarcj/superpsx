@@ -1127,7 +1127,10 @@ void Run_CPU(void)
         if (deadline == UINT64_MAX || deadline <= global_cycles)
             deadline = global_cycles + 1024;
 
-        run_jit_chain(deadline);
+        if (psx_config.interpreter)
+            run_interpreter_chain(deadline);
+        else
+            run_jit_chain(deadline);
 
         if (global_cycles >= sched_cached_earliest)
         {
