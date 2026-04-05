@@ -154,13 +154,8 @@ static void adsr_reload_params(SPU_Voice *v)
     uint16_t lo = v->adsr_lo;
     uint16_t hi = v->adsr_hi;
 
-    /* Sustain level threshold: same for all phases (from adsr_lo bits 3-0)
-     * psx-spx: Level=(N+1)*800h. Cap to 0x7FFF so vol never exceeds the
-     * valid envelope range — otherwise ENVX reads as 0 and games think
-     * the voice is dead (e.g. Crash Bandicoot intro scream). */
+    /* Sustain level threshold: same for all phases (from adsr_lo bits 3-0) */
     v->adsr_sl = (int32_t)(((lo & 0x0F) + 1) << 11);
-    if (v->adsr_sl > 0x7FFF)
-        v->adsr_sl = 0x7FFF;
 
     int shift, step_idx, is_exp, is_dec;
 
