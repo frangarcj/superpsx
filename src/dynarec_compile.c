@@ -1217,6 +1217,8 @@ uint32_t *compile_block(uint32_t psx_pc)
     int in_delay_slot = 0;
     uint32_t branch_target = 0;
     int branch_type = 0; /* 0=none, 1=unconditional, 3=register, 4=conditional */
+    uint32_t jr_predicted_pc = 0;
+    int jr_has_prediction = 0;
 
     /* Load delay slot tracking */
     int pending_load_reg = 0;
@@ -1421,9 +1423,42 @@ uint32_t *compile_block(uint32_t psx_pc)
                 flush_dirty_consts();
                 dyn_flush_dirty_slots(); /* G: JR/JALR dispatch — dirty-only */
                 EMIT_LW(REG_T8, CPU_PC, REG_S0);
-                EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
-                EMIT_J_ABS((uint32_t)jump_dispatch_trampoline_addr);
-                EMIT_NOP();
+
+                if (jr_has_prediction)
+                {
+                    /* Guarded direct JR: verify runtime target matches
+                     * compile-time prediction.  On match → direct block link
+                     * (skips hash dispatch + 22-word prologue).
+                     * On mismatch → normal hash dispatch fallback. */
+                    emit_load_imm32(REG_AT, jr_predicted_pc);
+                    uint32_t *hash_patch = code_ptr;
+                    EMIT_BNE(REG_T8, REG_AT, 0); /* → @hash_fallback */
+                    EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count); /* delay: both paths */
+
+                    /* Predicted path: abort check + direct link */
+                    emit(MK_I(0x06, REG_S2, REG_ZERO, 6));          /* BLEZ s2, +6 → abort */
+                    EMIT_LW(REG_AT, CPU_IRQ_PENDING, REG_S0);       /* delay: irq_pending */
+                    EMIT_BEQ(REG_AT, REG_ZERO, 6);                  /* no IRQ → direct_link */
+                    EMIT_LW(REG_AT, CPU_COP0(PSX_COP0_SR), REG_S0); /* delay: SR */
+                    emit(MK_I(0x0C, REG_AT, REG_AT, 1));            /* ANDI at, 1 (IEc) */
+                    EMIT_BEQ(REG_AT, REG_ZERO, 3);                  /* IEc=0 → direct_link */
+                    EMIT_NOP();
+                    EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+                    EMIT_NOP();
+                    emit_direct_link(jr_predicted_pc);
+
+                    /* @hash_fallback: mispredicted — use hash dispatch */
+                    int32_t hash_off = (int32_t)(code_ptr - hash_patch - 1);
+                    *hash_patch = (*hash_patch & 0xFFFF0000) | (hash_off & 0xFFFF);
+                    EMIT_J_ABS((uint32_t)jump_dispatch_trampoline_addr);
+                    EMIT_NOP();
+                }
+                else
+                {
+                    EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
+                    EMIT_J_ABS((uint32_t)jump_dispatch_trampoline_addr);
+                    EMIT_NOP();
+                }
             }
             block_ended = 1;
             break;
@@ -1464,6 +1499,7 @@ uint32_t *compile_block(uint32_t psx_pc)
         {
             int rs = RS(opcode);
             int rd = (FUNC(opcode) == 0x09) ? RD(opcode) : 0;
+
             emit_load_psx_reg(REG_T8, rs);
             EMIT_SW(REG_T8, CPU_PC, REG_S0);
             /* Save current_pc so AdEL exception can set EPC = JR/JALR instr */
@@ -1472,6 +1508,14 @@ uint32_t *compile_block(uint32_t psx_pc)
             {
                 mark_vreg_const(rd, cur_pc + 8);
                 emit_materialize_psx_imm(rd, cur_pc + 8);
+            }
+            /* Guarded direct JR: when target register is a compile-time const,
+             * record prediction for runtime validation at block epilogue.
+             * JR only (not JALR) — JALR is a function call, target varies. */
+            if (FUNC(opcode) == 0x08 && is_vreg_const(rs))
+            {
+                jr_has_prediction = 1;
+                jr_predicted_pc = get_vreg_const(rs);
             }
             branch_type = 3;
             in_delay_slot = 1;
