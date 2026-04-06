@@ -319,12 +319,15 @@ int run_interpreter_chain(uint64_t deadline) {
                         break;
                     case 0x04: /* MTC0 */
                         cpu.cop0[rd] = cpu.regs[rt];
+                        if (rd == PSX_COP0_SR)
+                            cpu.irq_pending_fast = cpu.irq_pending & (cpu.regs[rt] & 1);
                         break;
                     case 0x10: /* RFE */ {
                         uint32_t sr = cpu.cop0[PSX_COP0_SR];
                         uint32_t mode = sr & 0x3F;
                         uint32_t new_mode = ((mode >> 2) & 0x0F) | (mode & 0x30);
                         cpu.cop0[PSX_COP0_SR] = (sr & ~0x3F) | new_mode;
+                        cpu.irq_pending_fast = cpu.irq_pending & (cpu.cop0[PSX_COP0_SR] & 1);
                         break;
                     }
                 }

@@ -84,6 +84,7 @@ void SignalInterrupt(uint32_t irq)
         return;
     cpu.i_stat |= (1 << irq);
     cpu.irq_pending = (cpu.i_stat & cpu.i_mask & PSX_IRQ_VALID_MASK) != 0;
+    cpu.irq_pending_fast = cpu.irq_pending & (cpu.cop0[PSX_COP0_SR] & 1);
     if (cpu.irq_pending)
     {
         sched_interrupt_chain = 1;
@@ -215,8 +216,9 @@ void WriteHardware(uint32_t phys, uint32_t data, int size)
             if (cdrom_irq_active && !(cpu.i_stat & (1 << 2)))
                 cpu.i_stat |= (1 << 2);
             if (handle_sio_irq_ack(data))
-                return;           /* SignalInterrupt already updates irq_pending */
+                return;           /* SignalInterrupt already updates irq_pending + irq_pending_fast */
             cpu.irq_pending = (cpu.i_stat & cpu.i_mask & PSX_IRQ_VALID_MASK) != 0;
+            cpu.irq_pending_fast = cpu.irq_pending & (cpu.cop0[PSX_COP0_SR] & 1);
             if (cpu.irq_pending)
             {
                 sched_interrupt_chain = 1;
@@ -228,6 +230,7 @@ void WriteHardware(uint32_t phys, uint32_t data, int size)
         {
             cpu.i_mask = data & PSX_I_MASK_VALID;
             cpu.irq_pending = (cpu.i_stat & cpu.i_mask & PSX_IRQ_VALID_MASK) != 0;
+            cpu.irq_pending_fast = cpu.irq_pending & (cpu.cop0[PSX_COP0_SR] & 1);
             if (cpu.irq_pending)
             {
                 sched_interrupt_chain = 1;

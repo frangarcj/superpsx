@@ -28,6 +28,7 @@ static inline void sio_flush_deferred_vblank(void)
     {
         cpu.i_stat |= 1; /* VBlank bit 0 */
         cpu.irq_pending = (cpu.i_stat & cpu.i_mask & 0x7FF) != 0;
+        cpu.irq_pending_fast = cpu.irq_pending & (cpu.cop0[PSX_COP0_SR] & 1);
         if (cpu.irq_pending)
         {
             sched_interrupt_chain = 1;

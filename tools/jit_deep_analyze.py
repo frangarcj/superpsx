@@ -60,48 +60,95 @@ PROLOGUE_WORDS = 22  # Known prologue size (compile_block preamble)
 
 
 # ===================================================================
-#  ANALYSIS 1: Prologue Overhead Impact
+#  ANALYSIS 1: True Execution Overhead (corrected for hash dispatch)
 # ===================================================================
 
 def analyze_prologue_overhead(blocks):
-    """Estimate how much of total EE execution is prologue/epilogue overhead."""
+    """Corrected analysis: hash dispatch skips the prologue, so prologue
+    only runs on C→JIT transitions (once per chain).  Show the real
+    post-prologue expansion ratios and per-instruction-type costs."""
     print("\n" + "=" * 70)
-    print(" ANALYSIS 1: PROLOGUE/EPILOGUE OVERHEAD")
+    print(" ANALYSIS 1: TRUE EXECUTION MODEL (POST-PROLOGUE)")
     print("=" * 70)
 
-    total_ee_impact = 0
-    total_prologue_impact = 0
-    # Epilogue ~6 words (restore callee-saved + jr $ra + nop)
-    EPILOGUE_WORDS = 6
+    total_full_impact = 0
+    total_post_prologue_impact = 0
+    total_exec = 0
+    total_psx = 0
 
-    # Group by block size
-    buckets = defaultdict(lambda: {"count": 0, "exec": 0, "ee_impact": 0, "overhead_impact": 0})
+    per_type_words = defaultdict(lambda: {"psx": 0, "ee_post": 0, "exec_weighted_ee": 0, "exec_weighted_psx": 0})
 
     for b in blocks:
         if b["exec_count"] == 0:
             continue
-        impact = b["exec_count"] * b["native_count"]
-        overhead = b["exec_count"] * (PROLOGUE_WORDS + EPILOGUE_WORDS)
-        total_ee_impact += impact
-        total_prologue_impact += overhead
+        full_impact = b["exec_count"] * b["native_count"]
+        post_prologue = max(b["native_count"] - PROLOGUE_WORDS, 0)
+        pp_impact = b["exec_count"] * post_prologue
+        total_full_impact += full_impact
+        total_post_prologue_impact += pp_impact
+        total_exec += b["exec_count"]
+        total_psx += b["instr_count"] * b["exec_count"]
 
-        size_bucket = min(b["instr_count"], 50)
-        bk = buckets[size_bucket]
-        bk["count"] += 1
-        bk["exec"] += b["exec_count"]
-        bk["ee_impact"] += impact
-        bk["overhead_impact"] += overhead
+        # Classify PSX instructions
+        for w in b["psx_code"]:
+            op = OP(w)
+            if op in (0x23, 0x20, 0x21, 0x22, 0x24, 0x25, 0x26):
+                cat = "Load"
+            elif op in (0x2B, 0x28, 0x29, 0x2A, 0x2E):
+                cat = "Store"
+            elif op == 0x32:
+                cat = "LWC2"
+            elif op == 0x3A:
+                cat = "SWC2"
+            elif op in (0x02, 0x03, 0x04, 0x05, 0x06, 0x07) or OP(w) == 1:
+                cat = "Branch/Jump"
+            elif op == 0 and FUNC(w) in (0x08, 0x09):
+                cat = "JR/JALR"
+            elif op == 0x12:
+                rs_f = (w >> 21) & 0x1F
+                if rs_f >= 0x10:
+                    cat = "GTE_cmd"
+                elif rs_f in (0, 2, 4, 6):
+                    cat = "COP2data"
+                else:
+                    cat = "COP2other"
+            elif op == 0x10:
+                cat = "COP0"
+            elif op in (0x18, 0x19):
+                cat = "MulDiv"
+            elif op == 0 and FUNC(w) in (0x18, 0x19, 0x1A, 0x1B):
+                cat = "MulDiv"
+            else:
+                cat = "ALU"
+            per_type_words[cat]["psx"] += 1
+            per_type_words[cat]["exec_weighted_psx"] += b["exec_count"]
 
-    print(f"\n Total EE impact:       {total_ee_impact:>14,}")
-    print(f" Prologue+Epi impact:  {total_prologue_impact:>14,}  ({total_prologue_impact/max(total_ee_impact,1)*100:.1f}%)")
-    print(f"\n Small blocks dominate overhead:")
-    print(f" {'PSXi':>5} {'Blocks':>7} {'TotalExec':>12} {'Overhead%':>10}")
+    # Estimate per-type EE words using known expansion ratios (post-prologue)
+    # These are derived from playground measurements minus prologue
+    KNOWN_COSTS = {
+        "ALU": 2, "Load": 7, "Store": 10, "LWC2": 8, "SWC2": 11,
+        "Branch/Jump": 8, "JR/JALR": 10, "GTE_cmd": 50, "COP2data": 5,
+        "COP0": 4, "MulDiv": 10, "COP2other": 4,
+    }
 
-    for sz in sorted(buckets.keys()):
-        bk = buckets[sz]
-        if bk["ee_impact"] > 0:
-            ovh_pct = bk["overhead_impact"] / bk["ee_impact"] * 100
-            print(f" {sz:>5} {bk['count']:>7} {bk['exec']:>12,} {ovh_pct:>9.1f}%")
+    print(f"\n NOTE: Hash dispatch (jit_ht) stores native+{PROLOGUE_WORDS} — prologue is skipped")
+    print(f" on most block entries. Prologue only runs on C→JIT (~once per chain).")
+    print(f"\n Total block executions:       {total_exec:>12,}")
+    print(f" Total with-prologue impact:   {total_full_impact:>12,} EE-word-execs")
+    print(f" Total post-prologue impact:   {total_post_prologue_impact:>12,} EE-word-execs")
+    print(f" Prologue-free overhead:       {(total_full_impact-total_post_prologue_impact)/max(total_full_impact,1)*100:.1f}% removed")
+
+    print(f"\n Per-instruction-type cost model (weighted by execution frequency):")
+    print(f" {'Type':>14} {'StaticPSX':>10} {'EstEE/insn':>10} {'WeightedPSXi':>13} {'WeightedEE':>12} {'Share%':>7}")
+    total_weighted_ee = sum(per_type_words[t]["exec_weighted_psx"] * KNOWN_COSTS.get(t, 3) for t in per_type_words)
+    for t in sorted(per_type_words.keys(), key=lambda x: -per_type_words[x]["exec_weighted_psx"] * KNOWN_COSTS.get(x, 3)):
+        p = per_type_words[t]
+        cost = KNOWN_COSTS.get(t, 3)
+        weighted_ee = p["exec_weighted_psx"] * cost
+        share = weighted_ee / max(total_weighted_ee, 1) * 100
+        print(f" {t:>14} {p['psx']:>10,} {cost:>10} {p['exec_weighted_psx']:>13,} {weighted_ee:>12,} {share:>6.1f}%")
+
+    print(f"\n {'TOTAL':>14} {'':>10} {'':>10} {total_psx:>13,} {total_weighted_ee:>12,} {'100.0':>6}%")
 
 
 # ===================================================================
@@ -456,99 +503,316 @@ def analyze_branch_overhead(blocks):
 
 
 # ===================================================================
-#  ANALYSIS 7: Optimization Recommendations
+#  ANALYSIS 7: Native Code Overhead Breakdown
+# ===================================================================
+
+def analyze_native_overhead(blocks):
+    """Scan actual EE native instructions to categorize where code size goes.
+    Detects: prologue, ISC check, alignment check, range check, SMC/page-gen
+    check, abort check, hash dispatch, direct link, slot loads/flushes."""
+    print("\n" + "=" * 70)
+    print(" ANALYSIS 7: NATIVE CODE OVERHEAD BREAKDOWN")
+    print("=" * 70)
+
+    totals = defaultdict(int)  # category → total words across all blocks
+    weighted = defaultdict(int)  # category → exec-weighted EE-word-execs
+    block_details = []
+    total_ee = 0
+    total_pp = 0
+
+    for b in blocks:
+        if b["exec_count"] == 0:
+            continue
+        nc = b["native_code"]
+        n = len(nc)
+        cats = defaultdict(int)
+        used = [False] * n
+
+        # --- Prologue: first 22 words (only executes on C→JIT entry) ---
+        pro_end = min(PROLOGUE_WORDS, n)
+        for i in range(pro_end):
+            cats["prologue"] += 1
+            used[i] = True
+
+        # --- ISC check: LW AT,0xBC(S0); SRL AT,AT,16; ANDI AT,AT,1; SW AT,0x50(SP) ---
+        for i in range(pro_end, n - 3):
+            if used[i]:
+                continue
+            w0, w1, w2, w3 = nc[i], nc[i+1] if i+1<n else 0, nc[i+2] if i+2<n else 0, nc[i+3] if i+3<n else 0
+            # LW $at, 0xBC($s0) = 0x8E0100BC
+            if w0 == 0x8E0100BC and w1 == 0x00010C02 and w2 == 0x30210001:
+                # Check SW to stack (AFA1xxxx where xx=offset on stack)
+                if (w3 >> 16) == 0xAFA1:
+                    for j in range(4):
+                        cats["isc_check"] += 1
+                        used[i+j] = True
+
+        # --- SMC/page-gen check: LUI+ORI addr, LW, BEQ zero skip, ... JAL ---
+        # Pattern: LUI Rx, hi; ORI Rx, lo; LW Rx, 0(Rx); BEQ Rx, ZERO, skip; NOP; ...
+        for i in range(pro_end, n - 5):
+            if used[i]:
+                continue
+            w0 = nc[i]
+            if OP(w0) != 0x0F:  # LUI
+                continue
+            rt0 = RT(w0)
+            if i+1 >= n:
+                continue
+            w1 = nc[i+1]
+            if OP(w1) != 0x0D or RS(w1) != rt0 or RT(w1) != rt0:  # ORI same reg
+                continue
+            w2 = nc[i+2] if i+2 < n else 0
+            if OP(w2) != 0x23 or RS(w2) != rt0:  # LW from that addr
+                continue
+            w3 = nc[i+3] if i+3 < n else 0
+            if OP(w3) == 0x04 and RS(w3) == RT(w2) and RT(w3) == 0:  # BEQ reg, zero
+                # This is a page-gen check. Count from LUI through the BEQ skip target
+                skip_off = SIMM(nc[i+3])
+                end = i + 4 + skip_off
+                if end > n:
+                    end = min(i + 16, n)  # cap
+                count = 0
+                for j in range(i, min(end, n)):
+                    if not used[j]:
+                        cats["smc_pagegen"] += 1
+                        used[j] = True
+                        count += 1
+
+        # --- Abort check: BLEZ S2,+3; LW AT,irq_fast; BEQ AT,0,+3; NOP; J abort; NOP ---
+        for i in range(pro_end, n - 5):
+            if used[i]:
+                continue
+            w = nc[i]
+            # BLEZ $s2, +3 = 0x1A40 0003
+            if w == 0x1A400003:
+                count = 0
+                for j in range(i, min(i + 6, n)):
+                    if not used[j]:
+                        cats["abort_check"] += 1
+                        used[j] = True
+                        count += 1
+
+        # --- Hash dispatch: LW T8,cpu.pc(S0); ADDIU S2; J trampoline; NOP ---
+        for i in range(pro_end, n - 3):
+            if used[i]:
+                continue
+            w = nc[i]
+            # LW $t8, 0x80($s0) = 0x8E180080
+            if w == 0x8E180080:
+                # Check if followed by ADDIU S2 and J
+                w1 = nc[i+1] if i+1 < n else 0
+                w2 = nc[i+2] if i+2 < n else 0
+                if (w1 >> 16) == 0x2652 and OP(w2) == 0x02:  # ADDIU S2,S2,imm + J
+                    for j in range(i, min(i + 4, n)):
+                        if not used[j]:
+                            cats["hash_dispatch"] += 1
+                            used[j] = True
+
+        # --- Guarded JR: load imm32 into AT, BNE T8,AT ---
+        for i in range(pro_end, n - 2):
+            if used[i]:
+                continue
+            w = nc[i]
+            # emit_load_imm32 into AT: ORI $at,$zero,imm or LUI $at,hi
+            if OP(w) == 0x0D and RS(w) == 0 and RT(w) == 1:  # ORI $at, $zero, imm
+                w1 = nc[i+1] if i+1 < n else 0
+                if OP(w1) == 0x05 and RS(w1) == 24 and RT(w1) == 1:  # BNE $t8, $at
+                    cats["guarded_jr"] += 1
+                    used[i] = True
+                    cats["guarded_jr"] += 1
+                    used[i+1] = True
+
+        # --- Direct link (J + NOP at end): J to block or slow-path ---
+        for i in range(n - 2, pro_end - 1, -1):
+            if used[i]:
+                continue
+            w = nc[i]
+            if OP(w) == 0x02:  # J
+                w1 = nc[i+1] if i+1 < n else 0
+                if w1 == 0:  # NOP
+                    cats["direct_link"] += 1
+                    used[i] = True
+                    cats["direct_link"] += 1
+                    used[i+1] = True
+
+        # --- Dynamic slot loads: LW Tx, offset(S0) near start of post-prologue ---
+        for i in range(pro_end, min(pro_end + 16, n)):
+            if used[i]:
+                continue
+            w = nc[i]
+            if OP(w) == 0x23 and RS(w) == 16:  # LW rt, offset($s0)
+                rt = RT(w)
+                if 8 <= rt <= 15:  # T0-T7
+                    cats["slot_load"] += 1
+                    used[i] = True
+
+        # --- Dynamic slot flushes: SW Tx, offset(S0) near end ---
+        for i in range(max(n - 20, pro_end), n):
+            if used[i]:
+                continue
+            w = nc[i]
+            if OP(w) == 0x2B and RS(w) == 16:  # SW rt, offset($s0)
+                rt = RT(w)
+                if 8 <= rt <= 15:  # T0-T7
+                    cats["slot_flush"] += 1
+                    used[i] = True
+
+        # Everything else is "computation" (actual work)
+        for i in range(n):
+            if not used[i]:
+                cats["computation"] += 1
+
+        for cat, count in cats.items():
+            totals[cat] += count
+            weighted[cat] += count * b["exec_count"]
+
+        total_ee += n * b["exec_count"]
+        total_pp += max(n - PROLOGUE_WORDS, 0) * b["exec_count"]
+
+        block_details.append({"block": b, "cats": dict(cats)})
+
+    # Print summary
+    print(f"\n Total EE-word-execs (with prologue): {total_ee:>14,}")
+    print(f" Total EE-word-execs (post-prologue): {total_pp:>14,}")
+    print(f"\n {'Category':>16} {'TotalWords':>11} {'WeightedExec':>14} {'%ofTotal':>9} {'%ofPostPro':>11}")
+    for cat in sorted(weighted.keys(), key=lambda x: -weighted[x]):
+        pct_total = weighted[cat] / max(total_ee, 1) * 100
+        pct_pp = weighted[cat] / max(total_pp, 1) * 100 if cat != "prologue" else 0.0
+        print(f" {cat:>16} {totals[cat]:>11,} {weighted[cat]:>14,} {pct_total:>8.1f}% {pct_pp:>10.1f}%")
+
+    # Show top blocks by SMC overhead
+    smc_blocks = [(d["block"], d["cats"].get("smc_pagegen", 0)) for d in block_details if d["cats"].get("smc_pagegen", 0) > 0]
+    smc_blocks.sort(key=lambda x: -x[1] * x[0]["exec_count"])
+    if smc_blocks:
+        print(f"\n Top 10 blocks by SMC page-gen overhead:")
+        print(f" {'PC':>10} {'Exec':>8} {'SMCwords':>9} {'TotalEE':>8} {'SMC%':>6} {'SMCimpact':>12}")
+        for b, smc in smc_blocks[:10]:
+            pp = max(b["native_count"] - PROLOGUE_WORDS, 0)
+            pct = smc / max(pp, 1) * 100
+            impact = smc * b["exec_count"]
+            print(f" 0x{b['pc']:08X} {b['exec_count']:>8,} {smc:>9} {pp:>8} {pct:>5.1f}% {impact:>12,}")
+
+    # Show top blocks by ISC overhead
+    isc_blocks = [(d["block"], d["cats"].get("isc_check", 0)) for d in block_details if d["cats"].get("isc_check", 0) > 0]
+    isc_blocks.sort(key=lambda x: -x[1] * x[0]["exec_count"])
+    if isc_blocks:
+        total_isc_impact = sum(c * b["exec_count"] for b, c in isc_blocks)
+        print(f"\n ISC check overhead: {total_isc_impact:,} EE-word-execs ({total_isc_impact/max(total_pp,1)*100:.1f}% of post-prologue)")
+        print(f" Blocks with ISC check: {len(isc_blocks)}")
+
+    return weighted, total_pp
+
+
+# ===================================================================
+#  ANALYSIS 8: Optimization Recommendations (corrected)
 # ===================================================================
 
 def generate_recommendations(blocks):
-    """Generate concrete, prioritized optimization recommendations."""
+    """Generate concrete, prioritized optimization recommendations using
+    native-code-level analysis."""
     print("\n" + "=" * 70)
     print(" OPTIMIZATION RECOMMENDATIONS (sorted by estimated impact)")
     print("=" * 70)
 
-    block_map = {b["pc"]: b for b in blocks}
-    total_ee_impact = sum(b["exec_count"] * b["native_count"] for b in blocks if b["exec_count"] > 0)
+    total_ee_impact = sum(b["exec_count"] * max(b["native_count"] - PROLOGUE_WORDS, 0)
+                          for b in blocks if b["exec_count"] > 0)
 
     recommendations = []
 
-    # R1: Tiny block prologue reduction
-    tiny_overhead = 0
-    tiny_count = 0
-    for b in blocks:
-        if b["exec_count"] > 0 and b["instr_count"] <= 5:
-            # These blocks are mostly prologue. A light prologue saving 10 words would help
-            tiny_overhead += b["exec_count"] * 10  # Save ~10 words per execution
-            tiny_count += 1
-    if tiny_overhead > 0:
-        recommendations.append({
-            "name": "Light prologue for tiny blocks (≤5 PSX insns)",
-            "impact": tiny_overhead,
-            "pct": tiny_overhead / max(total_ee_impact, 1) * 100,
-            "detail": f"{tiny_count} blocks affected. Reduce prologue from 22→12 words for blocks that only use a few callee-saved regs. "
-                      f"Currently $s0-$s7+$fp are saved unconditionally; tiny blocks typically need only $s0(cpu), $s1(ram), $s2(cycles), $s3(mask).",
-        })
-
-    # R2: Exception vector fast path
-    exc_blocks = [b for b in blocks if b["pc"] in (0x80000080,) and b["exec_count"] > 0]
-    exc_overhead = sum(b["exec_count"] * (b["native_count"] - 4) for b in exc_blocks)
-    if exc_overhead > 0:
-        recommendations.append({
-            "name": "Exception vector hardcoded dispatch",
-            "impact": exc_overhead,
-            "pct": exc_overhead / max(total_ee_impact, 1) * 100,
-            "detail": f"Block 0x80000080 executes {exc_blocks[0]['exec_count']:,} times, always jumping to same handler (0x0C80). "
-                      f"Hardcode this as a direct J target in the trampoline instead of compiling a full block.",
-        })
-
-    # R3: Block chaining prologue elimination
-    # Estimate: for DBL-linked blocks, if we could skip prologue on chained entry
-    # ~28 words saved per chain boundary × chain frequency
-    chain_savings = 0
+    # R1: SMC page-gen check optimization
+    smc_savings = 0
+    smc_store_count = 0
     for b in blocks:
         if b["exec_count"] == 0:
             continue
-        # Blocks entered via DBL skip prologue, but blocks entered via dispatch don't
-        # Estimate: 30% of block executions are via dispatch (need prologue)
-        # With smarter chaining, we could reduce this further
-        chain_savings += int(b["exec_count"] * 0.3 * 22)
-    if chain_savings > 0:
+        stores = sum(1 for w in b["psx_code"] if OP(w) in (0x2B, 0x28, 0x29, 0x2A, 0x2E, 0x3A))
+        if stores > 0:
+            # Each store emits ~12-14 words of SMC check
+            # If we could skip SMC for stores to non-code pages: save ~12 words/store
+            smc_savings += stores * 12 * b["exec_count"]
+            smc_store_count += stores
+
+    if smc_savings > 0:
         recommendations.append({
-            "name": "Reduce dispatch-entry prologue overhead",
-            "impact": chain_savings,
-            "pct": chain_savings / max(total_ee_impact, 1) * 100,
-            "detail": "~30% of block entries go through full dispatch (hash table miss → recompile/lookup). "
-                      "A lightweight JR dispatch that skips prologue for same-context blocks could save 22 words per dispatch entry.",
+            "name": "Smart SMC check: skip page-gen for data-only stores",
+            "impact": smc_savings,
+            "pct": smc_savings / max(total_ee_impact, 1) * 100,
+            "detail": f"{smc_store_count} stores across all blocks. Each emits ~12 words of page-gen check. "
+                      f"Track which pages contain compiled blocks; skip SMC check for stores to non-code pages.",
         })
 
-    # R4: Const-address load/store specialization
-    # Blocks using LUI+ADDIU to form a constant address and then LW/SW through it
-    const_addr_savings = 0
-    const_blocks = 0
+    # R2: ISC check elimination at block level
+    isc_savings = 0
+    isc_blocks = 0
     for b in blocks:
         if b["exec_count"] == 0:
             continue
-        code = b["psx_code"]
-        # Look for LUI followed by ADDIU/ORI, then LW/SW using that register
-        for i in range(len(code) - 2):
-            if OP(code[i]) == 0x0F:  # LUI
-                rt = RT(code[i])
-                # Next instruction modifies same reg
-                if OP(code[i + 1]) in (0x09, 0x0D) and RS(code[i + 1]) == rt and RT(code[i + 1]) == rt:
-                    # Check if subsequent instructions use this as a base
-                    for j in range(i + 2, min(i + 6, len(code))):
-                        if OP(code[j]) in (0x23, 0x2B, 0x20, 0x24, 0x25, 0x28, 0x29) and RS(code[j]) == rt:
-                            # Const address access! Could be hardcoded
-                            const_addr_savings += b["exec_count"] * 2  # Save ~2 words (LUI+ADDIU → direct)
-                            const_blocks += 1
-                            break
-    if const_addr_savings > 0:
+        has_mem = any(OP(w) in (0x20,0x21,0x22,0x23,0x24,0x25,0x26,0x28,0x29,0x2A,0x2B,0x2E,0x32,0x3A)
+                      for w in b["psx_code"])
+        if has_mem:
+            # ISC check = 4 words at block start
+            isc_savings += 4 * b["exec_count"]
+            isc_blocks += 1
+
+    if isc_savings > 0:
         recommendations.append({
-            "name": "Const-address memory access hardcoding",
-            "impact": const_addr_savings,
-            "pct": const_addr_savings / max(total_ee_impact, 1) * 100,
-            "detail": f"{const_blocks} LUI+ADDIU+LW/SW sequences. Fold constant address at compile time → emit direct host address load.",
+            "name": "Eliminate ISC check (cache isolation unused post-BIOS)",
+            "impact": isc_savings,
+            "pct": isc_savings / max(total_ee_impact, 1) * 100,
+            "detail": f"{isc_blocks} blocks with memory accesses emit 4-word ISC check at start. "
+                      f"After BIOS boot, ISC is always 0. Add a runtime flag to skip ISC checks post-boot.",
         })
 
-    # R5: Memory base caching across consecutive accesses
+    # R3: Dead dynamic slot loads (written before read)
+    dead_slot_savings = 0
+    dead_blocks = 0
+    for b in blocks:
+        if b["exec_count"] == 0:
+            continue
+        # Detect regs that are written (LUI/ADDIU/LW-dest) before being read
+        written_before_read = set()
+        read_regs = set()
+        for w in b["psx_code"]:
+            op = OP(w)
+            # Reads
+            if op == 0:  # R-type
+                if FUNC(w) not in (0x00, 0x02, 0x03):  # Not shift-by-imm
+                    read_regs.add(RS(w))
+                read_regs.add(RT(w))
+            elif op in (0x04,0x05,0x28,0x29,0x2A,0x2B,0x2E,0x3A):  # Branch/store: reads RS and RT
+                read_regs.add(RS(w))
+                read_regs.add(RT(w))
+            elif op in (0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x20,0x21,0x22,0x23,0x24,0x25,0x26,0x32):
+                read_regs.add(RS(w))
+            # Writes
+            dest = None
+            if op == 0:
+                dest = RD(w)
+            elif op == 0x0F:  # LUI
+                dest = RT(w)
+            elif op in (0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x20,0x21,0x22,0x23,0x24,0x25,0x26,0x32):
+                dest = RT(w)
+            if dest and dest != 0 and dest not in read_regs:
+                written_before_read.add(dest)
+            if dest:
+                read_regs.discard(dest)  # Reset for tracking purposes
+
+        # Exclude pinned regs (28-31) and $zero (0)
+        dead_count = len(written_before_read - {0, 28, 29, 30, 31})
+        if dead_count > 0:
+            dead_slot_savings += dead_count * b["exec_count"]
+            dead_blocks += 1
+
+    if dead_slot_savings > 0:
+        recommendations.append({
+            "name": "Dead dynamic slot load elimination",
+            "impact": dead_slot_savings,
+            "pct": dead_slot_savings / max(total_ee_impact, 1) * 100,
+            "detail": f"{dead_blocks} blocks load dynamic slots for regs that are written before being read. "
+                      f"Skip the initial LW from cpu.regs[] for these registers (save 1 word per dead slot).",
+        })
+
+    # R4: Memory base address caching
     base_cache_savings = 0
     for b in blocks:
         if b["exec_count"] == 0:
@@ -556,12 +820,11 @@ def generate_recommendations(blocks):
         base_accesses = defaultdict(int)
         for w in b["psx_code"]:
             op = OP(w)
-            if op in (0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
-                      0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x32, 0x3A):
+            if op in (0x20,0x21,0x22,0x23,0x24,0x25,0x26,0x28,0x29,0x2A,0x2B,0x2E,0x32,0x3A):
                 base_accesses[RS(w)] += 1
         for base, cnt in base_accesses.items():
             if cnt >= 2:
-                base_cache_savings += (cnt - 1) * 2 * b["exec_count"]  # 2 words per reuse
+                base_cache_savings += (cnt - 1) * 2 * b["exec_count"]
 
     if base_cache_savings > 0:
         recommendations.append({
@@ -569,35 +832,7 @@ def generate_recommendations(blocks):
             "impact": base_cache_savings,
             "pct": base_cache_savings / max(total_ee_impact, 1) * 100,
             "detail": "When multiple L/S use same base register, compute host address once and reuse. "
-                      "Saves AND(mask)+ADDU(base) = 2 words per reuse.",
-        })
-
-    # R6: Polling loop fast-forward
-    poll_savings = 0
-    poll_blocks = 0
-    for b in blocks:
-        if b["exec_count"] < 100:
-            continue
-        code = b["psx_code"]
-        if len(code) <= 6:
-            has_load = any(OP(w) in (0x25, 0x24, 0x21, 0x23) for w in code)
-            has_branch_back = False
-            for i, w in enumerate(code):
-                if OP(w) in (0x04, 0x05):
-                    target_off = SIMM(w)
-                    if target_off < 0:
-                        has_branch_back = True
-            if has_load and has_branch_back:
-                poll_savings += b["exec_count"] * b["native_count"] * 0.8  # 80% of executions could be skipped
-                poll_blocks += 1
-
-    if poll_savings > 0:
-        recommendations.append({
-            "name": "Polling loop fast-forward / yield",
-            "impact": int(poll_savings),
-            "pct": poll_savings / max(total_ee_impact, 1) * 100,
-            "detail": f"{poll_blocks} polling loops detected. When I/O status hasn't changed between iterations, "
-                      f"fast-forward cycles instead of re-executing the loop body.",
+                      "Saves AND(mask)+ADDU(base) = 2 words per reuse. NOTE: T9 scratch clobber limits this.",
         })
 
     # Sort by impact and print
@@ -631,7 +866,7 @@ def main():
     analyze_superblock_candidates(blocks)
     analyze_register_pressure(blocks)
     analyze_memory_locality(blocks)
-    analyze_branch_overhead(blocks)
+    analyze_native_overhead(blocks)
     generate_recommendations(blocks)
 
 

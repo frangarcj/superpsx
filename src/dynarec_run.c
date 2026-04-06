@@ -720,6 +720,7 @@ void sync_hardware_and_interrupts(void)
         if ((sr & 1) && (sr & (1 << 10)))
         {
             cpu.irq_pending = 0;
+            cpu.irq_pending_fast = 0;
             PSX_Exception(0);
         }
     }
@@ -727,6 +728,7 @@ void sync_hardware_and_interrupts(void)
     {
         cpu.cop0[PSX_COP0_CAUSE] &= ~(1 << 10);
         cpu.irq_pending = 0;
+        cpu.irq_pending_fast = 0;
     }
 }
 

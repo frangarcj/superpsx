@@ -165,11 +165,8 @@ static void emit_deferred_taken_all(void)
         emit(MK_I(0x09, REG_S2, REG_S2, (int16_t)(-(int)e->cycle_count)));
         emit_load_imm32(REG_T8, e->target_pc);
         EMIT_SW(REG_T8, CPU_PC, REG_S0);
-        emit(MK_I(0x06, REG_S2, REG_ZERO, 6));          /* BLEZ s2, +6 → abort */
-        EMIT_LW(REG_AT, CPU_IRQ_PENDING, REG_S0);       /* delay: load irq_pending */
-        EMIT_BEQ(REG_AT, REG_ZERO, 6);                  /* BEQ at, zero, +6 → direct_link */
-        EMIT_LW(REG_AT, CPU_COP0(PSX_COP0_SR), REG_S0); /* delay: load SR */
-        emit(MK_I(0x0C, REG_AT, REG_AT, 1));            /* ANDI at, at, 1 — IEc bit */
+        emit(MK_I(0x06, REG_S2, REG_ZERO, 3));          /* BLEZ s2, +3 → abort */
+        EMIT_LW(REG_AT, CPU_IRQ_PENDING_FAST, REG_S0);  /* delay: irq_pending_fast */
         EMIT_BEQ(REG_AT, REG_ZERO, 3);                  /* BEQ at, zero, +3 → direct_link */
         EMIT_NOP();
         EMIT_J_ABS((uint32_t)abort_trampoline_addr);
@@ -865,26 +862,20 @@ void emit_branch_epilogue(uint32_t target_pc)
     emit_load_imm32(REG_T8, target_pc);
     EMIT_SW(REG_T8, CPU_PC, REG_S0);
 
-    /* Three-check abort sequence: cycles exhausted OR (IRQ pending AND IEc).
-     * During BIOS exception handling, IEc=0 and other IRQs may be pending
-     * in I_STAT — skip the abort to let blocks chain normally.
-     * Layout:
-     *   BLEZ  s2, +6          → J abort (cycles <= 0)
-     *   LW    AT, IRQ(S0)     (delay: always loads irq_pending)
-     *   BEQ   AT, ZERO, +6    → direct_link (no IRQ)
-     *   LW    AT, SR(S0)      (delay: load SR)
-     *   ANDI  AT, AT, 1       IEc bit
-     *   BEQ   AT, ZERO, +3    → direct_link (IEc=0, don't abort)
+    /* Two-check abort sequence: cycles exhausted OR irq_pending_fast.
+     * irq_pending_fast = irq_pending & (SR.IEc) is precomputed by C code
+     * at every irq_pending / SR modification site.
+     * Layout (6 words):
+     *   BLEZ  s2, +3          → J abort (cycles <= 0)
+     *   LW    AT, IRQ_FAST(S0) (delay: always loads irq_pending_fast)
+     *   BEQ   AT, ZERO, +3    → direct_link (no actionable IRQ)
      *   NOP                   (delay)
      *   J     abort_trampoline
      *   NOP                   (J delay)
      *   [direct_link]
      */
-    emit(MK_I(0x06, REG_S2, REG_ZERO, 6));          /* BLEZ s2, +6 → J abort */
-    EMIT_LW(REG_AT, CPU_IRQ_PENDING, REG_S0);       /* delay: load irq_pending */
-    EMIT_BEQ(REG_AT, REG_ZERO, 6);                  /* BEQ at, zero, +6 → direct_link */
-    EMIT_LW(REG_AT, CPU_COP0(PSX_COP0_SR), REG_S0); /* delay: load SR */
-    emit(MK_I(0x0C, REG_AT, REG_AT, 1));            /* ANDI at, at, 1 — IEc bit */
+    emit(MK_I(0x06, REG_S2, REG_ZERO, 3));          /* BLEZ s2, +3 → J abort */
+    EMIT_LW(REG_AT, CPU_IRQ_PENDING_FAST, REG_S0);  /* delay: load irq_pending_fast */
     EMIT_BEQ(REG_AT, REG_ZERO, 3);                  /* BEQ at, zero, +3 → direct_link */
     EMIT_NOP();
     EMIT_J_ABS((uint32_t)abort_trampoline_addr);
@@ -1436,12 +1427,9 @@ uint32_t *compile_block(uint32_t psx_pc)
                     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count); /* delay: both paths */
 
                     /* Predicted path: abort check + direct link */
-                    emit(MK_I(0x06, REG_S2, REG_ZERO, 6));          /* BLEZ s2, +6 → abort */
-                    EMIT_LW(REG_AT, CPU_IRQ_PENDING, REG_S0);       /* delay: irq_pending */
-                    EMIT_BEQ(REG_AT, REG_ZERO, 6);                  /* no IRQ → direct_link */
-                    EMIT_LW(REG_AT, CPU_COP0(PSX_COP0_SR), REG_S0); /* delay: SR */
-                    emit(MK_I(0x0C, REG_AT, REG_AT, 1));            /* ANDI at, 1 (IEc) */
-                    EMIT_BEQ(REG_AT, REG_ZERO, 3);                  /* IEc=0 → direct_link */
+                    emit(MK_I(0x06, REG_S2, REG_ZERO, 3));          /* BLEZ s2, +3 → abort */
+                    EMIT_LW(REG_AT, CPU_IRQ_PENDING_FAST, REG_S0);  /* delay: irq_pending_fast */
+                    EMIT_BEQ(REG_AT, REG_ZERO, 3);                  /* no IRQ fast → direct_link */
                     EMIT_NOP();
                     EMIT_J_ABS((uint32_t)abort_trampoline_addr);
                     EMIT_NOP();

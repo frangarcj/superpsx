@@ -44,6 +44,7 @@ typedef struct
     uint32_t cycles_left;         /* Maintained by JIT, sync'd to cpu on C calls */
     int32_t  cycles_left_correction; /* Accumulated S2 trim from mid-chain SIO capping */
     uint32_t irq_pending;         /* Non-zero when (i_stat & i_mask & 0x7FF) != 0; checked by JIT at block boundaries */
+    uint32_t irq_pending_fast;    /* irq_pending & (cop0[SR] & 1) — precomputed for JIT abort check */
 } R3000CPU;
 
 /* Struct offsets for asm code generation */
@@ -66,6 +67,7 @@ typedef struct
 #define CPU_INITIAL_CYCLES_LEFT (CPU_BRANCH_COND + 4)
 #define CPU_CYCLES_LEFT (CPU_INITIAL_CYCLES_LEFT + 4)
 #define CPU_IRQ_PENDING (CPU_CYCLES_LEFT + 8) /* skip cycles_left_correction */
+#define CPU_IRQ_PENDING_FAST (CPU_IRQ_PENDING + 4) /* precomputed irq_pending & (SR & 1) */
 
 /* COP0 register indices */
 #define PSX_COP0_SR 12

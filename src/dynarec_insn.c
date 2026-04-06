@@ -28,6 +28,7 @@ void debug_mtc0_sr(uint32_t val)
         last_sr_logged = val;
     }
     cpu.cop0[PSX_COP0_SR] = val;
+    cpu.irq_pending_fast = cpu.irq_pending & (val & 1);
 }
 
 /*=== BIOS HLE (High Level Emulation) ===*/
@@ -934,6 +935,12 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit(MK_R(0, 0, REG_T8, REG_T8, 4, 0x00));
             EMIT_OR(REG_T8, REG_T8, REG_T9);
             EMIT_SW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
+            /* Update irq_pending_fast = irq_pending & (new_SR & 1).
+             * T8 still holds the new SR value after the SW. */
+            EMIT_LW(REG_AT, CPU_IRQ_PENDING, REG_S0);
+            EMIT_AND(REG_AT, REG_AT, REG_T8);
+            EMIT_ANDI(REG_AT, REG_AT, 1);
+            EMIT_SW(REG_AT, CPU_IRQ_PENDING_FAST, REG_S0);
         }
         break;
     }
