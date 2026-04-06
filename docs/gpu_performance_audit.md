@@ -2,7 +2,8 @@
 
 Esta auditoría analiza la implementación actual de la GPU para PSP en `superpsx`, enfocándose en identificar cuellos de botella y proponer optimizaciones para mejorar los cuadros por segundo (FPS).
 
-> **Última revisión:** Post-commit 10829f8 (EDRAM tex cache, mask bits, dithering, region invalidation)
+> **Última revisión:** Post-audit cleanup. Originally post-commit 10829f8.
+> **Status:** Audit mostly complete — 4/5 items done, #4 not viable on PPSSPP.
 
 ## 1. Gestión de Estado y Llamadas al Backend (GU)
 

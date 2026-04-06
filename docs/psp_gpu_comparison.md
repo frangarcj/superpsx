@@ -1,5 +1,7 @@
 # PSP GPU Backend — Comparison with PS2 & Gap Analysis
 
+> **Status:** Many gaps filled since initial audit. CLUT textures, state caching, vertex batching, dithering all implemented.
+
 ## Architecture Overview
 
 | Aspect | PS2 Backend | PSP Backend |
@@ -35,16 +37,14 @@
 
 | Feature | PS2 | PSP |
 |---------|-----|-----|
-| 4BPP CLUT | HW CSM2 (zero CPU) | ❌ stub |
-| 8BPP CLUT | HW CSM2 (zero CPU) | ❌ stub |
-| 15BPP direct | Direct VRAM read | Not wired |
+| 4BPP CLUT | HW CSM2 (zero CPU) | ✅ EDRAM tex cache (7 LRU slots) |
+| 8BPP CLUT | HW CSM2 (zero CPU) | ✅ EDRAM tex cache (7 LRU slots) |
+| 15BPP direct | Direct VRAM read | ✅ Direct from EDRAM |
 | Texture page cache | 32 pages × 2 formats (96 entries) | N/A |
 | Dirty tracking | 16-line granularity per page | N/A |
 | Texture windowing | GS CLAMP1 REGION_REPEAT | ❌ not implemented |
 
-**Impact**: All textured geometry appears without textures or black. This is the #1 gap.
-
-**PSP strategy needed**: CPU-decode CLUT palettes into 5551 textures, upload to sceGu via `sceGuTexImage()`. Cache decoded pages to avoid per-frame re-decode.
+**Status**: ✅ Implemented. EDRAM tex cache with 7 LRU slots, CLUT caching by clut_word + content hash, region-based invalidation.
 
 ### 4. VRAM Management
 
@@ -73,15 +73,15 @@ Both platforms implement all 4 modes. PSP approximation may differ slightly.
 
 ### 7. Dithering
 - **PS2**: GS DTHE + DIMX matrix (PSX-compatible 4×4 pattern).
-- **PSP**: ❌ **Not implemented**.
+- **PSP**: ✅ Implemented via lazy state tracking.
 
 ### 8. State Caching
 - **PS2**: Aggressive lazy state via `gs_state` struct. Per-primitive fast path: if cmd_key matches cache, emit only PRIM register (1 QW vs 5+ QW).
-- **PSP**: No caching. Per-primitive sceGuEnable/Disable/BlendFunc calls every time.
+- **PSP**: ✅ Lazy state tracking implemented (f98e80f). Only emits sceGu calls when state changes.
 
 ### 9. DMA / Command Batching
 - **PS2**: Double-buffered async GIF DMA. CPU fills buffer B while GPU processes buffer A. ~16KB batches.
-- **PSP**: Immediate sceGuDrawArray() per primitive. No batching.
+- **PSP**: ✅ Vertex buffer batching implemented (75e70f1). Groups same-state primitives.
 
 ### 10. GP1 Commands
 - **PS2**: All fully implemented (reset, display enable, DMA dir, display FB, H/V range, display mode, GPU info query).
@@ -89,19 +89,13 @@ Both platforms implement all 4 modes. PSP approximation may differ slightly.
 
 ## Priority Gaps (ordered by visual impact)
 
-1. **CLUT texture decoding** — Without this, textured polygons are black/missing. This affects almost every PSX game. Need CPU decode → sceGuTexImage() upload with page caching.
-
+1. ~~CLUT texture decoding~~ ✅ Done (EDRAM tex cache)
 2. **VRAM readback (C0)** — Some games copy rendered VRAM back to CPU for effects. Currently stub.
-
 3. **Polylines** — Used by some games for wireframe effects. Not implemented.
-
 4. **Masking bit** — Used for sprite priorities and semi-transparency control. Could use PSP stencil buffer.
-
 5. **Texture windowing** — Needed for repeated/tiled textures.
-
-6. **State caching** — Performance optimization, not correctness.
-
-7. **Dithering** — Visual quality, low priority.
+6. ~~State caching~~ ✅ Done (lazy state tracking)
+7. ~~Dithering~~ ✅ Done
 
 ## Assessment
 
