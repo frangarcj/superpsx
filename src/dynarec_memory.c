@@ -641,6 +641,52 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     }
 
     /* Fallback to generic emitter if address is not constant or not in RAM/SP */
+
+    /*
+     * SMRV+aligned fast path: fold the PSX offset into the native LW/LH/LB
+     * immediate field, eliminating the ADDIU instruction.
+     *
+     * Correctness: for SMRV-proven RAM pointers, kseg0/kseg1 addresses have
+     * bits 29-31 set, and the PSX offset (signed 16-bit) is small enough that
+     * (base & 0x1FFFFFFF) + offset == (base + offset) & 0x1FFFFFFF for any
+     * practical RAM pointer (phys > 0x1000, offset in [-32768, +32767]).
+     *
+     * Conditions: SMRV + aligned + no TLB (TLB backpatch can't handle offset).
+     */
+    if (!is_const && smrv_is_known_ram(rs_psx) &&
+        align_is_known(rs_psx) && (offset % size == 0) && !psx_tlb_base)
+    {
+        reg_cache_invalidate();
+        /* Get base register — use pinned reg directly to avoid MOVE */
+        int base = psx_pinned_reg[rs_psx];
+        if (!base)
+        {
+            emit_load_psx_reg(REG_T8, rs_psx);
+            base = REG_T8;
+        }
+        emit(MK_R(0, base, REG_S3, REG_T9, 0, 0x24));  /* and t9, base, s3 (phys) */
+        EMIT_ADDU(REG_T9, REG_T9, REG_S1);               /* addu t9, t9, s1 (host) */
+        if (size == 4)
+            EMIT_LW(REG_V0, offset, REG_T9);
+        else if (size == 2)
+        {
+            if (is_signed)
+                EMIT_LH(REG_V0, offset, REG_T9);
+            else
+                EMIT_LHU(REG_V0, offset, REG_T9);
+        }
+        else
+        {
+            if (is_signed)
+                EMIT_LB(REG_V0, offset, REG_T9);
+            else
+                EMIT_LBU(REG_V0, offset, REG_T9);
+        }
+        if (!dynarec_load_defer)
+            emit_store_psx_reg(rt_psx, REG_V0);
+        return;
+    }
+
     /* Compute effective address into REG_T8 */
     emit_load_psx_reg(REG_T8, rs_psx);
     EMIT_ADDIU(REG_T8, REG_T8, offset);
@@ -954,6 +1000,46 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         }
     }
 
+    /*
+     * SMRV+aligned fast-path store with offset folding.
+     * Same principle as the load fast path: skip ADDIU, fold offset into
+     * the native SW/SH/SB immediate.  Requires ISC cached + SMRV + aligned + !TLB.
+     *
+     * Layout: [load base] / [load data] / LW at,80(sp) / BNE at,zero,@skip /
+     *         AND at,base,s3 [delay] / ADDU at,at,s1 / SW data,offset(at) / @skip:
+     */
+    int pure_ram_store = block_isc_cached && smrv_is_known_ram(rs_psx) &&
+                         (size == 1 || (align_is_known(rs_psx) && (offset % size == 0)));
+
+    if (pure_ram_store && !psx_tlb_base)
+    {
+        reg_cache_invalidate();
+        /* Get base register — use pinned reg directly to avoid MOVE */
+        int base = psx_pinned_reg[rs_psx];
+        if (!base)
+        {
+            emit_load_psx_reg(REG_T8, rs_psx);
+            base = REG_T8;
+        }
+        emit_load_psx_reg(REG_T9, rt_psx); /* data value */
+
+        EMIT_LW(REG_AT, 80, REG_SP); /* at = cached ISC     */
+        uint32_t *isc_skip = code_ptr;
+        emit(MK_I(0x05, REG_AT, REG_ZERO, 0));          /* bne at,zero,@skip   */
+        emit(MK_R(0, base, REG_S3, REG_AT, 0, 0x24));   /* [delay] and at,base,s3 */
+        EMIT_ADDU(REG_AT, REG_AT, REG_S1); /* addu at, at, s1     */
+        if (size == 4)
+            EMIT_SW(REG_T9, offset, REG_AT);
+        else if (size == 2)
+            EMIT_SH(REG_T9, offset, REG_AT);
+        else
+            EMIT_SB(REG_T9, offset, REG_AT);
+
+        int32_t skip_off = (int32_t)(code_ptr - isc_skip - 1);
+        *isc_skip = (*isc_skip & 0xFFFF0000) | ((uint32_t)skip_off & 0xFFFF);
+        return;
+    }
+
     /* Compute effective address into REG_T8, data into REG_T9 */
     emit_load_psx_reg(REG_T8, rs_psx);
     EMIT_ADDIU(REG_T8, REG_T8, offset);
@@ -967,10 +1053,12 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
      * is known, we can handle ISC purely inline: skip the store if ISC=1.
      * No cold path entry needed — saves ~14 words (1 NOP + ~13 cold stub).
      * Layout: LW at,80(sp) / BNE at,zero,@skip / AND at,t8,s3 [delay] /
-     *         ADDU at,at,s1 / SW t9,0(at) / @skip: */
-    int pure_ram_store = block_isc_cached && smrv_is_known_ram(rs_psx) && (size == 1 || (align_is_known(rs_psx) && (offset % size == 0)));
+     *         ADDU at,at,s1 / SW t9,0(at) / @skip:
+     * NOTE: This old path only fires when TLB is active (non-TLB is handled
+     * by the offset-folding fast path above). */
+    int pure_ram_store_tlb = block_isc_cached && smrv_is_known_ram(rs_psx) && (size == 1 || (align_is_known(rs_psx) && (offset % size == 0)));
 
-    if (pure_ram_store)
+    if (pure_ram_store_tlb)
     {
         EMIT_LW(REG_AT, 80, REG_SP); /* at = cached ISC     */
         uint32_t *isc_skip = code_ptr;
