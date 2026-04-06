@@ -11,6 +11,27 @@
 
 extern void emit_flush_partial_cycles(void);
 
+#ifdef PLATFORM_PS2
+extern uint8_t vu0_matrix_dirty;
+
+/* Emit inline code to set VU0 matrix dirty bit for ctrl register rd5.
+ * Clobbers T8, T9.  Emits 0 words (rd5 > 20) or 5 words. */
+static void emit_vu0_dirty_bit(int rd5)
+{
+    uint8_t bit;
+    if (rd5 <= 7)       bit = 0x01; /* RT */
+    else if (rd5 <= 12) bit = 0x02; /* LT */
+    else if (rd5 <= 15) bit = 0x04; /* BK */
+    else if (rd5 <= 20) bit = 0x08; /* LC */
+    else return; /* regs 21-31: no matrix */
+
+    emit_load_imm32(REG_T9, (uint32_t)(uintptr_t)&vu0_matrix_dirty);
+    EMIT_LBU(REG_T8, 0, REG_T9);
+    EMIT_ORI(REG_T8, REG_T8, bit);
+    EMIT_SB(REG_T8, 0, REG_T9);
+}
+#endif
+
 /* ================================================================
  * GTE inline helper emitters
  * ================================================================
@@ -955,7 +976,7 @@ void emit_gte_instruction(uint32_t opcode, uint32_t psx_pc)
             switch (rd5)
             {
             case 31:
-                /* FLAG: complex bit-check logic */
+                /* FLAG: complex bit-check logic (GTE_WriteCtrl sets dirty) */
                 EMIT_MOVE(REG_A0, REG_S0);
                 emit_load_imm32(REG_A1, rd5);
                 emit_load_psx_reg(6, rt);
@@ -974,11 +995,17 @@ void emit_gte_instruction(uint32_t opcode, uint32_t psx_pc)
                 emit(MK_R(0, 0, REG_T8, REG_T8, 16, 0x00)); /* sll t8, 16 */
                 emit(MK_R(0, 0, REG_T8, REG_T8, 16, 0x03)); /* sra t8, 16 */
                 EMIT_SW(REG_T8, CPU_CP2_CTRL(rd5), REG_S0);
+#ifdef PLATFORM_PS2
+                emit_vu0_dirty_bit(rd5);
+#endif
                 break;
             default:
                 /* Simple write: C(r) = val */
                 emit_load_psx_reg(REG_T8, rt);
                 EMIT_SW(REG_T8, CPU_CP2_CTRL(rd5), REG_S0);
+#ifdef PLATFORM_PS2
+                emit_vu0_dirty_bit(rd5);
+#endif
                 break;
             }
         }

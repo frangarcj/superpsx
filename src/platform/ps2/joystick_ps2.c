@@ -164,19 +164,6 @@ int Joystick_IsConnected(int port, int slot)
     return getJoyInfoByPortSlot(port, slot) != NULL;
 }
 
-uint32_t Joystick_PollPort(int port)
-{
-    if (enabled_pads == 0)
-        return 0;
-
-    return pollJoyInfo(getJoyInfoByPortSlot(port, 0));
-}
-
-uint32_t Joystick_Poll(void)
-{
-    return Joystick_PollPort(0);
-}
-
 // Map PS2 button state to PSX digital controller protocol (ID + 2 bytes for buttons)
 // PSX expects: 0x41 (ID), then 2 bytes: [low, high] (0=pressed)
 // Button mapping: https://problemkaputt.de/psx-spx.htm#controllersioports
@@ -218,7 +205,10 @@ void Joystick_GetPSXDigitalResponse(int port, int slot, uint8_t response[3])
     if (ps2 & PAD_R1)
         response[2] &= ~0x08;
     if (ps2 & PAD_TRIANGLE)
+    {
+        exit(0); /* Triangle button exit is handled directly in Joystick_Poll() (joystick_ps2.c) */
         response[2] &= ~0x10;
+    }
     if (ps2 & PAD_CIRCLE)
         response[2] &= ~0x20;
     if (ps2 & PAD_CROSS)

@@ -446,11 +446,8 @@ void Init_Dynarec(void)
 static inline void check_profiling_exit(uint64_t frame_count)
 {
 #ifdef ENABLE_PROFILING
-    if (frame_count >= 200)
-    {
-        printf("[PROFILE] Exiting after %llu frames for profiling.\n", (unsigned long long)frame_count);
-        exit(0);
-    }
+    /* Triangle button exit is handled directly in Joystick_Poll() (joystick_ps2.c) */
+    (void)frame_count;
 #endif
 }
 

@@ -54,10 +54,11 @@ extern float vu0_lc_col1[4], vu0_lc_col2[4], vu0_lc_col3[4];
 extern float vu0_bk_trans[4], vu0_zero_trans[4];
 
 /* Dirty check functions from gte.c */
-extern int vu0_rt_is_dirty(R3000CPU *cpu);
-extern int vu0_lt_is_dirty(R3000CPU *cpu);
-extern int vu0_lc_is_dirty(R3000CPU *cpu);
-extern int vu0_bk_is_dirty(R3000CPU *cpu);
+extern uint8_t vu0_matrix_dirty;
+#define VU0_RT_IS_DIRTY() (vu0_matrix_dirty & 0x01)
+#define VU0_LT_IS_DIRTY() (vu0_matrix_dirty & 0x02)
+#define VU0_BK_IS_DIRTY() (vu0_matrix_dirty & 0x04)
+#define VU0_LC_IS_DIRTY() (vu0_matrix_dirty & 0x08)
 extern void vu0_refresh_rt_matrix(R3000CPU *cpu);
 extern void vu0_refresh_lt_matrix(R3000CPU *cpu);
 extern void vu0_refresh_lc_matrix(R3000CPU *cpu);
@@ -96,15 +97,15 @@ void vu0_micro_prepare_matrix(R3000CPU *cpu, uint32_t mx_cv)
 
     switch (mx) {
     case 0:
-        if (vu0_rt_is_dirty(cpu)) vu0_refresh_rt_matrix(cpu);
+        if (VU0_RT_IS_DIRTY()) vu0_refresh_rt_matrix(cpu);
         col1 = vu0_rt_col1; col2 = vu0_rt_col2; col3 = vu0_rt_col3;
         break;
     case 1:
-        if (vu0_lt_is_dirty(cpu)) vu0_refresh_lt_matrix(cpu);
+        if (VU0_LT_IS_DIRTY()) vu0_refresh_lt_matrix(cpu);
         col1 = vu0_lt_col1; col2 = vu0_lt_col2; col3 = vu0_lt_col3;
         break;
     default:
-        if (vu0_lc_is_dirty(cpu)) vu0_refresh_lc_matrix(cpu);
+        if (VU0_LC_IS_DIRTY()) vu0_refresh_lc_matrix(cpu);
         col1 = vu0_lc_col1; col2 = vu0_lc_col2; col3 = vu0_lc_col3;
         break;
     }
@@ -113,11 +114,11 @@ void vu0_micro_prepare_matrix(R3000CPU *cpu, uint32_t mx_cv)
     float *trans;
     switch (cv) {
     case 0:
-        if (mx != 0 && vu0_rt_is_dirty(cpu)) vu0_refresh_rt_matrix(cpu);
+        if (mx != 0 && VU0_RT_IS_DIRTY()) vu0_refresh_rt_matrix(cpu);
         trans = vu0_rt_trans;
         break;
     case 1:
-        if (vu0_bk_is_dirty(cpu)) vu0_refresh_bk_trans(cpu);
+        if (VU0_BK_IS_DIRTY()) vu0_refresh_bk_trans(cpu);
         trans = vu0_bk_trans;
         break;
     default:

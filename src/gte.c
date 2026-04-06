@@ -1277,6 +1277,10 @@ uint32_t GTE_ReadCtrl(R3000CPU *cpu, int reg)
     return C(reg);
 }
 
+#ifdef _EE
+extern uint8_t vu0_matrix_dirty;
+#endif
+
 void GTE_WriteCtrl(R3000CPU *cpu, int reg, uint32_t val)
 {
     switch (reg)
@@ -1301,6 +1305,14 @@ void GTE_WriteCtrl(R3000CPU *cpu, int reg, uint32_t val)
         C(reg & 0x1F) = val;
         break;
     }
+
+    /* Mark VU0 matrix dirty for ctrl regs 0-20 */
+#ifdef _EE
+    if (reg <= 7)       vu0_matrix_dirty |= 0x01; /* RT */
+    else if (reg <= 12) vu0_matrix_dirty |= 0x02; /* LT */
+    else if (reg <= 15) vu0_matrix_dirty |= 0x04; /* BK */
+    else if (reg <= 20) vu0_matrix_dirty |= 0x08; /* LC */
+#endif
 }
 
 /* ================================================================
@@ -1412,12 +1424,24 @@ void GTE_Execute(uint32_t opcode, R3000CPU *cpu)
  * ================================================================ */
 #ifdef _EE /* PS2 EE target only */
 
+/* ---- VU0 matrix dirty bitmask ----
+ * Bit 0: RT (ctrl 0-7), Bit 1: LT (ctrl 8-12),
+ * Bit 2: BK (ctrl 13-15), Bit 3: LC (ctrl 16-20).
+ * Set at CTC2 write time, cleared at refresh time.
+ * Replaces per-matrix snapshot comparison loops. */
+uint8_t vu0_matrix_dirty = 0x0F; /* all dirty at startup */
+
+/* Inline dirty checks — avoid function call overhead (~40 cycles/call with -pg) */
+#define VU0_RT_IS_DIRTY() (vu0_matrix_dirty & 0x01)
+#define VU0_LT_IS_DIRTY() (vu0_matrix_dirty & 0x02)
+#define VU0_BK_IS_DIRTY() (vu0_matrix_dirty & 0x04)
+#define VU0_LC_IS_DIRTY() (vu0_matrix_dirty & 0x08)
+
 /* Aligned float buffers for VU0 register loads */
 float vu0_rt_col1[4] __attribute__((aligned(16)));
 float vu0_rt_col2[4] __attribute__((aligned(16)));
 float vu0_rt_col3[4] __attribute__((aligned(16)));
 float vu0_rt_trans[4] __attribute__((aligned(16)));
-static uint32_t vu0_rt_snapshot[8]; /* ctrl[0..7] snapshot for dirty check */
 
 void vu0_refresh_rt_matrix(R3000CPU *cpu)
 {
@@ -1458,17 +1482,13 @@ void vu0_refresh_rt_matrix(R3000CPU *cpu)
     vu0_rt_trans[2] = (float)(int32_t)C(c_TRZ);
     vu0_rt_trans[3] = 0.0f;
 
-    /* Snapshot for dirty detection */
-    for (int i = 0; i < 8; i++)
-        vu0_rt_snapshot[i] = C(i);
+    vu0_matrix_dirty &= ~0x01; /* RT clean */
 }
 
 int vu0_rt_is_dirty(R3000CPU *cpu)
 {
-    for (int i = 0; i < 8; i++)
-        if (vu0_rt_snapshot[i] != C(i))
-            return 1;
-    return 0;
+    (void)cpu;
+    return (vu0_matrix_dirty & 0x01) != 0;
 }
 
 /* VU0 RTPS core: single vertex transform (sf=1 only)
@@ -1554,7 +1574,7 @@ static void gte_rtps_core_vu0(R3000CPU *cpu, int v, int lm, int last)
 
 static void gte_cmd_rtps_vu0(R3000CPU *cpu, int lm)
 {
-    if (vu0_rt_is_dirty(cpu))
+    if (VU0_RT_IS_DIRTY())
         vu0_refresh_rt_matrix(cpu);
 
     __asm__ __volatile__(
@@ -1570,7 +1590,7 @@ static void gte_cmd_rtps_vu0(R3000CPU *cpu, int lm)
 
 static void gte_cmd_rtpt_vu0(R3000CPU *cpu, int lm)
 {
-    if (vu0_rt_is_dirty(cpu))
+    if (VU0_RT_IS_DIRTY())
         vu0_refresh_rt_matrix(cpu);
 
     __asm__ __volatile__(
@@ -1598,7 +1618,6 @@ static void gte_cmd_rtpt_vu0(R3000CPU *cpu, int lm)
 float vu0_lt_col1[4] __attribute__((aligned(16)));
 float vu0_lt_col2[4] __attribute__((aligned(16)));
 float vu0_lt_col3[4] __attribute__((aligned(16)));
-static uint32_t vu0_lt_snapshot[5];
 
 void vu0_refresh_lt_matrix(R3000CPU *cpu)
 {
@@ -1622,23 +1641,19 @@ void vu0_refresh_lt_matrix(R3000CPU *cpu)
     vu0_lt_col3[2] = (float)l33 * s;
     vu0_lt_col3[3] = 0.0f;
 
-    for (int i = 0; i < 5; i++)
-        vu0_lt_snapshot[i] = C(8 + i);
+    vu0_matrix_dirty &= ~0x02; /* LT clean */
 }
 
 int vu0_lt_is_dirty(R3000CPU *cpu)
 {
-    for (int i = 0; i < 5; i++)
-        if (vu0_lt_snapshot[i] != C(8 + i))
-            return 1;
-    return 0;
+    (void)cpu;
+    return (vu0_matrix_dirty & 0x02) != 0;
 }
 
 /* Color matrix cached float columns (mx=2, ctrl[16..20]) */
 float vu0_lc_col1[4] __attribute__((aligned(16)));
 float vu0_lc_col2[4] __attribute__((aligned(16)));
 float vu0_lc_col3[4] __attribute__((aligned(16)));
-static uint32_t vu0_lc_snapshot[5];
 
 void vu0_refresh_lc_matrix(R3000CPU *cpu)
 {
@@ -1662,21 +1677,17 @@ void vu0_refresh_lc_matrix(R3000CPU *cpu)
     vu0_lc_col3[2] = (float)lb3 * s;
     vu0_lc_col3[3] = 0.0f;
 
-    for (int i = 0; i < 5; i++)
-        vu0_lc_snapshot[i] = C(16 + i);
+    vu0_matrix_dirty &= ~0x08; /* LC clean */
 }
 
 int vu0_lc_is_dirty(R3000CPU *cpu)
 {
-    for (int i = 0; i < 5; i++)
-        if (vu0_lc_snapshot[i] != C(16 + i))
-            return 1;
-    return 0;
+    (void)cpu;
+    return (vu0_matrix_dirty & 0x08) != 0;
 }
 
 /* BK translation cached float (cv=1, ctrl[13..15]) */
 float vu0_bk_trans[4] __attribute__((aligned(16)));
-static uint32_t vu0_bk_snapshot[3];
 
 void vu0_refresh_bk_trans(R3000CPU *cpu)
 {
@@ -1685,16 +1696,13 @@ void vu0_refresh_bk_trans(R3000CPU *cpu)
     vu0_bk_trans[2] = (float)(int32_t)C(c_BBK);
     vu0_bk_trans[3] = 0.0f;
 
-    for (int i = 0; i < 3; i++)
-        vu0_bk_snapshot[i] = C(c_RBK + i);
+    vu0_matrix_dirty &= ~0x04; /* BK clean */
 }
 
 int vu0_bk_is_dirty(R3000CPU *cpu)
 {
-    for (int i = 0; i < 3; i++)
-        if (vu0_bk_snapshot[i] != C(c_RBK + i))
-            return 1;
-    return 0;
+    (void)cpu;
+    return (vu0_matrix_dirty & 0x04) != 0;
 }
 
 /* Zero translation for cv=3 (None) */
@@ -1708,21 +1716,21 @@ static void gte_mvmva_vu0(R3000CPU *cpu, int lm, int mx, int v, int cv)
     switch (mx)
     {
     case 0: /* RT */
-        if (vu0_rt_is_dirty(cpu))
+        if (VU0_RT_IS_DIRTY())
             vu0_refresh_rt_matrix(cpu);
         col1 = vu0_rt_col1;
         col2 = vu0_rt_col2;
         col3 = vu0_rt_col3;
         break;
     case 1: /* Light */
-        if (vu0_lt_is_dirty(cpu))
+        if (VU0_LT_IS_DIRTY())
             vu0_refresh_lt_matrix(cpu);
         col1 = vu0_lt_col1;
         col2 = vu0_lt_col2;
         col3 = vu0_lt_col3;
         break;
     default: /* Color (mx=2) */
-        if (vu0_lc_is_dirty(cpu))
+        if (VU0_LC_IS_DIRTY())
             vu0_refresh_lc_matrix(cpu);
         col1 = vu0_lc_col1;
         col2 = vu0_lc_col2;
@@ -1735,12 +1743,12 @@ static void gte_mvmva_vu0(R3000CPU *cpu, int lm, int mx, int v, int cv)
     switch (cv)
     {
     case 0: /* TR — part of RT cache (ctrl[5-7]) */
-        if (mx != 0 && vu0_rt_is_dirty(cpu))
+        if (mx != 0 && VU0_RT_IS_DIRTY())
             vu0_refresh_rt_matrix(cpu);
         trans = vu0_rt_trans;
         break;
     case 1: /* BK */
-        if (vu0_bk_is_dirty(cpu))
+        if (VU0_BK_IS_DIRTY())
             vu0_refresh_bk_trans(cpu);
         trans = vu0_bk_trans;
         break;
@@ -1804,21 +1812,21 @@ void vu0_prepare_mvmva(R3000CPU *cpu, uint32_t mx_cv)
     switch (mx)
     {
     case 0:
-        if (vu0_rt_is_dirty(cpu))
+        if (VU0_RT_IS_DIRTY())
             vu0_refresh_rt_matrix(cpu);
         col1 = vu0_rt_col1;
         col2 = vu0_rt_col2;
         col3 = vu0_rt_col3;
         break;
     case 1:
-        if (vu0_lt_is_dirty(cpu))
+        if (VU0_LT_IS_DIRTY())
             vu0_refresh_lt_matrix(cpu);
         col1 = vu0_lt_col1;
         col2 = vu0_lt_col2;
         col3 = vu0_lt_col3;
         break;
     default:
-        if (vu0_lc_is_dirty(cpu))
+        if (VU0_LC_IS_DIRTY())
             vu0_refresh_lc_matrix(cpu);
         col1 = vu0_lc_col1;
         col2 = vu0_lc_col2;
@@ -1831,12 +1839,12 @@ void vu0_prepare_mvmva(R3000CPU *cpu, uint32_t mx_cv)
     switch (cv)
     {
     case 0:
-        if (mx != 0 && vu0_rt_is_dirty(cpu))
+        if (mx != 0 && VU0_RT_IS_DIRTY())
             vu0_refresh_rt_matrix(cpu);
         trans = vu0_rt_trans;
         break;
     case 1:
-        if (vu0_bk_is_dirty(cpu))
+        if (VU0_BK_IS_DIRTY())
             vu0_refresh_bk_trans(cpu);
         trans = vu0_bk_trans;
         break;

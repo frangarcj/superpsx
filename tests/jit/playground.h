@@ -13,6 +13,13 @@
 #include <string.h>
 #include <stdint.h>
 
+#ifdef _EE
+extern uint8_t vu0_matrix_dirty;
+#define PG_MARK_VU0_DIRTY() do { vu0_matrix_dirty = 0x0F; } while(0)
+#else
+#define PG_MARK_VU0_DIRTY() ((void)0)
+#endif
+
 /* ---- pull in MK_R / MK_I / MK_J from the dynarec header ---- */
 #include "dynarec.h"
 
@@ -325,6 +332,8 @@ extern PGTestCtx pg_ctx;
     pg_ctx.code = (uint32_t *)(psx_ram + PG_CODE_OFFSET);               \
     pg_ctx.count = 0;                                                    \
     pg_ctx.fail_count = 0;                                               \
+    /* Mark all VU0 matrices dirty (test C code writes cp2_ctrl directly) */ \
+    PG_MARK_VU0_DIRTY();                                                 \
 } while(0)
 
 #define SET_REG(r, val)    cpu.regs[(r)] = (uint32_t)(val)

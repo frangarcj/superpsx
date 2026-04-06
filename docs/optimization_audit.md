@@ -7,23 +7,21 @@ Combined: **25+ actionable optimizations**, estimated **15-40% cumulative speedu
 
 ## Tier 1: Quick Wins (~10-12% improvement, 1-3 days)
 
-### QW1: Small Constant Optimization (O6b)
-**1 LOC change in `emit_load_imm32()`**. Currently always emits LUI+ORI (2 insns) even for
-small values. Use ADDIU/ORI from $zero for values fitting 16 bits → saves 1 insn per small
-constant (~5-10% of all constants).
+### QW1: Small Constant Optimization (O6b) — DONE (f617d39)
+Use ADDIU/ORI from $zero for 16-bit sign-extendable values. Saves 1 insn per negative
+constant. Committed.
 
-### QW2: Lower Dynamic Slot Threshold (O2a)
-Change `best_count = 1` → `best_count = 0` in `dyn_assign_slots()`. Allows single-access
-registers to get slots. Saves 1 LW per block for registers used once. ~3% speedup.
+### QW2: Lower Dynamic Slot Threshold — SKIPPED
+Evaluated: current threshold ≥2 is already optimal. At ≥1, entry-loading cost equals
+inline-load cost (break-even). Not worth the slot waste.
 
-### QW3: Extend Alignment Tracking to Half-Word (O3a)
-Add `aligned_2` bitmask alongside existing `align_known_mask` (word). When a register is
-known half-word-aligned and LH/SH offset is even, skip alignment check (1 BNE + delay saved).
-~3-5% speedup on mixed load/store workloads.
+### QW3: Half-Word Alignment Tracking — SKIPPED
+Evaluated: existing word-alignment tracking already covers half-word access. Registers known
+word-aligned are automatically half-word aligned. Marginal gain for pure half-word tracking.
 
-### QW4: Lazy Overflow Exceptions (O9b)
-Don't check ADD/SUB overflow inline. Defer check to next COP0 status read. Saves 5-8 insns
-per overflow-checked instruction. ~1-2% speedup.
+### QW4: Lazy Overflow Exceptions — SKIPPED
+Evaluated: ADD/SUB (with overflow trap) are extremely rare in PSX code — games use ADDU/SUBU.
+Already optimized with cold queue (P23). Marginal impact.
 
 ---
 
