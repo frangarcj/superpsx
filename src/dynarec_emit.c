@@ -641,6 +641,11 @@ void emit_load_imm32(int hwreg, uint32_t val)
     {
         EMIT_ORI(hwreg, REG_ZERO, val & 0xFFFF);
     }
+    else if ((int32_t)val >= -32768 && (int32_t)val < 0)
+    {
+        /* Sign-extendable negative: ADDIU from $zero (1 insn vs LUI+ORI) */
+        EMIT_ADDIU(hwreg, REG_ZERO, (int16_t)val);
+    }
     else if ((val & 0xFFFF) == 0)
     {
         EMIT_LUI(hwreg, val >> 16);
