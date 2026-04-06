@@ -79,6 +79,7 @@ typedef struct
     uint32_t pinned_written_mask; /* bit r=1 → pinned PSX reg r is written in this block */
     uint32_t regs_written_mask;   /* bit r=1 → PSX reg r is written (any) */
     uint32_t regs_read_mask;      /* bit r=1 → PSX reg r is read */
+    uint32_t reg_write_before_read; /* bit r=1 → first access to reg r is a write */
     int insn_count;               /* Number of PSX instructions in block (incl. delay slot) */
     int has_mtc0_sr;              /* 1 if block contains MTC0 to COP0 reg 12 (SR) or RFE */
     int has_isc_write;            /* 1 if block has MTC0 to SR (can toggle ISC bit 16) — excludes RFE */
@@ -604,8 +605,10 @@ void reg_cache_invalidate(void);
 extern int dyn_slot_psx[DYN_SLOT_COUNT];
 extern int dyn_slots_active;
 extern uint8_t dyn_dirty_mask; /* compile-time: bit i = slot i needs writeback */
+extern uint8_t dyn_slot_loaded_mask; /* compile-time: bit i = slot i has valid value */
+extern uint8_t dyn_slot_entry_loaded; /* loaded mask snapshot at block entry (for abort stub) */
 void dyn_assign_slots(BlockScanResult *scan);
-void dyn_load_slots(void);
+void dyn_load_slots(uint32_t write_before_read);
 void dyn_reload_slots(void);
 void dyn_reset_slots(void);
 void dyn_flush_dirty_slots(void);

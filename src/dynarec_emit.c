@@ -71,6 +71,8 @@ static const int dyn_slot_ee[DYN_SLOT_COUNT] = {
 int dyn_slot_psx[DYN_SLOT_COUNT];
 int dyn_slots_active = 0;
 uint8_t dyn_dirty_mask = 0;
+uint8_t dyn_slot_loaded_mask = 0; /* bit i=1 → slot i has been loaded/written (valid value) */
+uint8_t dyn_slot_entry_loaded = 0; /* loaded mask snapshot at block entry (for abort stub) */
 
 /* Find the slot index holding PSX reg r, or -1 */
 static inline int dyn_slot_find(int r)
@@ -122,12 +124,22 @@ void dyn_assign_slots(BlockScanResult *scan)
 }
 
 /* Emit LW instructions to load assigned dynamic slots from cpu.regs[].
- * Called at block entry point (after prologue, before instructions). */
-void dyn_load_slots(void)
+ * Called at block entry point (after prologue, before instructions).
+ * Slots whose PSX register is write-before-read are skipped (dead load). */
+void dyn_load_slots(uint32_t write_before_read)
 {
+    dyn_slot_loaded_mask = 0;
     for (int i = 0; i < DYN_SLOT_COUNT; i++)
+    {
         if (dyn_slot_psx[i] >= 0)
+        {
+            if (write_before_read & (1u << dyn_slot_psx[i]))
+                continue; /* WBR: skip initial load, slot not yet loaded */
             EMIT_LW(dyn_slot_ee[i], CPU_REG(dyn_slot_psx[i]), REG_S0);
+            dyn_slot_loaded_mask |= (1u << i);
+        }
+    }
+    dyn_slot_entry_loaded = dyn_slot_loaded_mask;
 }
 
 /* Emit LW instructions to reload dynamic slots from cpu.regs[].
@@ -137,9 +149,15 @@ void dyn_reload_slots(void)
     if (!dyn_slots_active)
         return;
     dyn_dirty_mask = 0;
+    dyn_slot_loaded_mask = 0;
     for (int i = 0; i < DYN_SLOT_COUNT; i++)
+    {
         if (dyn_slot_psx[i] >= 0)
+        {
             EMIT_LW(dyn_slot_ee[i], CPU_REG(dyn_slot_psx[i]), REG_S0);
+            dyn_slot_loaded_mask |= (1u << i);
+        }
+    }
 }
 
 /* Emit SW for each dirty dynamic slot, then clear the dirty mask.
@@ -251,6 +269,7 @@ void dyn_reset_slots(void)
         dyn_slot_psx[i] = -1;
     dyn_slots_active = 0;
     dyn_dirty_mask = 0;
+    dyn_slot_loaded_mask = 0;
 }
 
 /* Load PSX register 'r' from cpu struct into hw reg 'hwreg' */
@@ -277,6 +296,7 @@ void emit_load_psx_reg(int hwreg, int r)
                     if (dyn_slot_ee[si] != hwreg)
                         EMIT_MOVE(dyn_slot_ee[si], hwreg);
                     dyn_dirty_mask |= (1u << si);
+                    dyn_slot_loaded_mask |= (1u << si);
                 }
                 else
                 {
@@ -304,6 +324,12 @@ void emit_load_psx_reg(int hwreg, int r)
             int si = dyn_slot_find(r);
             if (si >= 0)
             {
+                /* Lazy load: if slot not yet loaded (WBR skip), load from cpu.regs now */
+                if (!(dyn_slot_loaded_mask & (1u << si)))
+                {
+                    EMIT_LW(dyn_slot_ee[si], CPU_REG(r), REG_S0);
+                    dyn_slot_loaded_mask |= (1u << si);
+                }
                 if (hwreg != dyn_slot_ee[si])
                     EMIT_MOVE(hwreg, dyn_slot_ee[si]);
                 SCRATCH_INVALIDATE_HWREG(hwreg);
@@ -351,7 +377,10 @@ int emit_use_reg(int r, int scratch)
         if (!psx_pinned_reg[r])
         {
             if (si >= 0)
+            {
                 dyn_dirty_mask |= (1u << si);
+                dyn_slot_loaded_mask |= (1u << si);
+            }
             else
                 EMIT_SW(dst, CPU_REG(r), REG_S0);
         }
@@ -368,7 +397,15 @@ int emit_use_reg(int r, int scratch)
     {
         int si = dyn_slot_find(r);
         if (si >= 0)
+        {
+            /* Lazy load: if slot not yet loaded (WBR skip), load from cpu.regs now */
+            if (!(dyn_slot_loaded_mask & (1u << si)))
+            {
+                EMIT_LW(dyn_slot_ee[si], CPU_REG(r), REG_S0);
+                dyn_slot_loaded_mask |= (1u << si);
+            }
             return dyn_slot_ee[si];
+        }
     }
     /* Non-pinned: check scratch register cache */
     if (scratch == REG_T8 && t8_cached_psx_reg == r)
@@ -418,6 +455,7 @@ void emit_store_psx_reg(int r, int hwreg)
             if (dyn_slot_ee[si] != hwreg)
                 EMIT_MOVE(dyn_slot_ee[si], hwreg);
             dyn_dirty_mask |= (1u << si);
+            dyn_slot_loaded_mask |= (1u << si);
             SCRATCH_INVALIDATE_PSX(r);
             return;
         }
@@ -451,6 +489,7 @@ void emit_sync_reg(int r, int host_reg)
             if (dyn_slot_ee[si] != host_reg)
                 EMIT_MOVE(dyn_slot_ee[si], host_reg);
             dyn_dirty_mask |= (1u << si);
+            dyn_slot_loaded_mask |= (1u << si);
             SCRATCH_INVALIDATE_PSX(r);
             return;
         }
@@ -498,6 +537,7 @@ void flush_dirty_consts(void)
                 int si = dyn_slot_find(r);
                 emit_load_imm32(dyn_slot_ee[si], vregs[r].value);
                 dyn_dirty_mask |= (1u << si);
+                dyn_slot_loaded_mask |= (1u << si);
                 SCRATCH_INVALIDATE_PSX(r);
             }
             else
@@ -714,6 +754,7 @@ void mark_vreg_var(int r)
             int si = dyn_slot_find(r);
             emit_load_imm32(dyn_slot_ee[si], vregs[r].value);
             dyn_dirty_mask |= (1u << si);
+            dyn_slot_loaded_mask |= (1u << si);
             SCRATCH_INVALIDATE_PSX(r);
         }
         else
@@ -776,6 +817,7 @@ void emit_cpu_field_to_psx_reg(int field_offset, int r)
         int si = dyn_slot_find(r);
         EMIT_LW(dyn_slot_ee[si], field_offset, REG_S0);
         dyn_dirty_mask |= (1u << si); /* defer writeback */
+        dyn_slot_loaded_mask |= (1u << si);
     }
     else
     {
@@ -799,6 +841,7 @@ void emit_materialize_psx_imm(int r, uint32_t value)
         int si = dyn_slot_find(r);
         emit_load_imm32(dyn_slot_ee[si], value);
         dyn_dirty_mask |= (1u << si); /* defer writeback */
+        dyn_slot_loaded_mask |= (1u << si);
     }
     else
     {

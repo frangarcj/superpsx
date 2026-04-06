@@ -422,8 +422,13 @@ void cold_slow_emit_all(void)
         emit(MK_I(0x04, REG_AT, REG_ZERO, 0)); /* BEQ at, $0, @skip (placeholder) */
         EMIT_NOP();
 
-        /* Abort path: flush ALL assigned dynamic slots unconditionally.
-         * Non-dirty slots write back the same value (harmless; abort is rare). */
+        /* Abort path: flush ALL assigned slots unconditionally.
+         * Even WBR-skipped slots may have been written mid-block and hold
+         * valid data that must be saved before aborting.  The sentinel
+         * values (if any) in truly-unwritten slots are harmless because
+         * re-execution will overwrite them.  Using entry_loaded here is
+         * unsafe: it can lose dirty WBR slot data on abort → stale
+         * cpu.regs[] values on re-execution. */
         if (dyn_slots_active)
         {
             for (int s = 0; s < DYN_SLOT_COUNT; s++)

@@ -237,13 +237,15 @@ static void emit_cu_check(int cop_num, uint32_t psx_pc)
     emit_load_imm32(REG_A0, psx_pc);
     emit_load_imm32(REG_A1, cop_num);
     {
-        uint8_t  saved_dirty = dyn_dirty_mask;
-        uint32_t saved_smrv  = smrv_known_ram;
-        uint32_t saved_align = align_known_mask;
+        uint8_t  saved_dirty  = dyn_dirty_mask;
+        uint8_t  saved_loaded = dyn_slot_loaded_mask;
+        uint32_t saved_smrv   = smrv_known_ram;
+        uint32_t saved_align  = align_known_mask;
         emit_call_c((uint32_t)Helper_CU_Exception);
-        dyn_dirty_mask  = saved_dirty;
-        smrv_known_ram  = saved_smrv;
-        align_known_mask = saved_align;
+        dyn_dirty_mask       = saved_dirty;
+        dyn_slot_loaded_mask = saved_loaded;
+        smrv_known_ram       = saved_smrv;
+        align_known_mask     = saved_align;
     }
 
     /* Patch BNE offset */

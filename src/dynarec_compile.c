@@ -722,6 +722,7 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
      *          + detect MTC0 to SR (COP0 reg 12) for ISC optimization
      *          + detect COP2/LWC2/SWC2 for CU2 check hoisting */
     uint32_t written = 0, read = 0;
+    uint32_t seen = 0, write_first = 0; /* for write-before-read detection */
     int found_mtc0_sr = 0;
     int found_isc_write = 0;
     int found_cop2 = 0;
@@ -733,6 +734,10 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
         uint32_t rmask = dce_read_mask(code[i]);
         written |= wmask;
         read |= rmask;
+        /* Write-before-read: reads mark regs as seen; unseen writes are write-first */
+        seen |= rmask;
+        write_first |= (wmask & ~seen);
+        seen |= wmask;
         /* Detect MTC0 to SR: opcode 0x10 (COP0), rs=0x04 (MTC0), rd=12 (SR) */
         if (OP(code[i]) == 0x10 && RS(code[i]) == 0x04 && RD(code[i]) == 12)
         {
@@ -767,6 +772,7 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
     }
     out->regs_written_mask = written;
     out->regs_read_mask = read;
+    out->reg_write_before_read = write_first;
     out->has_mtc0_sr = found_mtc0_sr;
     out->has_isc_write = found_isc_write;
     out->has_cop2 = found_cop2;
@@ -1146,7 +1152,7 @@ uint32_t *compile_block(uint32_t psx_pc)
     block_pinned_dirty_mask = scan.pinned_written_mask;
     emit_block_prologue();
     dyn_assign_slots(&scan);
-    dyn_load_slots();
+    dyn_load_slots(scan.reg_write_before_read);
 
     /* ISC optimization: if block doesn't modify SR (no MTC0/RFE), cache the
      * IsC bit (SR bit 16) in stack slot SP+80 once at block entry.  Per-store
@@ -1199,10 +1205,12 @@ uint32_t *compile_block(uint32_t psx_pc)
             emit_load_imm32(REG_A0, cu2_exc_pc); /* a0 = first COP2 PC */
             emit_load_imm32(REG_A1, 2);          /* a1 = cop_num=2     */
             uint8_t saved_dirty = dyn_dirty_mask;
+            uint8_t saved_loaded = dyn_slot_loaded_mask;
             uint32_t saved_smrv = smrv_known_ram;
             uint32_t saved_align = align_known_mask;
             emit_call_c((uint32_t)Helper_CU_Exception);
             dyn_dirty_mask = saved_dirty;
+            dyn_slot_loaded_mask = saved_loaded;
             smrv_known_ram = saved_smrv;
             align_known_mask = saved_align;
         }
