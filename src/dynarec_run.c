@@ -479,6 +479,10 @@ static struct
 
 static uint32_t hotspot_idle_skips = 0;
 static uint64_t hotspot_idle_cycles_skipped = 0;
+static uint32_t hotspot_pidle_skips = 0;    /* P-IDLE: timeout loop skips */
+static uint64_t hotspot_pidle_cycles = 0;   /* P-IDLE: cycles skipped */
+static uint32_t hotspot_pzero_skips = 0;    /* P-ZERO: zero-fill skips */
+static uint64_t hotspot_pzero_bytes = 0;    /* P-ZERO: bytes zeroed */
 
 static inline void hotspot_record(uint32_t pc, uint32_t cycles)
 {
@@ -529,6 +533,12 @@ void jit_hotspot_dump_and_reset(FILE *out)
     fprintf(out, "  Idle skips: %u  (cycles skipped: %llu)\n",
             (unsigned)hotspot_idle_skips,
             (unsigned long long)hotspot_idle_cycles_skipped);
+    fprintf(out, "  P-IDLE (timeout): %u skips  (%llu cycles)\n",
+            (unsigned)hotspot_pidle_skips,
+            (unsigned long long)hotspot_pidle_cycles);
+    fprintf(out, "  P-ZERO (zerofill): %u skips  (%llu bytes zeroed)\n",
+            (unsigned)hotspot_pzero_skips,
+            (unsigned long long)hotspot_pzero_bytes);
     for (i = 0; i < 15 && top_idx[i] >= 0; i++)
     {
         int idx = top_idx[i];
@@ -543,6 +553,10 @@ void jit_hotspot_dump_and_reset(FILE *out)
     memset(hotspot_table, 0, sizeof(hotspot_table));
     hotspot_idle_skips = 0;
     hotspot_idle_cycles_skipped = 0;
+    hotspot_pidle_skips = 0;
+    hotspot_pidle_cycles = 0;
+    hotspot_pzero_skips = 0;
+    hotspot_pzero_bytes = 0;
 }
 #else
 static inline void hotspot_record(uint32_t pc, uint32_t cycles)
@@ -967,6 +981,8 @@ int run_jit_chain(uint64_t deadline)
 #ifdef ENABLE_SUBSYSTEM_PROFILER
                     hotspot_idle_skips++;
                     hotspot_idle_cycles_skipped += cycles_needed;
+                    hotspot_pidle_skips++;
+                    hotspot_pidle_cycles += cycles_needed;
 #endif
                     global_cycles = complete_time;
                 }
@@ -981,6 +997,8 @@ int run_jit_chain(uint64_t deadline)
 #ifdef ENABLE_SUBSYSTEM_PROFILER
                         hotspot_idle_skips++;
                         hotspot_idle_cycles_skipped += (uint64_t)iters * be->cycle_count;
+                        hotspot_pidle_skips++;
+                        hotspot_pidle_cycles += (uint64_t)iters * be->cycle_count;
 #endif
                         global_cycles += (uint64_t)iters * be->cycle_count;
                     }
@@ -1071,6 +1089,8 @@ int run_jit_chain(uint64_t deadline)
 #ifdef ENABLE_SUBSYSTEM_PROFILER
             hotspot_idle_skips++;
             hotspot_idle_cycles_skipped += (uint64_t)words * be->cycle_count;
+            hotspot_pzero_skips++;
+            hotspot_pzero_bytes += size;
 #endif
             return RUN_RES_BREAK;
         }
