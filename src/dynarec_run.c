@@ -937,8 +937,33 @@ int run_jit_chain(uint64_t deadline)
      * If hash still matches, update block's page_gen to avoid repeated checks. */
     if (block && be)
     {
+        /* P28: Epoch check — a new code page was allocated since this block
+         * was compiled.  Blocks that skipped the inline SMC check (because
+         * jit_l1_ram[page] was NULL at compile time) must be recompiled so
+         * they pick up the check for the newly-populated code page.
+         * Flush the hash table once per epoch change so the asm dispatch
+         * trampoline can't bypass this C-side check. */
+        if (__builtin_expect(be->smc_epoch != smc_page_epoch, 0))
+        {
+            static uint16_t smc_ht_flushed_epoch = 0;
+            if (smc_ht_flushed_epoch != smc_page_epoch)
+            {
+                for (int i = 0; i < JIT_HT_SIZE; i++)
+                {
+                    jit_ht[i].psx_pc[0] = 0xFFFFFFFF;
+                    jit_ht[i].psx_pc[1] = 0xFFFFFFFF;
+                }
+                smc_ht_flushed_epoch = smc_page_epoch;
+            }
+            be->native = NULL;
+            jit_ht_remove(pc);
+            block = NULL;
+            be = NULL;
+            block = dynarec_ensure_block(pc, &be);
+        }
+
         uint32_t phys = pc & 0x1FFFFFFF;
-        if (phys < PSX_RAM_SIZE && be->page_gen != jit_get_page_gen(phys))
+        if (block && be && phys < PSX_RAM_SIZE && be->page_gen != jit_get_page_gen(phys))
         {
             /* Page was written to since compilation — verify opcodes */
             uint32_t *opcodes = get_psx_code_ptr(pc);

@@ -859,8 +859,13 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
             /* SMC detection: inline check of jit_l1_ram[page] before calling
              * the full handler.  Most pages have no compiled blocks, so the
              * inline NULL check (3-4 instrs) avoids the expensive trampoline
-             * call (~30 instrs with reg save/restore) in the common case. */
-            if (size == 4)
+             * call (~30 instrs with reg save/restore) in the common case.
+             *
+             * P28: Skip entirely when jit_l1_ram[page] is NULL at compile
+             * time (no compiled blocks on this page right now).  Safety:
+             * if code is later compiled on the page, smc_page_epoch bumps
+             * and run_jit_chain invalidates this block for recompilation. */
+            if (size == 4 && jit_l1_ram[phys >> 12] != NULL)
             {
                 uint32_t page = phys >> 12;
                 flush_dirty_consts();

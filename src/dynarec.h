@@ -53,6 +53,7 @@ typedef struct BlockEntry
     uint8_t block_pattern;   /* 0=none, 1=zero-fill (P-ZERO) */
     uint8_t pattern_base_reg;  /* P-ZERO: base pointer PSX register */
     uint8_t pattern_limit_reg; /* P-ZERO: limit register for loop end */
+    uint16_t smc_epoch;       /* P28: page-table epoch at compile time */
 #ifdef ENABLE_JIT_DUMP
     uint32_t exec_count;       /* Per-block execution counter for offline analysis */
 #endif
@@ -178,6 +179,12 @@ extern jit_l2_t jit_l1_bios[JIT_L1_BIOS_PAGES];
  *  Blocks store the gen at compile time; mismatch = stale block.
  * ================================================================ */
 extern uint8_t jit_page_gen[JIT_L1_RAM_PAGES];
+
+/* P28: Epoch counter — incremented each time a new L2 page is allocated
+ * for RAM.  Blocks compiled at an older epoch that skipped SMC checks
+ * (because jit_l1_ram[page] was NULL) are invalidated and recompiled
+ * so they pick up the check for the newly-populated code page. */
+extern uint16_t smc_page_epoch;
 
 static inline void jit_invalidate_page(uint32_t phys_addr)
 {

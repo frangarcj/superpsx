@@ -14,6 +14,9 @@ jit_l2_t jit_l1_bios[JIT_L1_BIOS_PAGES];
 /* ---- SMC page generation counters ---- */
 uint8_t jit_page_gen[JIT_L1_RAM_PAGES];
 
+/* P28: Page-table epoch — bumped on every new L2 page allocation (RAM only) */
+uint16_t smc_page_epoch = 0;
+
 /*
  * SMC (Self-Modifying Code) handler for the JIT inline write fast path.
  * Called when a const-address word store writes to a RAM page.
@@ -196,6 +199,10 @@ BlockEntry *cache_block(uint32_t psx_pc, uint32_t *native)
         l1_table[l1_idx] = calloc(1, sizeof(BlockEntry *) * JIT_L2_ENTRIES);
         if (!l1_table[l1_idx])
             return NULL;
+        /* P28: New code page appeared — bump epoch so blocks that skipped
+         * the SMC check for this page get invalidated and recompiled. */
+        if (l1_table == jit_l1_ram)
+            smc_page_epoch++;
     }
 
     l2_idx = (phys >> 2) & (JIT_L2_ENTRIES - 1);
@@ -217,6 +224,7 @@ BlockEntry *cache_block(uint32_t psx_pc, uint32_t *native)
         be->native = native;
         be->next = NULL;
         be->page_gen = jit_get_page_gen(phys);
+        be->smc_epoch = smc_page_epoch;
     }
     return be;
 }
