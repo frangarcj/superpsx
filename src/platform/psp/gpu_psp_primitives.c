@@ -362,7 +362,195 @@ void Prim_InvalidateGSState(void)
 
 int GPU_TryFastEmit(uint32_t *psx_cmd)
 {
-    (void)psx_cmd;
+    uint32_t cmd_word = psx_cmd[0];
+    uint32_t cmd = (cmd_word >> 24) & 0xFF;
+
+    if (!gs_state.valid || cmd != gs_state.last_cmd_byte)
+        return 0;
+
+    /* ── Polygon fast path (0x20-0x3F) ── */
+    if ((cmd & 0xE0) == 0x20)
+    {
+        int is_quad     = (cmd & 0x08) != 0;
+        int is_shaded   = (cmd & 0x10) != 0;
+        int is_textured = (cmd & 0x04) != 0;
+        int is_raw_tex  = is_textured && (cmd & 0x01);
+        int nv = is_quad ? 4 : 3;
+        int nidx = is_quad ? 6 : 3;
+
+        if (is_textured)
+        {
+            /* Verify texpage matches — tpage is in V1's UV word (same offset
+             * for tris and quads: shaded=5, flat=4) */
+            int tpage_idx = is_shaded ? 5 : 4;
+            uint32_t tpage = psx_cmd[tpage_idx] >> 16;
+            int tx = (tpage & 0xF) * 64;
+            int ty = ((tpage >> 4) & 0x1) * 256;
+            int fmt = (tpage >> 7) & 3;
+
+            if (tx != tex_page_x || ty != tex_page_y || fmt != tex_page_format)
+                return 0;
+
+            /* STP two-pass: never fast-path T4/T8 semi-trans */
+            int is_semi = (cmd & 0x02) != 0;
+            if (is_semi && fmt < 2)
+                return 0;
+
+            uint32_t clut_word = psx_cmd[2] & 0xFFFF0000;
+            if (clut_word != gs_state.last_clut_word)
+                return 0;
+
+            semi_trans_mode = (tpage >> 5) & 3;
+
+            /* ── Emit textured vertices directly to vbatch ── */
+            vbatch_prepare_idx(GU_TRIANGLES,
+                       GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT,
+                       sizeof(PspVertTex), nv, nidx);
+
+            uint16_t base = (uint16_t)vbatch.count;
+            PspVertTex *dst = &vbatch.v.tex[vbatch.count];
+            uint32_t base_color = is_raw_tex ? PSX_to_ABGR(psx_cmd[0])
+                                             : PSX_to_ABGR_texblend(psx_cmd[0]);
+            int p = 1;
+            for (int i = 0; i < nv; i++)
+            {
+                uint32_t color = (i == 0) ? base_color
+                    : is_shaded ? (is_raw_tex ? PSX_to_ABGR(psx_cmd[p++])
+                                              : PSX_to_ABGR_texblend(psx_cmd[p++]))
+                    : base_color;
+                int16_t x, y;
+                PSX_to_PSP((int16_t)(psx_cmd[p] & 0xFFFF), (int16_t)(psx_cmd[p] >> 16), &x, &y);
+                p++;
+                uint32_t uv_clut = psx_cmd[p++];
+                dst[i].u = (float)Apply_Tex_Window_U(uv_clut & 0xFF);
+#ifdef ENABLE_PSP_STRIDE_HACK
+                dst[i].v = (float)Apply_Tex_Window_V((uv_clut >> 8) & 0xFF) * tex_v_scale;
+#else
+                dst[i].v = (float)Apply_Tex_Window_V((uv_clut >> 8) & 0xFF);
+#endif
+                dst[i].color = color; dst[i].x = x; dst[i].y = y; dst[i].z = 0;
+            }
+            vbatch.count += nv;
+
+            uint16_t *ix = &vbatch.idx[vbatch.icount];
+            ix[0] = base; ix[1] = base+1; ix[2] = base+2;
+            if (is_quad) {
+                ix[3] = base+2; ix[4] = base+1; ix[5] = base+3;
+            }
+            vbatch.icount += nidx;
+            gpu_frame_stats.poly_tex++;
+            return p;
+        }
+        else
+        {
+            /* ── Emit flat vertices directly to vbatch ── */
+            vbatch_prepare_idx(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_16BIT,
+                               sizeof(PspVertFlat), nv, nidx);
+
+            uint16_t base = (uint16_t)vbatch.count;
+            PspVertFlat *dst = &vbatch.v.flat[vbatch.count];
+            uint32_t base_color = PSX_to_ABGR(psx_cmd[0]);
+            int p = 1;
+            for (int i = 0; i < nv; i++)
+            {
+                uint32_t color = (i == 0) ? base_color
+                    : is_shaded ? PSX_to_ABGR(psx_cmd[p++]) : base_color;
+                int16_t x, y;
+                PSX_to_PSP((int16_t)(psx_cmd[p] & 0xFFFF), (int16_t)(psx_cmd[p] >> 16), &x, &y);
+                p++;
+                dst[i].color = color; dst[i].x = x; dst[i].y = y; dst[i].z = 0;
+            }
+            vbatch.count += nv;
+
+            uint16_t *ix = &vbatch.idx[vbatch.icount];
+            ix[0] = base; ix[1] = base+1; ix[2] = base+2;
+            if (is_quad) {
+                ix[3] = base+2; ix[4] = base+1; ix[5] = base+3;
+            }
+            vbatch.icount += nidx;
+            gpu_frame_stats.poly_flat++;
+            return p;
+        }
+    }
+
+    /* ── Rectangle fast path (0x60-0x7F) ── */
+    if ((cmd & 0xE0) == 0x60)
+    {
+        int is_textured = (cmd & 0x04) != 0;
+        int is_semi     = (cmd & 0x02) != 0;
+        int is_raw_rect = is_textured && (cmd & 0x01);
+
+        /* STP: never fast-path T4/T8 semi-trans rects */
+        if (is_textured && is_semi && tex_page_format < 2)
+            return 0;
+
+        if (is_textured) {
+            uint32_t clut_word = psx_cmd[2] & 0xFFFF0000;
+            if (clut_word != gs_state.last_clut_word)
+                return 0;
+        }
+
+        uint32_t color = (is_textured && !is_raw_rect)
+                             ? PSX_to_ABGR_texblend(psx_cmd[0])
+                             : PSX_to_ABGR(psx_cmd[0]);
+
+        int16_t x0, y0;
+        int p = 1;
+        PSX_to_PSP((int16_t)(psx_cmd[p] & 0xFFFF), (int16_t)(psx_cmd[p] >> 16), &x0, &y0);
+        p++;
+
+        uint8_t u0 = 0, v0_coord = 0;
+        if (is_textured) {
+            uint32_t uv_clut = psx_cmd[p];
+            u0 = (uint8_t)(uv_clut & 0xFF);
+            v0_coord = (uint8_t)((uv_clut >> 8) & 0xFF);
+            p++;
+        }
+
+        int16_t w, h;
+        int size_code = (cmd >> 3) & 3;
+        if (size_code == 0) {
+            w = (int16_t)(psx_cmd[p] & 0xFFFF);
+            h = (int16_t)(psx_cmd[p] >> 16);
+            p++;
+        } else {
+            static const int16_t sz[] = {0, 1, 8, 16};
+            w = sz[size_code]; h = sz[size_code];
+        }
+
+        if (is_textured) {
+            vbatch_prepare(GU_SPRITES,
+                       GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT,
+                       sizeof(PspVertTex), 2);
+            PspVertTex *v = &vbatch.v.tex[vbatch.count];
+            v[0].u = (float)Apply_Tex_Window_U(u0);
+#ifdef ENABLE_PSP_STRIDE_HACK
+            v[0].v = (float)Apply_Tex_Window_V(v0_coord) * tex_v_scale;
+#else
+            v[0].v = (float)Apply_Tex_Window_V(v0_coord);
+#endif
+            v[0].color = color; v[0].x = x0;     v[0].y = y0;     v[0].z = 0;
+            v[1].u = (float)Apply_Tex_Window_U(u0 + w);
+#ifdef ENABLE_PSP_STRIDE_HACK
+            v[1].v = (float)Apply_Tex_Window_V(v0_coord + h) * tex_v_scale;
+#else
+            v[1].v = (float)Apply_Tex_Window_V(v0_coord + h);
+#endif
+            v[1].color = color; v[1].x = x0 + w; v[1].y = y0 + h; v[1].z = 0;
+            vbatch.count += 2;
+            gpu_frame_stats.rect_tex++;
+        } else {
+            vbatch_prepare(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT,
+                           sizeof(PspVertFlat), 2);
+            PspVertFlat *v = &vbatch.v.flat[vbatch.count];
+            v[0].color = color; v[0].x = x0;     v[0].y = y0;     v[0].z = 0;
+            v[1].color = color; v[1].x = x0 + w; v[1].y = y0 + h; v[1].z = 0;
+            vbatch.count += 2;
+            gpu_frame_stats.rect_flat++;
+        }
+        return p;
+    }
+
     return 0;
 }
 
@@ -370,6 +558,9 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
 {
     uint32_t cmd_word = psx_cmd[0];
     uint32_t cmd = (cmd_word >> 24) & 0xFF;
+
+    /* Any cold-path entry invalidates the fast emit cache */
+    gs_state.valid = 0;
 
     /* FillRect (GP0 0x02) — GU sprite in current list, no flush needed. */
     if (cmd == 0x02)
@@ -461,6 +652,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             }
             vbatch.icount += nidx;
             gpu_frame_stats.poly_flat++;
+            gs_state.valid = 1;
+            gs_state.last_cmd_byte = cmd;
             return p;
         }
         else
@@ -527,6 +720,9 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             }
             vbatch.icount += nidx;
             gpu_frame_stats.poly_tex++;
+            gs_state.valid = 1;
+            gs_state.last_cmd_byte = cmd;
+            gs_state.last_clut_word = clut_word;
 
             return p;
         }
@@ -646,6 +842,9 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             vbatch.count += 2;
             gpu_frame_stats.rect_tex++;
         }
+        gs_state.valid = 1;
+        gs_state.last_cmd_byte = cmd;
+        if (is_textured) gs_state.last_clut_word = clut_word;
         return p;
     }
 

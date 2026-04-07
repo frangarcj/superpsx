@@ -344,6 +344,81 @@ def analyze(frames, show_detail=False, last_n=None):
         print(f"  → State changes interrupt {runs_1} potential batches")
         print()
 
+    # ── Cross-type batching analysis ──
+    # Reparse all frames to compute cross-type runs (ignoring semi-trans bit)
+    cross_runs = []
+    transition_counts = Counter()  # ALL draw→draw transitions where cmd changes
+    for frame in active:
+        cmds = parse_commands(frame["words"])
+        prev_draw_fmt = None
+        prev_draw_cmd = None
+        cur_run = 0
+        for c in cmds:
+            cb = c["cmd"]
+            if is_draw_cmd(cb):
+                fmt = cb & 0xFD  # strip semi-trans bit (bit 1)
+                # Track ALL transitions where draw type changes
+                if prev_draw_cmd is not None and cb != prev_draw_cmd:
+                    transition_counts[(prev_draw_cmd, cb)] += 1
+                if fmt == prev_draw_fmt:
+                    cur_run += 1
+                else:
+                    if cur_run > 0:
+                        cross_runs.append(cur_run)
+                    cur_run = 1
+                    prev_draw_fmt = fmt
+                prev_draw_cmd = cb
+            elif is_env_cmd(cb):
+                pass  # env cmds don't break draws for this analysis
+        if cur_run > 0:
+            cross_runs.append(cur_run)
+
+    if cross_runs and batch_runs:
+        print(f"{'─'*60}")
+        print(f"Cross-Type Batching (ignore semi-trans bit)")
+        print(f"{'─'*60}")
+        cavg = sum(cross_runs) / len(cross_runs)
+        cmax = max(cross_runs)
+        cruns_1 = sum(1 for r in cross_runs if r == 1)
+        cruns_gt4 = sum(1 for r in cross_runs if r > 4)
+        saved = len(batch_runs) - len(cross_runs)
+        print(f"  Same-type runs:   {len(batch_runs):>5}  (avg {avg_run:.1f}, max {max_run})")
+        print(f"  Cross-type runs:  {len(cross_runs):>5}  (avg {cavg:.1f}, max {cmax})")
+        print(f"  Runs eliminated:  {saved:>5}  ({saved*100/len(batch_runs):.1f}%)")
+        print(f"  Single-draw runs: {cruns_1:>5}  (was {runs_1})")
+        print(f"  Long runs (>4):   {cruns_gt4:>5}  (was {runs_gt4})")
+
+        # GIF overhead estimate
+        # Each batch = 3 QW overhead (PRIM AD tag 2QW + REGLIST tag 1QW)
+        # Each sub-batch in cross-type = same 3 QW
+        # Cross-type: fewer batch start/ends = fewer state validations
+        same_overhead = len(batch_runs) * 3 * len(active)  # total QW across frames
+        # In cross-type, eliminated runs become sub-batches (still need PRIM+REGLIST)
+        # But validation overhead is saved on CPU
+        print(f"  CPU validation saves: ~{saved * 80:,} cycles/frame ({saved * 80 / 294000:.2f}ms)")
+        print()
+
+    # ── Transition matrix ──
+    if transition_counts:
+        # Only show transitions that break cross-type batching (different format)
+        hard_breaks = {k: v for k, v in transition_counts.items()
+                       if (k[0] & 0xFD) != (k[1] & 0xFD)}
+        soft_breaks = {k: v for k, v in transition_counts.items()
+                       if (k[0] & 0xFD) == (k[1] & 0xFD) and k[0] != k[1]}
+        if soft_breaks or hard_breaks:
+            print(f"{'─'*60}")
+            print(f"Draw Type Transitions (per {len(active)} frames)")
+            print(f"{'─'*60}")
+            if soft_breaks:
+                print(f"  Soft breaks (semi-trans only, merged by cross-type):")
+                for (f, t), cnt in sorted(soft_breaks.items(), key=lambda x: -x[1])[:10]:
+                    print(f"    {f:02X}h→{t:02X}h ({cmd_name(f)[:15]:>15} → {cmd_name(t)[:15]:<15}): {cnt:>5}  ({cnt/len(active):.1f}/frame)")
+            if hard_breaks:
+                print(f"  Hard breaks (format change, require batch flush):")
+                for (f, t), cnt in sorted(hard_breaks.items(), key=lambda x: -x[1])[:10]:
+                    print(f"    {f:02X}h→{t:02X}h ({cmd_name(f)[:15]:>15} → {cmd_name(t)[:15]:<15}): {cnt:>5}  ({cnt/len(active):.1f}/frame)")
+            print()
+
     # ── VRAM transfers ──
     loads = total_cmd_count.get(0xA0, 0)
     stores = total_cmd_count.get(0xC0, 0)

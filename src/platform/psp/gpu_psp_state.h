@@ -23,6 +23,8 @@ typedef struct {
     int semi_mode;
     int dither;
     int valid;
+    uint8_t last_cmd_byte;    /* last cold-path GP0 command byte */
+    uint32_t last_clut_word;  /* last textured clut_word (upper 16 bits) */
 } gs_state_t;
 
 extern gs_state_t gs_state;

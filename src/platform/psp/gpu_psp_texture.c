@@ -395,6 +395,7 @@ void Prim_InvalidateTexCache(void)
     cached_clut_word = 0xFFFFFFFF;
     cached_tex_base = NULL;
     cached_tex_tpx = -1;
+    gs_state.valid = 0;
 }
 
 void Prim_InvalidateTexCache_Page(int tpx, int tpy)
@@ -402,6 +403,7 @@ void Prim_InvalidateTexCache_Page(int tpx, int tpy)
     for (int i = 0; i < TCACHE_SLOTS; i++)
         if (tcache[i].tpx == tpx && tcache[i].tpy == tpy)
             tcache[i].tpx = -1;
+    gs_state.valid = 0;
 }
 
 void Prim_InvalidateTexCache_Region(int rx, int ry, int rw, int rh)
@@ -419,6 +421,7 @@ void Prim_InvalidateTexCache_Region(int rx, int ry, int rw, int rh)
     cached_clut_word = 0xFFFFFFFF;
     cached_tex_base = NULL;
     cached_tex_tpx = -1;
+    gs_state.valid = 0;
 }
 
 /* ── Texture Cache Stubs (PS2 compatibility interface) ─────────── */
