@@ -63,6 +63,9 @@ extern int buf_image_ptr;
 void Flush_GIF(void);
 void Flush_GIF_Sync(void);
 
+/* ── Polygon batch accumulator (gpu_primitives.c) ────────────────── */
+int GPU_TryBatchAdd(uint32_t *psx_cmd);
+
 #define GIF_TAG_LO(nloop, eop, pre, prim, flg, nreg) \
     (((uint64_t)(nloop) & 0x7FFF) |                  \
      (((uint64_t)(eop) & 1) << 15) |                 \

@@ -168,6 +168,7 @@ int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
             /* ── Polyline-active: rare slow path, word-by-word ── */
             if (polyline_active)
             {
+                Prim_FlushBatch();
                 for (uint32_t i = 0; i < count; i++)
                 {
                     GPU_WriteGP0(*(uint32_t *)&psx_ram[addr]);
@@ -187,6 +188,7 @@ int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                     /* ── Variable-length commands (polylines, LoadImage, StoreImage) ── */
                     if (cmd_size == 0)
                     {
+                        Prim_FlushBatch();
                         if (cmd_byte == 0xA0)
                         {
                             /* LoadImage: fast path if entire block fits in packet */
@@ -220,7 +222,15 @@ int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                     /* ── Draw commands: polys, rects, lines, fill-rect (0x02-0x7F) ── */
                     if (cmd_byte <= 0x7F)
                     {
-                        int size = GPU_TryFastEmit(cmd_ptr);
+                        int size = GPU_TryBatchAdd(cmd_ptr);
+                        if (size > 0)
+                        {
+                            i += size;
+                            addr = (addr + size * 4) & 0x1FFFFC;
+                            continue;
+                        }
+                        Prim_FlushBatch();
+                        size = GPU_TryFastEmit(cmd_ptr);
                         if (size <= 0)
                         {
                             PROF_PUSH(PROF_GPU_PRIM);
@@ -235,6 +245,7 @@ int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                     /* ── VRAM-to-VRAM copy (0x80-0x9F): 4 words ── */
                     if ((cmd_byte & 0xE0) == 0x80)
                     {
+                        Prim_FlushBatch();
                         if (i + 4 <= count)
                         {
                             GPU_WriteGP0(cmd_ptr[0]);
@@ -254,6 +265,7 @@ int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                     }
 
                     /* ── E1-E6 env commands, NOP, etc. ── */
+                    Prim_FlushBatch();
                     GPU_WriteGP0(cmd_word);
                     i++;
                     addr = (addr + 4) & 0x1FFFFC;
@@ -281,6 +293,8 @@ int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
 
             addr = next & 0x1FFFFC;
         }
+
+        Prim_FlushBatch();
 
         if (fast_gif_ptr != (gif_qword_t *)&gif_packet_buf[current_buffer][0])
             Flush_GIF();

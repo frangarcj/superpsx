@@ -114,7 +114,8 @@ void Prim_InvalidateTexCache_Region(int x, int y, int w, int h)
     prim_tex_cache_last = -1;
 }
 
-void Prim_FlushBatch(void) {} /* PS2 does not use batching */
+/* Prim_FlushBatch and GPU_TryBatchAdd are defined below, after all
+ * helper functions (tri_area_abs, prim_tex_cache_lookup, etc.). */
 
 /* Targeted invalidation: entries referencing a specific texture page.
  * Called when a page is re-uploaded (format change or VRAM dirty).
@@ -688,6 +689,301 @@ static void emit_poly_state_and_verts(
                        num_verts == 4 ? "QUAD" : "TRI");
     }
 #endif
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  Triangle Batch Accumulator
+ *
+ *  Collects consecutive same-type triangles and emits them as a single
+ *  REGLIST GIF tag.  Reduces per-primitive overhead (GIF tag + PRIM
+ *  write) from ~8 QW/tri to ~3 + ceil(9N/2)/N QW/tri for runs of N.
+ *
+ *  Only handles non-quad polygons (GP0 0x20-0x3F without bit 3).
+ *  Quads use TRISTRIP mode which can't stack without PRIM reset.
+ * ═══════════════════════════════════════════════════════════════════ */
+#define BATCH_MAX_TRIS 128
+
+static struct {
+    uint64_t data[BATCH_MAX_TRIS * 3 * 3]; /* max 3 regs/vert × 3 verts × N tris */
+    int reg_count;
+    int vert_count;
+    int tri_count;
+    uint64_t prim_packed;
+    int nreg;
+    uint64_t regs_field;
+    uint32_t pixels;
+    uint8_t cmd_byte;
+    uint8_t active;
+    /* Cached state for quick continuation match */
+    int cmd_key;
+    int batch_tex_page_x, batch_tex_page_y;
+    int batch_clut_x, batch_clut_y;
+    int batch_cache_slot;
+    int clut_decoded;
+    int uv_off_u, uv_off_v;
+    int32_t ox, oy;
+} batch;
+
+static int batch_add_tri(uint32_t *psx_cmd, uint32_t cmd)
+{
+    int is_shaded   = (cmd & 0x10) != 0;
+    int is_textured = (cmd & 0x04) != 0;
+
+    uint32_t color = psx_cmd[0] & 0xFFFFFF;
+    uint64_t flat_rgbaq = 0;
+    if (!is_shaded)
+        flat_rgbaq = GS_SET_RGBAQ(color & 0xFF, (color >> 8) & 0xFF,
+                                  (color >> 16) & 0xFF, 0x80, 0x3F800000);
+    int idx = 1;
+
+    for (int v = 0; v < 3; v++) {
+        uint32_t c;
+        if (v == 0)
+            c = color;
+        else if (is_shaded)
+            c = psx_cmd[idx++] & 0xFFFFFF;
+        else
+            c = color;
+
+        uint32_t xy = psx_cmd[idx++];
+        int16_t px = (int16_t)((int32_t)((xy & 0xFFFF) << 21) >> 21);
+        int16_t py = (int16_t)((int32_t)((xy >> 16) << 21) >> 21);
+
+        if (is_textured) {
+            uint32_t uv_word = psx_cmd[idx++];
+            uint32_t u, vc;
+            if (batch.clut_decoded) {
+                u = (uv_word & 0xFF) + batch.uv_off_u;
+                vc = ((uv_word >> 8) & 0xFF) + batch.uv_off_v;
+            } else {
+                u = Apply_Tex_Window_U(uv_word & 0xFF) + batch.batch_tex_page_x;
+                vc = Apply_Tex_Window_V((uv_word >> 8) & 0xFF) + batch.batch_tex_page_y;
+            }
+            batch.data[batch.reg_count++] = GS_SET_XYZ(u << 4, vc << 4, 0);
+        }
+
+        batch.data[batch.reg_count++] = is_shaded
+            ? GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000)
+            : flat_rgbaq;
+
+        batch.data[batch.reg_count++] = GS_SET_XYZ(
+            ((int32_t)px + batch.ox) << 4,
+            ((int32_t)py + batch.oy) << 4, 0);
+    }
+
+    batch.vert_count += 3;
+    batch.tri_count++;
+
+    /* Pixel area estimation */
+    {
+        int16_t x0 = (int16_t)((int32_t)((psx_cmd[1] & 0xFFFF) << 21) >> 21);
+        int16_t y0 = (int16_t)((int32_t)((psx_cmd[1] >> 16) << 21) >> 21);
+        int v1_idx = 1 + 1 + (is_textured ? 1 : 0);
+        if (is_shaded) v1_idx++;
+        int16_t x1 = (int16_t)((int32_t)((psx_cmd[v1_idx] & 0xFFFF) << 21) >> 21);
+        int16_t y1 = (int16_t)((int32_t)((psx_cmd[v1_idx] >> 16) << 21) >> 21);
+        int v2_idx = v1_idx + 1 + (is_textured ? 1 : 0);
+        if (is_shaded) v2_idx++;
+        int16_t x2 = (int16_t)((int32_t)((psx_cmd[v2_idx] & 0xFFFF) << 21) >> 21);
+        int16_t y2 = (int16_t)((int32_t)((psx_cmd[v2_idx] >> 16) << 21) >> 21);
+        batch.pixels += tri_area_abs(x0, y0, x1, y1, x2, y2);
+    }
+
+    /* Frame stats */
+    if (is_textured)
+        gpu_frame_stats.poly_tex++;
+    else
+        gpu_frame_stats.poly_flat++;
+
+    return idx;
+}
+
+void Prim_FlushBatch(void)
+{
+    if (!batch.active || batch.tri_count == 0) return;
+
+    int data_qwords = (batch.reg_count + 1) / 2;
+    int total_need = 3 + data_qwords; /* PRIM(2) + REGLIST tag(1) + data */
+
+    /* Ensure GIF buffer has room */
+    if (fast_gif_ptr + total_need >= gif_buffer_end_safe)
+        Flush_GIF();
+
+    /* Emit PRIM */
+    Push_GIF_Tag(GIF_TAG_LO(1, 0, 0, 0, 0, 1), GIF_REG_AD);
+    Push_GIF_Data(batch.prim_packed, GS_REG_PRIM);
+
+    /* Emit REGLIST with all vertices */
+    Push_GIF_Tag(GIF_TAG_LO(batch.vert_count, 1, 0, 0, 1, batch.nreg),
+                 batch.regs_field);
+
+    for (int i = 0; i < batch.reg_count; i += 2)
+        Push_GIF_Data(batch.data[i],
+                      (i + 1 < batch.reg_count) ? batch.data[i + 1] : 0);
+
+    /* Accumulate pixel cost */
+    gpu_estimated_pixels += batch.pixels;
+
+    batch.active = 0;
+    batch.reg_count = 0;
+    batch.vert_count = 0;
+    batch.tri_count = 0;
+    batch.pixels = 0;
+}
+
+int GPU_TryBatchAdd(uint32_t *psx_cmd)
+{
+    uint32_t cmd_word = psx_cmd[0];
+    uint32_t cmd = (cmd_word >> 24) & 0xFF;
+
+    /* Only batch non-quad triangles (GP0 0x20-0x3F, bit3=0) */
+    if ((cmd & 0xE0) != 0x20 || (cmd & 0x08))
+        return 0;
+
+    int is_shaded     = (cmd & 0x10) != 0;
+    int is_textured   = (cmd & 0x04) != 0;
+    int is_semi_trans  = (cmd & 0x02) != 0;
+    int is_raw_tex    = is_textured && (cmd & 0x01);
+    int use_dither    = dither_enabled && (is_shaded || (is_textured && !is_raw_tex));
+    int cmd_key = is_raw_tex | (use_dither << 1) | (is_semi_trans << 2) |
+                  (semi_trans_mode << 3) | (is_textured << 5);
+
+    /* ── Continuation: quick match against active batch ── */
+    if (batch.active) {
+        if (cmd != batch.cmd_byte || cmd_key != batch.cmd_key ||
+            batch.tri_count >= BATCH_MAX_TRIS) {
+            Prim_FlushBatch();
+            goto start_new;
+        }
+
+        if (is_textured) {
+            /* Quick texpage + CLUT check */
+            int tp_idx = 1 + 1 + 1; /* V0 XY + V0 UV */
+            if (is_shaded) tp_idx++;
+            tp_idx++; /* V1 XY */
+            uint32_t tpage = psx_cmd[tp_idx] >> 16;
+            int tx = (tpage & 0xF) * 64;
+            int ty = ((tpage >> 4) & 0x1) * 256;
+            if (tx != batch.batch_tex_page_x || ty != batch.batch_tex_page_y) {
+                Prim_FlushBatch();
+                goto start_new;
+            }
+            uint32_t uv0 = psx_cmd[2];
+            int clut_x = ((uv0 >> 16) & 0x3F) * 16;
+            int clut_y = (uv0 >> 22) & 0x1FF;
+            if (clut_x != batch.batch_clut_x || clut_y != batch.batch_clut_y) {
+                Prim_FlushBatch();
+                goto start_new;
+            }
+
+            /* Update PSX state (games expect this per textured command) */
+            tex_page_x = tx;
+            tex_page_y = ty;
+            tex_page_format = (tpage >> 7) & 3;
+            semi_trans_mode = (tpage >> 5) & 3;
+            gpu_stat = (gpu_stat & ~0x81FF) | (tpage & 0x1FF);
+            if (gp1_allow_2mb)
+                gpu_stat = (gpu_stat & ~0x8000) | (((tpage >> 11) & 1) << 15);
+            else
+                gpu_stat &= ~0x8000;
+        }
+
+        return batch_add_tri(psx_cmd, cmd);
+    }
+
+start_new:
+    /* ── Start new batch: full state validation (same as GPU_TryFastEmit) ── */
+    if (!gs_state.valid || cmd_key != gs_state.last_cmd_key)
+        return 0;
+
+    int cache_hit = 0;
+    int clut_decoded = 0;
+    int uv_off_u = 0, uv_off_v = 0;
+    int poly_tex_page_x = tex_page_x;
+    int poly_tex_page_y = tex_page_y;
+
+    if (is_textured) {
+        int tp_idx = 1 + 1 + 1;
+        if (is_shaded) tp_idx++;
+        tp_idx++;
+        uint32_t tpage = psx_cmd[tp_idx] >> 16;
+        poly_tex_page_x = (tpage & 0xF) * 64;
+        poly_tex_page_y = ((tpage >> 4) & 0x1) * 256;
+
+        uint32_t uv0 = psx_cmd[2];
+        int clut_x = ((uv0 >> 16) & 0x3F) * 16;
+        int clut_y = (uv0 >> 22) & 0x1FF;
+
+        int fast_format = (tpage >> 7) & 3;
+        cache_hit = prim_tex_cache_lookup(fast_format,
+                                          poly_tex_page_x, poly_tex_page_y,
+                                          clut_x, clut_y);
+        if (!cache_hit) return 0;
+
+        if (prim_tex_cache_last != gs_state.last_cache_slot)
+            return 0;
+
+        if (PTCACHE.csm) {
+            uint64_t this_texclut = GS_SET_TEXCLUT(PSX_VRAM_FBW,
+                                                   clut_x / 16, clut_y);
+            if (gs_state.texclut != this_texclut) return 0;
+        }
+
+        gpu_frame_stats.texcache_hit++;
+        int result = PTCACHE.result;
+        uv_off_u = PTCACHE.hw_tbp0;
+        uv_off_v = PTCACHE.hw_cbp;
+        if (result == 2 || result == 3) {
+            clut_decoded = 1;
+            uv_off_u = 0;
+            uv_off_v = 0;
+        } else if (result == 1) {
+            clut_decoded = 1;
+        }
+
+        tex_page_x = poly_tex_page_x;
+        tex_page_y = poly_tex_page_y;
+        tex_page_format = fast_format;
+        semi_trans_mode = (tpage >> 5) & 3;
+        gpu_stat = (gpu_stat & ~0x81FF) | (tpage & 0x1FF);
+        if (gp1_allow_2mb)
+            gpu_stat = (gpu_stat & ~0x8000) | (((tpage >> 11) & 1) << 15);
+        else
+            gpu_stat &= ~0x8000;
+
+        batch.batch_tex_page_x = poly_tex_page_x;
+        batch.batch_tex_page_y = poly_tex_page_y;
+        batch.batch_clut_x = clut_x;
+        batch.batch_clut_y = clut_y;
+        batch.batch_cache_slot = prim_tex_cache_last;
+        batch.clut_decoded = clut_decoded;
+        batch.uv_off_u = uv_off_u;
+        batch.uv_off_v = uv_off_v;
+    }
+
+    /* Build PRIM register */
+    uint64_t prim_reg = 3; /* TRIANGLE */
+    if (is_shaded)    prim_reg |= (1 << 3);
+    if (is_textured) { prim_reg |= (1 << 4); prim_reg |= (1 << 8); }
+    if (is_semi_trans) prim_reg |= (1 << 6);
+
+    batch.prim_packed = GS_PACK_PRIM_FROM_INT(prim_reg);
+    batch.nreg = is_textured ? 3 : 2;
+    batch.regs_field = is_textured
+        ? ((uint64_t)GIF_REG_UV | ((uint64_t)GIF_REG_RGBAQ << 4) |
+           ((uint64_t)GIF_REG_XYZ2 << 8))
+        : ((uint64_t)GIF_REG_RGBAQ | ((uint64_t)GIF_REG_XYZ2 << 4));
+    batch.cmd_byte = cmd;
+    batch.cmd_key = cmd_key;
+    batch.active = 1;
+    batch.reg_count = 0;
+    batch.vert_count = 0;
+    batch.tri_count = 0;
+    batch.pixels = 0;
+    batch.ox = draw_offset_x + 2048;
+    batch.oy = draw_offset_y + 2048;
+
+    return batch_add_tri(psx_cmd, cmd);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
