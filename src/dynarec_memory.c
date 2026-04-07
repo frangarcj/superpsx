@@ -671,30 +671,35 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         }
         emit(MK_R(0, base, REG_S3, REG_T9, 0, 0x24));  /* and t9, base, s3 (phys) */
         EMIT_ADDU(REG_T9, REG_T9, REG_S1);               /* addu t9, t9, s1 (host) */
+        /* H1: Load directly into destination slot/pinned reg to skip MOVE */
+        int dst = dynarec_load_defer ? REG_V0 : emit_dst_reg(rt_psx, REG_V0);
         if (size == 4)
-            EMIT_LW(REG_V0, offset, REG_T9);
+            EMIT_LW(dst, offset, REG_T9);
         else if (size == 2)
         {
             if (is_signed)
-                EMIT_LH(REG_V0, offset, REG_T9);
+                EMIT_LH(dst, offset, REG_T9);
             else
-                EMIT_LHU(REG_V0, offset, REG_T9);
+                EMIT_LHU(dst, offset, REG_T9);
         }
         else
         {
             if (is_signed)
-                EMIT_LB(REG_V0, offset, REG_T9);
+                EMIT_LB(dst, offset, REG_T9);
             else
-                EMIT_LBU(REG_V0, offset, REG_T9);
+                EMIT_LBU(dst, offset, REG_T9);
         }
         if (!dynarec_load_defer)
-            emit_store_psx_reg(rt_psx, REG_V0);
+            emit_store_psx_reg(rt_psx, dst);
         return;
     }
 
     /* Compute effective address into REG_T8 */
-    emit_load_psx_reg(REG_T8, rs_psx);
-    EMIT_ADDIU(REG_T8, REG_T8, offset);
+    /* H1: Get base from slot/pinned directly to skip MOVE */
+    {
+        int base = emit_use_reg(rs_psx, REG_T8);
+        EMIT_ADDIU(REG_T8, base, offset);
+    }
 
     /* Flush lazy consts before conditional fast/slow split
      * to prevent compile-time dirty-flag leak across paths */
@@ -751,27 +756,29 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     }
     uint32_t *bp_addu = code_ptr;      /* record for TLB backpatch */
     EMIT_ADDU(REG_T9, REG_T9, REG_S1); /* [delay/inline] addu t9, t9, s1 */
+    /* H1: Load directly into destination slot/pinned reg to skip MOVE */
+    int dst = dynarec_load_defer ? REG_V0 : emit_dst_reg(rt_psx, REG_V0);
     uint32_t *bp_fault = code_ptr;     /* record: the load that may TLB-miss */
     if (size == 4)
-        EMIT_LW(REG_V0, 0, REG_T9);
+        EMIT_LW(dst, 0, REG_T9);
     else if (size == 2)
     {
         if (is_signed)
-            EMIT_LH(REG_V0, 0, REG_T9); /* native signed halfword load */
+            EMIT_LH(dst, 0, REG_T9); /* native signed halfword load */
         else
-            EMIT_LHU(REG_V0, 0, REG_T9);
+            EMIT_LHU(dst, 0, REG_T9);
     }
     else
     {
         if (is_signed)
-            EMIT_LB(REG_V0, 0, REG_T9); /* native signed byte load */
+            EMIT_LB(dst, 0, REG_T9); /* native signed byte load */
         else
-            EMIT_LBU(REG_V0, 0, REG_T9);
+            EMIT_LBU(dst, 0, REG_T9);
     }
 
     /* Fast path falls through — store result immediately */
     if (!dynarec_load_defer)
-        emit_store_psx_reg(rt_psx, REG_V0);
+        emit_store_psx_reg(rt_psx, dst);
 
     /* Queue TLB backpatch entry when TLB is active (for runtime patching on miss) */
     if (psx_tlb_base && tlb_bp_count < MAX_TLB_BP)
@@ -1031,14 +1038,9 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     if (pure_ram_store && !psx_tlb_base)
     {
         reg_cache_invalidate();
-        /* Get base register — use pinned reg directly to avoid MOVE */
-        int base = psx_pinned_reg[rs_psx];
-        if (!base)
-        {
-            emit_load_psx_reg(REG_T8, rs_psx);
-            base = REG_T8;
-        }
-        emit_load_psx_reg(REG_T9, rt_psx); /* data value */
+        /* H1: Get base and data directly from slot/pinned regs when possible */
+        int base = emit_use_reg(rs_psx, REG_T8);
+        int src = emit_use_reg(rt_psx, REG_T9);
 
         uint32_t *isc_skip = NULL;
         if (!block_isc_skip)
@@ -1050,11 +1052,11 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         emit(MK_R(0, base, REG_S3, REG_AT, 0, 0x24));   /* and at,base,s3 */
         EMIT_ADDU(REG_AT, REG_AT, REG_S1); /* addu at, at, s1     */
         if (size == 4)
-            EMIT_SW(REG_T9, offset, REG_AT);
+            EMIT_SW(src, offset, REG_AT);
         else if (size == 2)
-            EMIT_SH(REG_T9, offset, REG_AT);
+            EMIT_SH(src, offset, REG_AT);
         else
-            EMIT_SB(REG_T9, offset, REG_AT);
+            EMIT_SB(src, offset, REG_AT);
 
         if (isc_skip)
         {
@@ -1065,9 +1067,12 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     }
 
     /* Compute effective address into REG_T8, data into REG_T9 */
-    emit_load_psx_reg(REG_T8, rs_psx);
-    EMIT_ADDIU(REG_T8, REG_T8, offset);
-    emit_load_psx_reg(REG_T9, rt_psx); /* data value */
+    /* H1: Get base from slot/pinned directly to skip MOVE */
+    {
+        int base = emit_use_reg(rs_psx, REG_T8);
+        EMIT_ADDIU(REG_T8, base, offset);
+    }
+    emit_load_psx_reg(REG_T9, rt_psx); /* data value (T9 required by cold path) */
 
     /* Flush lazy consts before conditional fast/slow split
      * to prevent compile-time dirty-flag leak across paths */
