@@ -694,28 +694,38 @@ static void emit_poly_state_and_verts(
 /* ═══════════════════════════════════════════════════════════════════
  *  Triangle Batch Accumulator
  *
- *  Collects consecutive same-type triangles and emits them as a single
- *  REGLIST GIF tag.  Reduces per-primitive overhead (GIF tag + PRIM
- *  write) from ~8 QW/tri to ~3 + ceil(9N/2)/N QW/tri for runs of N.
+ *  Collects consecutive triangles with the same vertex format and
+ *  emits them as REGLIST GIF tags.  Allows cross-type batching:
+ *  GP0.34h (opaque tex) ↔ GP0.36h (semi-trans tex) share the same
+ *  vertex format — only PRIM.ABE differs.  PRIM switch points are
+ *  recorded and emitted as separate PRIM+REGLIST pairs at flush time.
  *
  *  Only handles non-quad polygons (GP0 0x20-0x3F without bit 3).
  *  Quads use TRISTRIP mode which can't stack without PRIM reset.
  * ═══════════════════════════════════════════════════════════════════ */
 #define BATCH_MAX_TRIS 128
+#define BATCH_MAX_SUBS 32
+
+typedef struct {
+    int vert_start;        /* first vertex index for this sub-batch */
+    int reg_start;         /* first index in data[] */
+    uint64_t prim_packed;  /* PRIM register value */
+} BatchSub;
 
 static struct {
     uint64_t data[BATCH_MAX_TRIS * 3 * 3]; /* max 3 regs/vert × 3 verts × N tris */
+    BatchSub subs[BATCH_MAX_SUBS];
+    int sub_count;
     int reg_count;
     int vert_count;
     int tri_count;
-    uint64_t prim_packed;
     int nreg;
     uint64_t regs_field;
     uint32_t pixels;
     uint8_t cmd_byte;
     uint8_t active;
-    /* Cached state for quick continuation match */
-    int cmd_key;
+    /* Cached state for quick continuation match (format key, ignoring semi-trans) */
+    int fmt_key;  /* cmd_key with is_semi_trans bit stripped */
     int batch_tex_page_x, batch_tex_page_y;
     int batch_clut_x, batch_clut_y;
     int batch_cache_slot;
@@ -802,24 +812,37 @@ void Prim_FlushBatch(void)
 {
     if (!batch.active || batch.tri_count == 0) return;
 
-    int data_qwords = (batch.reg_count + 1) / 2;
-    int total_need = 3 + data_qwords; /* PRIM(2) + REGLIST tag(1) + data */
+    /* Emit each sub-batch as PRIM + REGLIST */
+    for (int s = 0; s < batch.sub_count; s++) {
+        int v_start = batch.subs[s].vert_start;
+        int v_end = (s + 1 < batch.sub_count)
+                  ? batch.subs[s + 1].vert_start
+                  : batch.vert_count;
+        int v_count = v_end - v_start;
+        if (v_count <= 0) continue;
 
-    /* Ensure GIF buffer has room */
-    if (fast_gif_ptr + total_need >= gif_buffer_end_safe)
-        Flush_GIF();
+        int r_start = batch.subs[s].reg_start;
+        int r_end = (s + 1 < batch.sub_count)
+                  ? batch.subs[s + 1].reg_start
+                  : batch.reg_count;
+        int r_count = r_end - r_start;
 
-    /* Emit PRIM */
-    Push_GIF_Tag(GIF_TAG_LO(1, 0, 0, 0, 0, 1), GIF_REG_AD);
-    Push_GIF_Data(batch.prim_packed, GS_REG_PRIM);
+        int data_qwords = (r_count + 1) / 2;
+        int total_need = 3 + data_qwords;
 
-    /* Emit REGLIST with all vertices */
-    Push_GIF_Tag(GIF_TAG_LO(batch.vert_count, 1, 0, 0, 1, batch.nreg),
-                 batch.regs_field);
+        if (fast_gif_ptr + total_need >= gif_buffer_end_safe)
+            Flush_GIF();
 
-    for (int i = 0; i < batch.reg_count; i += 2)
-        Push_GIF_Data(batch.data[i],
-                      (i + 1 < batch.reg_count) ? batch.data[i + 1] : 0);
+        Push_GIF_Tag(GIF_TAG_LO(1, 0, 0, 0, 0, 1), GIF_REG_AD);
+        Push_GIF_Data(batch.subs[s].prim_packed, GS_REG_PRIM);
+
+        Push_GIF_Tag(GIF_TAG_LO(v_count, 1, 0, 0, 1, batch.nreg),
+                     batch.regs_field);
+
+        for (int i = r_start; i < r_start + r_count; i += 2)
+            Push_GIF_Data(batch.data[i],
+                          (i + 1 < r_start + r_count) ? batch.data[i + 1] : 0);
+    }
 
     /* Accumulate pixel cost */
     gpu_estimated_pixels += batch.pixels;
@@ -847,10 +870,15 @@ int GPU_TryBatchAdd(uint32_t *psx_cmd)
     int use_dither    = dither_enabled && (is_shaded || (is_textured && !is_raw_tex));
     int cmd_key = is_raw_tex | (use_dither << 1) | (is_semi_trans << 2) |
                   (semi_trans_mode << 3) | (is_textured << 5);
+    /* Format key: cmd_key without the semi-transparency enable bit (bit 2).
+     * Commands differing only in ABE have the same vertex layout. */
+    int fmt_key = cmd_key & ~0x04;
 
-    /* ── Continuation: quick match against active batch ── */
+    /* ── Continuation: relaxed match (allow ABE to differ) ── */
     if (batch.active) {
-        if (cmd != batch.cmd_byte || cmd_key != batch.cmd_key ||
+        /* Hard break: different vertex format, texpage, or buffer full */
+        if (((cmd ^ batch.cmd_byte) & 0xFD) != 0 ||
+            fmt_key != batch.fmt_key ||
             batch.tri_count >= BATCH_MAX_TRIS) {
             Prim_FlushBatch();
             goto start_new;
@@ -886,6 +914,25 @@ int GPU_TryBatchAdd(uint32_t *psx_cmd)
                 gpu_stat = (gpu_stat & ~0x8000) | (((tpage >> 11) & 1) << 15);
             else
                 gpu_stat &= ~0x8000;
+        }
+
+        /* ABE changed? → start new sub-batch (not a full flush) */
+        if ((cmd & 0x02) != (batch.cmd_byte & 0x02)) {
+            if (batch.sub_count >= BATCH_MAX_SUBS) {
+                Prim_FlushBatch();
+                goto start_new;
+            }
+            /* Build new PRIM with updated ABE */
+            uint64_t prim_reg = 3; /* TRIANGLE */
+            if (is_shaded)    prim_reg |= (1 << 3);
+            if (is_textured) { prim_reg |= (1 << 4); prim_reg |= (1 << 8); }
+            if (is_semi_trans) prim_reg |= (1 << 6);
+
+            batch.subs[batch.sub_count].vert_start = batch.vert_count;
+            batch.subs[batch.sub_count].reg_start  = batch.reg_count;
+            batch.subs[batch.sub_count].prim_packed = GS_PACK_PRIM_FROM_INT(prim_reg);
+            batch.sub_count++;
+            batch.cmd_byte = cmd;
         }
 
         return batch_add_tri(psx_cmd, cmd);
@@ -967,19 +1014,22 @@ start_new:
     if (is_textured) { prim_reg |= (1 << 4); prim_reg |= (1 << 8); }
     if (is_semi_trans) prim_reg |= (1 << 6);
 
-    batch.prim_packed = GS_PACK_PRIM_FROM_INT(prim_reg);
     batch.nreg = is_textured ? 3 : 2;
     batch.regs_field = is_textured
         ? ((uint64_t)GIF_REG_UV | ((uint64_t)GIF_REG_RGBAQ << 4) |
            ((uint64_t)GIF_REG_XYZ2 << 8))
         : ((uint64_t)GIF_REG_RGBAQ | ((uint64_t)GIF_REG_XYZ2 << 4));
     batch.cmd_byte = cmd;
-    batch.cmd_key = cmd_key;
+    batch.fmt_key = fmt_key;
     batch.active = 1;
     batch.reg_count = 0;
     batch.vert_count = 0;
     batch.tri_count = 0;
     batch.pixels = 0;
+    batch.sub_count = 1;
+    batch.subs[0].vert_start = 0;
+    batch.subs[0].reg_start = 0;
+    batch.subs[0].prim_packed = GS_PACK_PRIM_FROM_INT(prim_reg);
     batch.ox = draw_offset_x + 2048;
     batch.oy = draw_offset_y + 2048;
 
