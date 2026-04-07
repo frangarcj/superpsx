@@ -421,23 +421,11 @@ static inline void emit(uint32_t inst)
 #define EMIT_MTLO1(rs) emit(MK_R(0, (rs), 0, 0, 0, 0x13))
 #define EMIT_MTHI1(rs) emit(MK_R(0, (rs), 0, 0, 0, 0x11))
 
-/* PMAXW(rd,rs,rt) = MAX(rs,rt)→rd.  All callers have rd==rs.
- * PSP fallback: SLT AT,rs,rt; MOVN rd,rt,AT  (if rs<rt: rd=rt) */
-#define EMIT_PMAXW(rd, rs, rt)                                            \
-    do                                                                    \
-    {                                                                     \
-        emit(MK_R(0, (rs), (rt), REG_AT, 0, 0x2A)); /* SLT AT, rs, rt */  \
-        emit(MK_R(0, (rt), REG_AT, (rd), 0, 0x0B)); /* MOVN rd, rt, AT */ \
-    } while (0)
+/* PMAXW(rd,rs,rt) = MAX(rs,rt)→rd.  Allegrex has native max (SPECIAL func 0x2C) */
+#define EMIT_PMAXW(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x2C))
 
-/* PMINW(rd,rs,rt) = MIN(rs,rt)→rd.  All callers have rd==rs.
- * PSP fallback: SLT AT,rt,rs; MOVN rd,rt,AT  (if rt<rs: rd=rt) */
-#define EMIT_PMINW(rd, rs, rt)                                            \
-    do                                                                    \
-    {                                                                     \
-        emit(MK_R(0, (rt), (rs), REG_AT, 0, 0x2A)); /* SLT AT, rt, rs */  \
-        emit(MK_R(0, (rt), REG_AT, (rd), 0, 0x0B)); /* MOVN rd, rt, AT */ \
-    } while (0)
+/* PMINW(rd,rs,rt) = MIN(rs,rt)→rd.  Allegrex has native min (SPECIAL func 0x2D) */
+#define EMIT_PMINW(rd, rs, rt) emit(MK_R(0, (rs), (rt), (rd), 0, 0x2D))
 
 #else /* PLATFORM_PS2 (R5900) */
 #define EMIT_MULT1(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x18))
@@ -513,19 +501,25 @@ static inline void emit(uint32_t inst)
  * ================================================================ */
 #ifdef PLATFORM_PSP
 
-/* VFPU register numbering (column vectors for quad loads, scalars for mtv/mfv) */
-#define VFPU_C000 0  /* Matrix row 1 */
+/* VFPU register numbering:
+ *   Column vectors (for lv.q/sv.q):  5-bit encoding = bank*4 + col
+ *   Scalars (for mtv/mfv):           7-bit encoding = bank*4 + col + row*32
+ *   Column Cx00 elements: Sx00(row0), Sx01(row1), Sx02(row2), Sx03(row3)
+ *   So C100 elements are at scalar indices: 4, 36, 68, 100
+ *   And C300 elements are at scalar indices: 12, 44, 76, 108 */
+#define VFPU_C000 0  /* Matrix row 1 (column vector) */
 #define VFPU_C010 1  /* Matrix row 2 */
 #define VFPU_C020 2  /* Matrix row 3 */
 #define VFPU_C100 4  /* Input vertex */
 #define VFPU_C200 8  /* Translation */
 #define VFPU_C300 12 /* Result */
-#define VFPU_S100 4  /* Vertex X */
-#define VFPU_S110 5  /* Vertex Y */
-#define VFPU_S120 6  /* Vertex Z */
-#define VFPU_S300 12 /* Result MAC1 */
-#define VFPU_S310 13 /* Result MAC2 */
-#define VFPU_S320 14 /* Result MAC3 */
+/* Scalar encoding: bank*4 + col + row*32 */
+#define VFPU_S100  4 /* C100[0] row 0 — Vertex X */
+#define VFPU_S101 36 /* C100[1] row 1 — Vertex Y */
+#define VFPU_S102 68 /* C100[2] row 2 — Vertex Z */
+#define VFPU_S300 12 /* C300[0] row 0 — Result MAC1 */
+#define VFPU_S301 44 /* C300[1] row 1 — Result MAC2 */
+#define VFPU_S302 76 /* C300[2] row 2 — Result MAC3 */
 
 /* lv.q vt, offset(rs) — load 128-bit quad to VFPU column register.
  * Encoding: [31:26]=0x36 | [25:21]=rs | [20:16]=vt | [15:2]=offset>>2 | [1:0]=0 */

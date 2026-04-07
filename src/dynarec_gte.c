@@ -481,7 +481,67 @@ static void emit_inline_mvmva(int mx, int v, int cv, int sf, int lm)
 #if defined(PLATFORM_PS2) || defined(ENABLE_VU0_MICRO)
         return;
 #endif
-        /* PSP: fall through to integer MADD path (same approach as POPS) */
+
+#ifdef PLATFORM_PSP
+        /* PSP VFPU path (sf=1): float matrix × vertex via vtfm3.t.
+         * Same precision trade-off as PS2 VU0: float32 (24-bit mantissa)
+         * vs exact 44-bit integer.  Acceptable for real games. */
+        {
+            /* C lite call: refresh matrix cache if dirty → vu0_jit_cache */
+            uint32_t mx_cv = (uint32_t)(mx | (cv << 2));
+            EMIT_MOVE(REG_A0, REG_S0);
+            EMIT_ORI(REG_A1, REG_ZERO, mx_cv);
+            emit_call_c_lite((uint32_t)(uintptr_t)vu0_prepare_mvmva);
+
+            /* Load matrix rows + translation into VFPU registers */
+            emit_load_imm32(REG_T8, (uint32_t)(uintptr_t)&vu0_jit_cache);
+            EMIT_LV_Q(VFPU_C000, 0, REG_T8);   /* row1 → M000 col0 */
+            EMIT_LV_Q(VFPU_C010, 16, REG_T8);  /* row2 → M000 col1 */
+            EMIT_LV_Q(VFPU_C020, 32, REG_T8);  /* row3 → M000 col2 */
+            EMIT_LV_Q(VFPU_C200, 48, REG_T8);  /* trans → C200 */
+
+            /* Load vertex int16 → GPR */
+            if (v < 3)
+            {
+                int base = v * 2;
+                EMIT_LH(REG_V0, CPU_CP2_DATA(base) + 0, REG_S0);
+                EMIT_LH(REG_V1, CPU_CP2_DATA(base) + 2, REG_S0);
+                EMIT_LH(REG_A0, CPU_CP2_DATA(base + 1), REG_S0);
+            }
+            else
+            {
+                EMIT_LH(REG_V0, CPU_CP2_DATA(9), REG_S0);
+                EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);
+                EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);
+            }
+
+            /* GPR → VFPU scalar → float conversion */
+            EMIT_MTV(REG_V0, VFPU_S100); /* VX → S100 */
+            EMIT_MTV(REG_V1, VFPU_S101); /* VY → S101 */
+            EMIT_MTV(REG_A0, VFPU_S102); /* VZ → S102 */
+            EMIT_VI2F_Q(VFPU_C100, VFPU_C100); /* int32→float C100 */
+
+            /* Matrix × Vector + Translation */
+            EMIT_VTFM3_T_C300_M000_C100(); /* C300 = M000 × C100 */
+            EMIT_VADD_T_C300_C300_C200();  /* C300 += C200 (translation) */
+
+            /* Float → int32 (round to nearest) */
+            EMIT_VF2IN_Q(VFPU_C300, VFPU_C300);
+
+            /* VFPU → GPR */
+            EMIT_MFV(REG_V0, VFPU_S300); /* MAC1 */
+            EMIT_MFV(REG_V1, VFPU_S301); /* MAC2 */
+            EMIT_MFV(REG_A0, VFPU_S302); /* MAC3 */
+
+            /* Store MAC1-3 + IR saturation + FLAG=0 */
+            EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);
+            EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);
+            EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);
+            emit_ir_sat_store(lm);
+            return;
+        }
+#endif /* PLATFORM_PSP */
+        /* PSP sf=0 or other: fall through to integer MADD path */
     }
     /* --- Integer MADD path (PSP: all cases; PS2: sf=0 only) --- */
     /* Load vector into V0/V1/A0 */
