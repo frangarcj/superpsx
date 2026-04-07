@@ -288,6 +288,37 @@ static void emit_vu0_vertex_multiply(int v, int lm, int vf_col1, int t8_valid)
 }
 #endif /* !ENABLE_VU0_MICRO && PLATFORM_PS2 */
 
+#ifdef PLATFORM_PSP
+/* ---- P31: Shared VFPU matrix loading for ×3 commands ----
+ * When vfpu_preloaded[mx] != 0, a ×3 caller has already loaded the matrix
+ * into VFPU registers.  emit_inline_mvmva skips the C call + lv.q.
+ * Value: 0=not loaded, 1=slot1 (M000/C200), 2=slot2 (M400/C600).
+ * Index: 0=RT, 1=Light, 2=Color. */
+static int vfpu_preloaded[3] = {0, 0, 0};
+
+/* Emit C call + lv.q to preload a matrix into VFPU registers.
+ * slot=1: M000(C000/C010/C020) + C200,  slot=2: M400(C400/C410/C420) + C600 */
+static void emit_vfpu_preload_matrix(int mx, int cv, int slot)
+{
+    uint32_t mx_cv = (uint32_t)(mx | (cv << 2));
+    EMIT_MOVE(REG_A0, REG_S0);
+    EMIT_ORI(REG_A1, REG_ZERO, mx_cv);
+    emit_call_c_lite((uint32_t)(uintptr_t)vu0_prepare_mvmva);
+    emit_load_imm32(REG_T8, (uint32_t)(uintptr_t)&vu0_jit_cache);
+    if (slot == 2) {
+        EMIT_LV_Q(VFPU_C400, 0, REG_T8);
+        EMIT_LV_Q(VFPU_C410, 16, REG_T8);
+        EMIT_LV_Q(VFPU_C420, 32, REG_T8);
+        EMIT_LV_Q(VFPU_C600, 48, REG_T8);
+    } else {
+        EMIT_LV_Q(VFPU_C000, 0, REG_T8);
+        EMIT_LV_Q(VFPU_C010, 16, REG_T8);
+        EMIT_LV_Q(VFPU_C020, 32, REG_T8);
+        EMIT_LV_Q(VFPU_C200, 48, REG_T8);
+    }
+}
+#endif /* PLATFORM_PSP */
+
 #ifdef ENABLE_VU0_MICRO
 #include "vu0_micro_ps2.h"
 
@@ -487,18 +518,22 @@ static void emit_inline_mvmva(int mx, int v, int cv, int sf, int lm)
          * Same precision trade-off as PS2 VU0: float32 (24-bit mantissa)
          * vs exact 44-bit integer.  Acceptable for real games. */
         {
-            /* C lite call: refresh matrix cache if dirty → vu0_jit_cache */
-            uint32_t mx_cv = (uint32_t)(mx | (cv << 2));
-            EMIT_MOVE(REG_A0, REG_S0);
-            EMIT_ORI(REG_A1, REG_ZERO, mx_cv);
-            emit_call_c_lite((uint32_t)(uintptr_t)vu0_prepare_mvmva);
+            int preloaded = (mx < 3) ? vfpu_preloaded[mx] : 0;
 
-            /* Load matrix rows + translation into VFPU registers */
-            emit_load_imm32(REG_T8, (uint32_t)(uintptr_t)&vu0_jit_cache);
-            EMIT_LV_Q(VFPU_C000, 0, REG_T8);   /* row1 → M000 col0 */
-            EMIT_LV_Q(VFPU_C010, 16, REG_T8);  /* row2 → M000 col1 */
-            EMIT_LV_Q(VFPU_C020, 32, REG_T8);  /* row3 → M000 col2 */
-            EMIT_LV_Q(VFPU_C200, 48, REG_T8);  /* trans → C200 */
+            if (!preloaded)
+            {
+                /* Standalone: C call to refresh cache + load into slot 1 */
+                uint32_t mx_cv = (uint32_t)(mx | (cv << 2));
+                EMIT_MOVE(REG_A0, REG_S0);
+                EMIT_ORI(REG_A1, REG_ZERO, mx_cv);
+                emit_call_c_lite((uint32_t)(uintptr_t)vu0_prepare_mvmva);
+                emit_load_imm32(REG_T8, (uint32_t)(uintptr_t)&vu0_jit_cache);
+                EMIT_LV_Q(VFPU_C000, 0, REG_T8);   /* row1 → M000 col0 */
+                EMIT_LV_Q(VFPU_C010, 16, REG_T8);  /* row2 → M000 col1 */
+                EMIT_LV_Q(VFPU_C020, 32, REG_T8);  /* row3 → M000 col2 */
+                EMIT_LV_Q(VFPU_C200, 48, REG_T8);  /* trans → C200 */
+            }
+            /* else: P31 — matrix already in VFPU from ×3 preload */
 
             /* Load vertex int16 → GPR */
             if (v < 3)
@@ -521,9 +556,17 @@ static void emit_inline_mvmva(int mx, int v, int cv, int sf, int lm)
             EMIT_MTV(REG_A0, VFPU_S102); /* VZ → S102 */
             EMIT_VI2F_Q(VFPU_C100, VFPU_C100); /* int32→float C100 */
 
-            /* Matrix × Vector + Translation */
-            EMIT_VTFM3_T_C300_M000_C100(); /* C300 = M000 × C100 */
-            EMIT_VADD_T_C300_C300_C200();  /* C300 += C200 (translation) */
+            /* Matrix × Vector + Translation (use slot 2 if preloaded there) */
+            if (preloaded == 2)
+            {
+                EMIT_VTFM3_T_C300_M400_C100(); /* C300 = M400 × C100 */
+                EMIT_VADD_T_C300_C300_C600();   /* C300 += C600 */
+            }
+            else
+            {
+                EMIT_VTFM3_T_C300_M000_C100();  /* C300 = M000 × C100 */
+                EMIT_VADD_T_C300_C300_C200();   /* C300 += C200 */
+            }
 
             /* Float → int32 (round to nearest) */
             EMIT_VF2IN_Q(VFPU_C300, VFPU_C300);
@@ -1395,10 +1438,16 @@ void emit_gte_instruction(uint32_t opcode, uint32_t psx_pc)
                 vu0_preloaded[1] = 0;
                 vu0_preloaded[2] = 0;
 #elif defined(PLATFORM_PSP)
-                /* VFPU: call core ×3 (M000 can hold only one matrix) */
+                /* P31: preload Light(slot1) + Color(slot2) once */
+                emit_vfpu_preload_matrix(1, 3, 1);
+                emit_vfpu_preload_matrix(2, 1, 2);
+                vfpu_preloaded[1] = 1;
+                vfpu_preloaded[2] = 2;
                 emit_ncds_core(0, gte_sf, gte_lm);
                 emit_ncds_core(1, gte_sf, gte_lm);
                 emit_ncds_core(2, gte_sf, gte_lm);
+                vfpu_preloaded[1] = 0;
+                vfpu_preloaded[2] = 0;
 #endif
             }
             else
@@ -1500,10 +1549,16 @@ void emit_gte_instruction(uint32_t opcode, uint32_t psx_pc)
                 vu0_preloaded[1] = 0;
                 vu0_preloaded[2] = 0;
 #elif defined(PLATFORM_PSP)
-                /* VFPU: call core ×3 (M000 can hold only one matrix) */
+                /* P31: preload Light(slot1) + Color(slot2) once */
+                emit_vfpu_preload_matrix(1, 3, 1);
+                emit_vfpu_preload_matrix(2, 1, 2);
+                vfpu_preloaded[1] = 1;
+                vfpu_preloaded[2] = 2;
                 emit_ncs_core(0, gte_sf, gte_lm);
                 emit_ncs_core(1, gte_sf, gte_lm);
                 emit_ncs_core(2, gte_sf, gte_lm);
+                vfpu_preloaded[1] = 0;
+                vfpu_preloaded[2] = 0;
 #endif
             }
             else
@@ -1778,10 +1833,13 @@ void emit_gte_instruction(uint32_t opcode, uint32_t psx_pc)
                 emit_rtps_core(2, gte_sf, gte_lm, 1);
                 vu0_preloaded[0] = 0;
 #elif defined(PLATFORM_PSP)
-                /* Integer MADD: no matrix preloading (POPS-style) */
+                /* P31: preload RT matrix once */
+                emit_vfpu_preload_matrix(0, 0, 1);
+                vfpu_preloaded[0] = 1;
                 emit_rtps_core(0, gte_sf, gte_lm, 0);
                 emit_rtps_core(1, gte_sf, gte_lm, 0);
                 emit_rtps_core(2, gte_sf, gte_lm, 1);
+                vfpu_preloaded[0] = 0;
 #endif
             }
             else
@@ -2084,10 +2142,16 @@ void emit_gte_instruction(uint32_t opcode, uint32_t psx_pc)
                 vu0_preloaded[1] = 0;
                 vu0_preloaded[2] = 0;
 #elif defined(PLATFORM_PSP)
-                /* VFPU: call core ×3 (M000 can hold only one matrix) */
+                /* P31: preload Light(slot1) + Color(slot2) once */
+                emit_vfpu_preload_matrix(1, 3, 1);
+                emit_vfpu_preload_matrix(2, 1, 2);
+                vfpu_preloaded[1] = 1;
+                vfpu_preloaded[2] = 2;
                 emit_nccs_core(0, gte_sf, gte_lm);
                 emit_nccs_core(1, gte_sf, gte_lm);
                 emit_nccs_core(2, gte_sf, gte_lm);
+                vfpu_preloaded[1] = 0;
+                vfpu_preloaded[2] = 0;
 #endif
             }
             else

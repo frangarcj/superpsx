@@ -507,12 +507,16 @@ static inline void emit(uint32_t inst)
  *   Column Cx00 elements: Sx00(row0), Sx01(row1), Sx02(row2), Sx03(row3)
  *   So C100 elements are at scalar indices: 4, 36, 68, 100
  *   And C300 elements are at scalar indices: 12, 44, 76, 108 */
-#define VFPU_C000 0  /* Matrix row 1 (column vector) */
-#define VFPU_C010 1  /* Matrix row 2 */
-#define VFPU_C020 2  /* Matrix row 3 */
+#define VFPU_C000 0  /* Slot 1: Matrix row 1 (column vector) */
+#define VFPU_C010 1  /* Slot 1: Matrix row 2 */
+#define VFPU_C020 2  /* Slot 1: Matrix row 3 */
 #define VFPU_C100 4  /* Input vertex */
-#define VFPU_C200 8  /* Translation */
+#define VFPU_C200 8  /* Slot 1: Translation */
 #define VFPU_C300 12 /* Result */
+#define VFPU_C400 16 /* Slot 2: Matrix row 1 */
+#define VFPU_C410 17 /* Slot 2: Matrix row 2 */
+#define VFPU_C420 18 /* Slot 2: Matrix row 3 */
+#define VFPU_C600 24 /* Slot 2: Translation */
 /* Scalar encoding: bank*4 + col + row*32 */
 #define VFPU_S100  4 /* C100[0] row 0 — Vertex X */
 #define VFPU_S101 36 /* C100[1] row 1 — Vertex Y */
@@ -551,9 +555,15 @@ static inline void emit(uint32_t inst)
  * Fixed encoding: vtfm3.t C300, M000, C100 = 0xF104800C */
 #define EMIT_VTFM3_T_C300_M000_C100() emit(0xF104800Cu)
 
+/* vtfm3.t C300, M400, C100 = 0xF104900C (slot 2 matrix) */
+#define EMIT_VTFM3_T_C300_M400_C100() emit(0xF104900Cu)
+
 /* vadd.t vd, vs, vt — vector add (triple).
  * Fixed encoding: vadd.t C300, C300, C200 = 0x60088C0C */
 #define EMIT_VADD_T_C300_C300_C200() emit(0x60088C0Cu)
+
+/* vadd.t C300, C300, C600 = 0x60188C0C (slot 2 translation) */
+#define EMIT_VADD_T_C300_C300_C600() emit(0x60188C0Cu)
 
 #endif /* PLATFORM_PSP — VFPU emitters */
 
