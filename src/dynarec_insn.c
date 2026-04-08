@@ -241,11 +241,13 @@ static void emit_cu_check(int cop_num, uint32_t psx_pc)
         uint8_t  saved_loaded = dyn_slot_loaded_mask;
         uint32_t saved_smrv   = smrv_known_ram;
         uint32_t saved_align  = align_known_mask;
+        int      saved_hbase  = mem_host_base_psx;
         emit_call_c((uint32_t)Helper_CU_Exception);
         dyn_dirty_mask       = saved_dirty;
         dyn_slot_loaded_mask = saved_loaded;
         smrv_known_ram       = saved_smrv;
         align_known_mask     = saved_align;
+        mem_host_base_psx    = saved_hbase;
     }
 
     /* Patch BNE offset */
@@ -265,11 +267,6 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     uint16_t uimm = IMM16(opcode);
 
     emit_current_psx_pc = psx_pc;
-
-    /* Host-base cache: snapshot the current cache state for memory emitters,
-     * then pessimistically invalidate.  Memory functions will re-set it. */
-    mem_host_base_snapshot = mem_host_base_psx;
-    mem_host_base_psx = -1;
 
     if (opcode == 0)
         return 0; /* NOP */
@@ -324,6 +321,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         case 0x04: /* SLLV */
         {
             mark_vreg_var(rd);
+            mem_host_base_psx = -1;
             int s1 = emit_use_reg(rt, REG_T8);
             int s2 = emit_use_reg(rs, REG_T9);
             int d = emit_dst_reg(rd, REG_T8);
@@ -334,6 +332,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         case 0x06: /* SRLV */
         {
             mark_vreg_var(rd);
+            mem_host_base_psx = -1;
             int s1 = emit_use_reg(rt, REG_T8);
             int s2 = emit_use_reg(rs, REG_T9);
             int d = emit_dst_reg(rd, REG_T8);
@@ -344,6 +343,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         case 0x07: /* SRAV */
         {
             mark_vreg_var(rd);
+            mem_host_base_psx = -1;
             int s1 = emit_use_reg(rt, REG_T8);
             int s2 = emit_use_reg(rs, REG_T9);
             int d = emit_dst_reg(rd, REG_T8);
@@ -376,6 +376,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             EMIT_SW(REG_T8, CPU_LO, REG_S0);
             break;
         case 0x18: /* MULT */
+            mem_host_base_psx = -1;
             emit_load_psx_reg(REG_T8, rs);
             emit_load_psx_reg(REG_T9, rt);
             if (((*mult_count)++ & 1) == 0)
@@ -396,6 +397,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             reg_cache_invalidate();
             break;
         case 0x19: /* MULTU */
+            mem_host_base_psx = -1;
             emit_load_psx_reg(REG_T8, rs);
             emit_load_psx_reg(REG_T9, rt);
             if (((*mult_count)++ & 1) == 0)
@@ -417,6 +419,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         case 0x1A: /* DIV — branchless with MOVZ div-by-zero fixup */
         {
+            mem_host_base_psx = -1;
             int s1 = emit_use_reg(rs, REG_T8); /* s1 = EE reg holding rs */
             int s2 = emit_use_reg(rt, REG_T9); /* s2 = EE reg holding rt (divisor) */
             emit(MK_R(0, s1, s2, 0, 0, 0x1A)); /* div s1, s2 */
@@ -451,6 +454,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         }
         case 0x1B: /* DIVU — branchless with MOVZ div-by-zero fixup */
         {
+            mem_host_base_psx = -1;
             int s1 = emit_use_reg(rs, REG_T8);    /* s1 = EE reg holding rs */
             int s2 = emit_use_reg(rt, REG_T9);    /* s2 = EE reg holding rt (divisor) */
             emit(MK_R(0, s1, s2, 0, 0, 0x1B));    /* divu s1, s2 */
@@ -491,6 +495,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
+            mem_host_base_psx = -1;
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
 
@@ -576,6 +581,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                     src_aligned = 1;
             }
             mark_vreg_var(rd);
+            mem_host_base_psx = -1;
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
             int d = emit_dst_reg(rd, REG_T8);
@@ -604,6 +610,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
+            mem_host_base_psx = -1;
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
 
@@ -661,6 +668,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             /* Alignment: both aligned → result aligned */
             int src_aligned = (align_is_known(rs) && align_is_known(rt));
             mark_vreg_var(rd);
+            mem_host_base_psx = -1;
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
             int d = emit_dst_reg(rd, REG_T8);
@@ -680,6 +688,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
+            mem_host_base_psx = -1;
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
             int d = emit_dst_reg(rd, REG_T8);
@@ -698,6 +707,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             int src_ram = (rt == 0 && smrv_is_known_ram(rs)) ||
                           (rs == 0 && smrv_is_known_ram(rt));
             mark_vreg_var(rd);
+            mem_host_base_psx = -1;
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
             int d = emit_dst_reg(rd, REG_T8);
@@ -715,6 +725,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
+            mem_host_base_psx = -1;
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
             int d = emit_dst_reg(rd, REG_T8);
@@ -730,6 +741,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
+            mem_host_base_psx = -1;
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
             int d = emit_dst_reg(rd, REG_T8);
@@ -745,6 +757,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
+            mem_host_base_psx = -1;
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
             int d = emit_dst_reg(rd, REG_T8);
@@ -760,6 +773,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             mark_vreg_var(rd);
+            mem_host_base_psx = -1;
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
             int d = emit_dst_reg(rd, REG_T8);
@@ -795,6 +809,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         int rs_ram = smrv_is_known_ram(rs);
         int rs_aligned = align_is_known(rs);
         mark_vreg_var(rt);
+        mem_host_base_psx = -1;
         int s1 = emit_use_reg(rs, REG_T8);
 
         /* Flush pinned/dynamic rt so cold path can restore from cpu.regs[] */
@@ -975,6 +990,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         {
             /* RFE */
             reg_cache_invalidate();
+            mem_host_base_psx = -1;
             EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
             EMIT_MOVE(REG_T9, REG_T8);
             emit(MK_R(0, 0, REG_T9, REG_T9, 2, 0x02));
@@ -1006,6 +1022,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         if (!block_cu2_hoisted)
             emit_cu_check(2, psx_pc);
 
+        mem_host_base_psx = -1;
         emit_gte_instruction(opcode, psx_pc);
         break;
     }
@@ -1187,6 +1204,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 
         /* Memory write: data in V0, addr from base+offset.
          * Use cold_queue for slow path (P7: deferred to block end). */
+        mem_host_base_psx = -1;
         EMIT_MOVE(REG_T9, REG_V0); /* T9 = data (cold path protocol) */
         emit_load_psx_reg(REG_T8, rs);
         EMIT_ADDIU(REG_T8, REG_T8, imm); /* T8 = effective addr */

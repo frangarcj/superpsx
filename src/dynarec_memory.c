@@ -503,6 +503,8 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
 
     if (is_const)
     {
+        /* Const-address path uses T9 as scratch — invalidate host-base cache */
+        mem_host_base_psx = -1;
         uint32_t phys = const_addr & 0x1FFFFFFF;
         /* Aligned RAM access? */
         if ((phys < PSX_RAM_SIZE) && (phys % size == 0))
@@ -671,7 +673,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     {
         reg_cache_invalidate();
         /* Host-base cache: reuse T9 from previous same-base access */
-        if (mem_host_base_snapshot != rs_psx)
+        if (mem_host_base_psx != rs_psx)
         {
             int base = emit_use_reg(rs_psx, REG_T8);
             emit(MK_R(0, base, REG_S3, REG_T9, 0, 0x24));  /* and t9, base, s3 (phys) */
@@ -703,6 +705,8 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     }
 
     /* Compute effective address into REG_T8 */
+    /* Generic path uses T9 as scratch — invalidate host-base cache */
+    mem_host_base_psx = -1;
     /* H1: Get base from slot/pinned directly to skip MOVE */
     {
         int base = emit_use_reg(rs_psx, REG_T8);
@@ -850,6 +854,8 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
 
     if (is_const)
     {
+        /* Const-address path uses T9 as scratch — invalidate host-base cache */
+        mem_host_base_psx = -1;
         uint32_t phys = const_addr & 0x1FFFFFFF;
         /* Aligned RAM access?
          *
@@ -1059,7 +1065,7 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         /* Load data register first to check if it clobbers T9 */
         int src = emit_use_reg(rt_psx, REG_T9);
         /* Host-base cache: reuse T9 from previous same-base access */
-        int cache_hit = (mem_host_base_snapshot == rs_psx && src != REG_T9);
+        int cache_hit = (mem_host_base_psx == rs_psx && src != REG_T9);
 
         if (cache_hit)
         {
@@ -1126,6 +1132,8 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     }
 
     /* Compute effective address into REG_T8, data into REG_T9 */
+    /* Generic path uses T9 as scratch — invalidate host-base cache */
+    mem_host_base_psx = -1;
     /* H1: Get base from slot/pinned directly to skip MOVE */
     {
         int base = emit_use_reg(rs_psx, REG_T8);
@@ -1330,6 +1338,7 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
 void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int use_load_delay)
 {
     reg_cache_invalidate();
+    mem_host_base_psx = -1;
     /* Load current rt value (merge target) */
     if (use_load_delay)
         EMIT_LW(REG_V0, CPU_LOAD_DELAY_VAL, REG_S0);
@@ -1399,6 +1408,7 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
 void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
 {
     reg_cache_invalidate();
+    mem_host_base_psx = -1;
     /* Compute effective address into T8, data into T9 */
     emit_load_psx_reg(REG_T8, rs_psx);
     EMIT_ADDIU(REG_T8, REG_T8, offset);

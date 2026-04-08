@@ -46,9 +46,8 @@ uint32_t align_known_mask;
 int t8_cached_psx_reg = -1;
 int t9_cached_psx_reg = -1;
 
-/* Host-base address cache variables (see dynarec.h) */
+/* Host-base address cache variable (see dynarec.h) */
 int mem_host_base_psx = -1;
-int mem_host_base_snapshot = -1;
 
 void reg_cache_invalidate(void)
 {
@@ -617,6 +616,7 @@ void emit_call_c(uint32_t func_addr)
     EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0); /* delay slot (P9) */
     dyn_reload_slots();
     reg_cache_invalidate();
+    mem_host_base_psx = -1;
     smrv_known_ram = (1u << 29);
     align_known_mask = ALIGN_PINNED_MASK;
 }
@@ -638,6 +638,7 @@ void emit_call_c_lite(uint32_t func_addr)
     /* T0-T7 (dynamic slots) preserved by lite trampoline save/restore.
      * Pinned regs (S4-S7) preserved by C ABI. */
     reg_cache_invalidate();
+    mem_host_base_psx = -1;
 }
 
 /*
@@ -715,6 +716,8 @@ void mark_vreg_const(int r, uint32_t val)
 {
     if (r == 0)
         return;
+    if (mem_host_base_psx == r)
+        mem_host_base_psx = -1;
     vregs[r].is_const = 1;
     vregs[r].value = val;
     vregs[r].is_dirty = 0;
@@ -727,6 +730,8 @@ void mark_vreg_const_lazy(int r, uint32_t val)
 {
     if (r == 0)
         return;
+    if (mem_host_base_psx == r)
+        mem_host_base_psx = -1;
     vregs[r].is_const = 1;
     vregs[r].value = val;
     vregs[r].is_dirty = 1;
@@ -747,6 +752,10 @@ void mark_vreg_var(int r)
 {
     if (r == 0)
         return;
+    /* Host-base cache: if r is the cached base register, the value is
+     * about to change — invalidate so stale T9 isn't reused. */
+    if (mem_host_base_psx == r)
+        mem_host_base_psx = -1;
     /* SMRV: clear by default; callers that preserve RAM-ness
      * (e.g., ADDIU from known-RAM base) re-set it after this call. */
     smrv_known_ram &= ~(1u << r);
