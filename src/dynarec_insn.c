@@ -266,6 +266,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 
     emit_current_psx_pc = psx_pc;
 
+    /* Host-base cache: snapshot the current cache state for memory emitters,
+     * then pessimistically invalidate.  Memory functions will re-set it. */
+    mem_host_base_snapshot = mem_host_base_psx;
+    mem_host_base_psx = -1;
+
     if (opcode == 0)
         return 0; /* NOP */
 

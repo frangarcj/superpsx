@@ -1135,6 +1135,7 @@ uint32_t *compile_block(uint32_t psx_pc)
     deferred_taken_count = 0;
     block_lite_calls = 0;
     block_full_calls = 0;
+    mem_host_base_psx = -1; /* reset host-base cache for new block */
 
     if (blocks_compiled < 20)
     {
@@ -1665,6 +1666,7 @@ uint32_t *compile_block(uint32_t psx_pc)
             if (op == 0x04 || op == 0x05)
             {
                 emit_load_psx_reg(REG_T9, rt);
+                mem_host_base_psx = -1; /* T9 clobbered by branch condition */
                 emit(MK_R(0, REG_T8, REG_T9, REG_AT, 0, 0x26)); /* XOR at, t8, t9 */
                 if (op == 0x04)
                 {

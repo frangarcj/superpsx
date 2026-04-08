@@ -662,15 +662,13 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         align_is_known(rs_psx) && (offset % size == 0) && !psx_tlb_base)
     {
         reg_cache_invalidate();
-        /* Get base register — use pinned reg directly to avoid MOVE */
-        int base = psx_pinned_reg[rs_psx];
-        if (!base)
+        /* Host-base cache: reuse T9 from previous same-base access */
+        if (mem_host_base_snapshot != rs_psx)
         {
-            emit_load_psx_reg(REG_T8, rs_psx);
-            base = REG_T8;
+            int base = emit_use_reg(rs_psx, REG_T8);
+            emit(MK_R(0, base, REG_S3, REG_T9, 0, 0x24));  /* and t9, base, s3 (phys) */
+            EMIT_ADDU(REG_T9, REG_T9, REG_S1);               /* addu t9, t9, s1 (host) */
         }
-        emit(MK_R(0, base, REG_S3, REG_T9, 0, 0x24));  /* and t9, base, s3 (phys) */
-        EMIT_ADDU(REG_T9, REG_T9, REG_S1);               /* addu t9, t9, s1 (host) */
         /* H1: Load directly into destination slot/pinned reg to skip MOVE */
         int dst = dynarec_load_defer ? REG_V0 : emit_dst_reg(rt_psx, REG_V0);
         if (size == 4)
@@ -691,6 +689,8 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         }
         if (!dynarec_load_defer)
             emit_store_psx_reg(rt_psx, dst);
+        /* Cache T9 for next same-base access (invalidate if dest == base) */
+        mem_host_base_psx = (rs_psx != rt_psx) ? rs_psx : -1;
         return;
     }
 
@@ -1038,30 +1038,71 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     if (pure_ram_store && !psx_tlb_base)
     {
         reg_cache_invalidate();
-        /* H1: Get base and data directly from slot/pinned regs when possible */
-        int base = emit_use_reg(rs_psx, REG_T8);
+        /* Load data register first to check if it clobbers T9 */
         int src = emit_use_reg(rt_psx, REG_T9);
+        /* Host-base cache: reuse T9 from previous same-base access */
+        int cache_hit = (mem_host_base_snapshot == rs_psx && src != REG_T9);
 
-        uint32_t *isc_skip = NULL;
-        if (!block_isc_skip)
+        if (cache_hit)
         {
-            EMIT_LW(REG_AT, 80, REG_SP); /* at = cached ISC     */
-            isc_skip = code_ptr;
-            emit(MK_I(0x05, REG_AT, REG_ZERO, 0));          /* bne at,zero,@skip   */
+            /* T9 holds valid host base — emit store directly */
+            if (!block_isc_skip)
+            {
+                EMIT_LW(REG_AT, 80, REG_SP);
+                emit(MK_I(0x14, REG_AT, REG_ZERO, 1)); /* beql at,zero,+1 */
+            }
+            if (size == 4)
+                EMIT_SW(src, offset, REG_T9);
+            else if (size == 2)
+                EMIT_SH(src, offset, REG_T9);
+            else
+                EMIT_SB(src, offset, REG_T9);
+            mem_host_base_psx = rs_psx; /* cache persists */
         }
-        emit(MK_R(0, base, REG_S3, REG_AT, 0, 0x24));   /* and at,base,s3 */
-        EMIT_ADDU(REG_AT, REG_AT, REG_S1); /* addu at, at, s1     */
-        if (size == 4)
-            EMIT_SW(src, offset, REG_AT);
-        else if (size == 2)
-            EMIT_SH(src, offset, REG_AT);
-        else
-            EMIT_SB(src, offset, REG_AT);
-
-        if (isc_skip)
+        else if (src != REG_T9)
         {
-            int32_t skip_off = (int32_t)(code_ptr - isc_skip - 1);
-            *isc_skip = (*isc_skip & 0xFFFF0000) | ((uint32_t)skip_off & 0xFFFF);
+            /* Cache miss, T9 free — compute host base in T9 and set cache */
+            int base = emit_use_reg(rs_psx, REG_T8);
+            emit(MK_R(0, base, REG_S3, REG_T9, 0, 0x24)); /* and t9,base,s3 */
+            EMIT_ADDU(REG_T9, REG_T9, REG_S1);
+            if (!block_isc_skip)
+            {
+                EMIT_LW(REG_AT, 80, REG_SP);
+                emit(MK_I(0x14, REG_AT, REG_ZERO, 1)); /* beql at,zero,+1 */
+            }
+            if (size == 4)
+                EMIT_SW(src, offset, REG_T9);
+            else if (size == 2)
+                EMIT_SH(src, offset, REG_T9);
+            else
+                EMIT_SB(src, offset, REG_T9);
+            mem_host_base_psx = rs_psx; /* cache set */
+        }
+        else
+        {
+            /* T9 holds data value — use AT for host base, can't cache */
+            int base = emit_use_reg(rs_psx, REG_T8);
+            uint32_t *isc_skip = NULL;
+            if (!block_isc_skip)
+            {
+                EMIT_LW(REG_AT, 80, REG_SP);
+                isc_skip = code_ptr;
+                emit(MK_I(0x05, REG_AT, REG_ZERO, 0)); /* bne at,zero,@skip */
+            }
+            emit(MK_R(0, base, REG_S3, REG_AT, 0, 0x24)); /* and at,base,s3 */
+            EMIT_ADDU(REG_AT, REG_AT, REG_S1);
+            if (size == 4)
+                EMIT_SW(REG_T9, offset, REG_AT);
+            else if (size == 2)
+                EMIT_SH(REG_T9, offset, REG_AT);
+            else
+                EMIT_SB(REG_T9, offset, REG_AT);
+            if (isc_skip)
+            {
+                int32_t skip_off = (int32_t)(code_ptr - isc_skip - 1);
+                *isc_skip = (*isc_skip & 0xFFFF0000) | ((uint32_t)skip_off & 0xFFFF);
+            }
+            mem_host_base_psx = -1; /* can't cache */
         }
         return;
     }

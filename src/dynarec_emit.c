@@ -46,6 +46,10 @@ uint32_t align_known_mask;
 int t8_cached_psx_reg = -1;
 int t9_cached_psx_reg = -1;
 
+/* Host-base address cache variables (see dynarec.h) */
+int mem_host_base_psx = -1;
+int mem_host_base_snapshot = -1;
+
 void reg_cache_invalidate(void)
 {
     t8_cached_psx_reg = -1;

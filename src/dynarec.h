@@ -575,6 +575,15 @@ extern int t8_cached_psx_reg;
 extern int t9_cached_psx_reg;
 void reg_cache_invalidate(void);
 
+/* Host-base address cache: T9 = (psx_reg & 0x1FFFFFFF) + psx_ram.
+ * Set by SMRV+aligned memory paths after AND+ADDU.  Consecutive
+ * same-base accesses skip the 2-word recomputation.
+ * mem_host_base_psx: PSX reg cached (-1 = invalid).
+ * mem_host_base_snapshot: saved at emit_instruction entry for use
+ * by memory emitters before the global is cleared. */
+extern int mem_host_base_psx;
+extern int mem_host_base_snapshot;
+
 /* Invalidate scratch cache if PSX register r is cached in T8 or T9 */
 #define SCRATCH_INVALIDATE_PSX(r) do { \
     if (t8_cached_psx_reg == (r)) t8_cached_psx_reg = -1; \
