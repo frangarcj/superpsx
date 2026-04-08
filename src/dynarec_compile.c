@@ -873,8 +873,9 @@ void emit_block_epilogue(void)
     EMIT_LW(REG_S1, 36, REG_SP);
     EMIT_LW(REG_S0, 40, REG_SP);
     EMIT_LW(REG_RA, 44, REG_SP);
+    EMIT_ADDIU(REG_SP, REG_SP, 96);
     EMIT_JR(REG_RA);
-    EMIT_ADDIU(REG_SP, REG_SP, 96); /* delay slot: restore SP (M5) */
+    EMIT_NOP();
 }
 
 void emit_branch_epilogue(uint32_t target_pc)
@@ -1118,8 +1119,10 @@ uint32_t *compile_block(uint32_t psx_pc)
         /* Clear hash table — all native pointers are now stale */
         for (int i = 0; i < JIT_HT_SIZE; i++)
         {
-            jit_ht[i].psx_pc = 0xFFFFFFFF;
-            jit_ht[i].native = NULL;
+            jit_ht[i].psx_pc[0] = 0xFFFFFFFF;
+            jit_ht[i].psx_pc[1] = 0xFFFFFFFF;
+            jit_ht[i].native[0] = NULL;
+            jit_ht[i].native[1] = NULL;
         }
         micro_cache_flush();
         /* Full flush deferred: batch with next compile's flush */
@@ -1905,91 +1908,10 @@ uint32_t *compile_block(uint32_t psx_pc)
     if (psx_tlb_base)
         tlb_patch_emit_all();
 
-    /* M5: Post-compilation delay slot filler pass.
-     * Scans for {insn, branch/jump, NOP} triples and moves the preceding
-     * instruction into the NOP delay slot when safe (no register conflict). */
-    {
-        uint32_t *p = block_start + 1; /* start at [1] so p[-1] is valid */
-        uint32_t *end = code_ptr - 2;
-        for (; p < end; p++)
-        {
-            /* Check if p[1] is a branch/jump and p[2] is NOP */
-            if (p[2] != 0)
-                continue;
-            uint32_t br = p[1];
-            int op = (br >> 26) & 0x3F;
-            int func = (op == 0) ? (br & 0x3F) : 0;
-
-            /* Identify branch/jump and its register reads */
-            int is_br = 0, rs_br = -1, rt_br = -1;
-            if (op == 0x02 || op == 0x03)       /* J, JAL */
-                is_br = 1;
-            else if (op >= 0x04 && op <= 0x07)  /* BEQ, BNE, BLEZ, BGTZ */
-            {
-                is_br = 1;
-                rs_br = (br >> 21) & 0x1F;
-                if (op <= 0x05) rt_br = (br >> 16) & 0x1F;
-            }
-            else if (op == 0x01)                /* BLTZ, BGEZ, etc */
-            {
-                is_br = 1;
-                rs_br = (br >> 21) & 0x1F;
-            }
-            else if (op == 0 && (func == 0x08 || func == 0x09)) /* JR, JALR */
-            {
-                is_br = 1;
-                rs_br = (br >> 21) & 0x1F;
-            }
-            if (!is_br)
-                continue;
-
-            /* Candidate instruction to move: p[0] */
-            uint32_t cand = p[0];
-            if (cand == 0) /* already NOP */
-                continue;
-
-            /* Don't move if candidate is itself in a delay slot */
-            {
-                uint32_t prev = p[-1];
-                int prev_op = (prev >> 26) & 0x3F;
-                int prev_func = (prev_op == 0) ? (prev & 0x3F) : 0;
-                if (prev_op == 0x02 || prev_op == 0x03 ||
-                    (prev_op >= 0x04 && prev_op <= 0x07) || prev_op == 0x01 ||
-                    (prev_op == 0 && (prev_func == 0x08 || prev_func == 0x09)))
-                    continue;
-            }
-
-            /* Don't move branches/jumps or syscall/break */
-            int cand_op = (cand >> 26) & 0x3F;
-            int cand_func = (cand_op == 0) ? (cand & 0x3F) : 0;
-            if (cand_op == 0x02 || cand_op == 0x03 ||
-                (cand_op >= 0x04 && cand_op <= 0x07) || cand_op == 0x01 ||
-                (cand_op == 0 && (cand_func == 0x08 || cand_func == 0x09 ||
-                                   cand_func == 0x0C || cand_func == 0x0D)))
-                continue;
-
-            /* Don't move loads (some targets have load delay hazards) */
-            if (cand_op >= 0x20 && cand_op <= 0x27)
-                continue;
-
-            /* Get destination register of candidate */
-            int cand_dest = -1;
-            if (cand_op == 0)                           /* R-type: rd */
-                cand_dest = (cand >> 11) & 0x1F;
-            else if (cand_op == 0x0F)                   /* LUI: rt */
-                cand_dest = (cand >> 16) & 0x1F;
-            else if (cand_op >= 0x08 && cand_op <= 0x0F) /* I-type ALU: rt */
-                cand_dest = (cand >> 16) & 0x1F;
-
-            /* Check: candidate must not write a register the branch reads */
-            if (cand_dest >= 0 && (cand_dest == rs_br || cand_dest == rt_br))
-                continue;
-
-            /* Safe: swap candidate into delay slot */
-            p[0] = 0;    /* NOP where candidate was */
-            p[2] = cand; /* candidate in delay slot */
-        }
-    }
+    /* M5: Post-compilation delay slot filler pass — REMOVED.
+     * Caused rendering glitches (Naughty Dog logo in Crash Bandicoot).
+     * The pass moved native instructions into delay slots but lacked
+     * sufficient safety checks for all JIT-generated patterns. */
 
     /* Cache flush done in run_jit_chain after apply_pending_patches. */
 

@@ -260,8 +260,10 @@ void pg_reset_jit_cache(void)
     /* Clear hash table */
     for (int i = 0; i < JIT_HT_SIZE; i++)
     {
-        jit_ht[i].psx_pc = 0xFFFFFFFF;
-        jit_ht[i].native = NULL;
+        jit_ht[i].psx_pc[0] = 0xFFFFFFFF;
+        jit_ht[i].psx_pc[1] = 0xFFFFFFFF;
+        jit_ht[i].native[0] = NULL;
+        jit_ht[i].native[1] = NULL;
     }
     micro_cache_flush();
 

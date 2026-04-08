@@ -320,8 +320,10 @@ void Init_Dynarec(void)
     /* Clear hash table — set all entries to unmatchable */
     for (int i = 0; i < JIT_HT_SIZE; i++)
     {
-        jit_ht[i].psx_pc = 0xFFFFFFFF;
-        jit_ht[i].native = NULL;
+        jit_ht[i].psx_pc[0] = 0xFFFFFFFF;
+        jit_ht[i].psx_pc[1] = 0xFFFFFFFF;
+        jit_ht[i].native[0] = NULL;
+        jit_ht[i].native[1] = NULL;
     }
     micro_cache_flush();
 
@@ -430,7 +432,7 @@ void Init_Dynarec(void)
     /* ---- Jump dispatch trampoline at code_buffer[96] ----
      * Fast inline dispatch for JR/JALR.  Instead of returning to C,
      * do an inline hash table lookup and jump directly to the target
-     * block if found.  Direct-mapped 8192-entry table, ~11 instr.
+     * block if found.  Reduces dispatch overhead from ~50 to ~14 instr.
      *
      * Entry conditions (set by JR/JALR emission code):
      *   T8 = target PSX PC (already stored in cpu.pc)
@@ -447,42 +449,53 @@ void Init_Dynarec(void)
         /* 1. If cycles <= 0, abort to C scheduler */
         *p++ = MK_I(0x07, REG_S2, REG_ZERO, 0); /* bgtz s2, +0 (patched below) */
         uint32_t *cyc_branch = p - 1;
-        *p++ = MK_R(0, 0, REG_T8, REG_T9, 2, 0x02);           /* (delay) srl t9, t8, 2 (P9) */
-        *p++ = MK_J(2, (uint32_t)abort_trampoline_addr >> 2);  /* j abort */
-        *p++ = 0;                                               /* delay: nop */
+        *p++ = MK_R(0, 0, REG_T8, REG_T9, 12, 0x02);          /* (delay) srl t9, t8, 12 (P9) */
+        *p++ = MK_J(2, (uint32_t)abort_trampoline_addr >> 2); /* j abort */
+        *p++ = 0;                                             /* delay: nop */
 
         /* Patch the bgtz to skip the abort (target = here) */
         uint32_t *cyc_ok = p;
         int32_t cyc_off = (int32_t)(cyc_ok - cyc_branch - 1);
         *cyc_branch = (*cyc_branch & 0xFFFF0000) | ((uint32_t)cyc_off & 0xFFFF);
 
-        /* 2. Hash: t9 = (t8 >> 2) & JIT_HT_MASK
+        /* 2. Compute hash: t9 = ((t8 >> 12) ^ t8) & JIT_HT_MASK
          *    SRL already done in BGTZ delay slot above (P9) */
+        *p++ = MK_R(0, REG_T9, REG_T8, REG_T9, 0, 0x26); /* xor  t9, t9, t8 */
         *p++ = MK_I(0x0C, REG_T9, REG_T9, JIT_HT_MASK);  /* andi t9, t9, MASK */
 
-        /* 3. Scale to byte offset: t9 <<= 3 (sizeof(JitHTEntry) = 8, direct-mapped) */
-        *p++ = MK_R(0, 0, REG_T9, REG_T9, 3, 0x00); /* sll  t9, t9, 3 */
+        /* 3. Scale to byte offset: t9 <<= 4 (sizeof(JitHTEntry) = 16, 2-way) */
+        *p++ = MK_R(0, 0, REG_T9, REG_T9, 4, 0x00); /* sll  t9, t9, 4 */
 
-        /* 4. Index into table: t9 = &jit_ht[hash]
+        /* 4-5. Index into table: t9 = &jit_ht[hash]
          *       FP already holds &jit_ht (P5: loaded in prologue) */
         *p++ = MK_R(0, REG_T9, REG_FP, REG_T9, 0, 0x21); /* addu t9, t9, fp */
 
-        /* 5. Check single entry: at = psx_pc, compare with t8 */
-        *p++ = MK_I(0x23, REG_T9, REG_AT, 0); /* lw at, 0(t9) = psx_pc */
+        /* 6. Check slot 0: at = psx_pc[0], compare with t8 */
+        *p++ = MK_I(0x23, REG_T9, REG_AT, 0); /* lw at, 0(t9) = psx_pc[0] */
+        *p++ = MK_I(0x04, REG_AT, REG_T8, 0); /* beq at, t8, @hit (patched) */
+        uint32_t *hit0_branch = p - 1;
+        *p++ = MK_I(0x23, REG_T9, REG_AT, 8); /* (delay) lw at, 8(t9) = native[0] */
+
+        /* 7. Slot 0 miss — check slot 1 */
+        *p++ = MK_I(0x23, REG_T9, REG_AT, 4); /* lw at, 4(t9) = psx_pc[1] */
         *p++ = MK_I(0x05, REG_AT, REG_T8, 0); /* bne at, t8, @miss (patched) */
         uint32_t *miss_branch = p - 1;
-        *p++ = MK_I(0x23, REG_T9, REG_AT, 4); /* (delay) lw at, 4(t9) = native */
+        *p++ = MK_I(0x23, REG_T9, REG_AT, 12); /* (delay) lw at, 12(t9) = native[1] */
 
-        /* 6. @hit: jump to native block */
+        /* 8. @hit: jump to native block — at has native[0] or native[1] */
+        uint32_t *hit_target = p;
+        int32_t hit0_off = (int32_t)(hit_target - hit0_branch - 1);
+        *hit0_branch = (*hit0_branch & 0xFFFF0000) | ((uint32_t)hit0_off & 0xFFFF);
+
         *p++ = MK_R(0, REG_AT, 0, 0, 0, 0x08); /* jr at */
-        *p++ = 0;                                /* delay: nop */
+        *p++ = 0;                              /* delay: nop */
 
-        /* 7. @miss: fall through to abort trampoline */
+        /* 9. @miss: fall through to abort trampoline */
         uint32_t *miss_target = p;
         int32_t miss_off = (int32_t)(miss_target - miss_branch - 1);
         *miss_branch = (*miss_branch & 0xFFFF0000) | ((uint32_t)miss_off & 0xFFFF);
         *p++ = MK_J(2, (uint32_t)abort_trampoline_addr >> 2); /* j abort */
-        *p++ = 0;                                             /* delay: nop */
+        *p++ = 0;                                              /* delay: nop */
     }
 
     /* ---- Memory slow-path trampoline at code_buffer[128] ----
@@ -867,7 +880,7 @@ uint32_t *dynarec_ensure_block(uint32_t pc, BlockEntry **out_be)
         {
             /* Ensure HT is populated for JR/JALR dispatch */
             uint32_t h = jit_ht_hash(pc);
-            if (jit_ht[h].psx_pc != pc)
+            if (jit_ht[h].psx_pc[0] != pc)
                 jit_ht_add(pc, be->native);
             if (out_be) *out_be = be;
             return be->native;
@@ -881,7 +894,7 @@ uint32_t *dynarec_ensure_block(uint32_t pc, BlockEntry **out_be)
     if (block)
     {
         uint32_t h = jit_ht_hash(pc);
-        if (jit_ht[h].psx_pc != pc)
+        if (jit_ht[h].psx_pc[0] != pc)
             jit_ht_add(pc, block);
     }
 
@@ -982,7 +995,10 @@ int run_jit_chain(uint64_t deadline)
             {
                 for (int i = 0; i < JIT_HT_SIZE; i++)
                 {
-                    jit_ht[i].psx_pc = 0xFFFFFFFF;
+                    jit_ht[i].psx_pc[0] = 0xFFFFFFFF;
+                    jit_ht[i].psx_pc[1] = 0xFFFFFFFF;
+                    jit_ht[i].native[0] = NULL;
+                    jit_ht[i].native[1] = NULL;
                 }
                 micro_cache_flush();
                 smc_ht_flushed_epoch = smc_page_epoch;
