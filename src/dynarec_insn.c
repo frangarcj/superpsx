@@ -545,12 +545,36 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 mark_vreg_const_lazy(rd, get_vreg_const(rs) + get_vreg_const(rt));
                 break;
             }
-            /* SMRV: ADDU rd, rs, $0 (MOVE) or ADDU rd, $0, rt propagates RAM-ness */
+            /* SMRV: ADDU rd, rs, $0 (MOVE) or ADDU rd, $0, rt propagates RAM-ness.
+             * Enhanced: ADDU where one operand is SMRV and other is a small
+             * known constant (±32KB) — same tolerance as ADDIU propagation. */
             int src_ram = (rt == 0 && smrv_is_known_ram(rs)) ||
                           (rs == 0 && smrv_is_known_ram(rt));
-            /* Alignment: MOVE propagates alignment */
+            if (!src_ram)
+            {
+                if (smrv_is_known_ram(rs) && is_vreg_const(rt))
+                {
+                    int32_t v = (int32_t)get_vreg_const(rt);
+                    if (v >= -0x8000 && v <= 0x7FFF) src_ram = 1;
+                }
+                if (!src_ram && smrv_is_known_ram(rt) && is_vreg_const(rs))
+                {
+                    int32_t v = (int32_t)get_vreg_const(rs);
+                    if (v >= -0x8000 && v <= 0x7FFF) src_ram = 1;
+                }
+            }
+            /* Alignment: MOVE propagates, both aligned propagates,
+             * or aligned + aligned-const propagates. */
             int src_aligned = (rt == 0 && align_is_known(rs)) ||
-                              (rs == 0 && align_is_known(rt));
+                              (rs == 0 && align_is_known(rt)) ||
+                              (align_is_known(rs) && align_is_known(rt));
+            if (!src_aligned)
+            {
+                if (align_is_known(rs) && is_vreg_const(rt) && (get_vreg_const(rt) & 3) == 0)
+                    src_aligned = 1;
+                else if (align_is_known(rt) && is_vreg_const(rs) && (get_vreg_const(rs) & 3) == 0)
+                    src_aligned = 1;
+            }
             mark_vreg_var(rd);
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
@@ -627,12 +651,25 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 mark_vreg_const_lazy(rd, get_vreg_const(rs) - get_vreg_const(rt));
                 break;
             }
+            /* SMRV: SUBU rd, ram_base, small_const → still in RAM */
+            int src_ram = 0;
+            if (smrv_is_known_ram(rs) && is_vreg_const(rt))
+            {
+                int32_t v = (int32_t)get_vreg_const(rt);
+                if (v >= -0x8000 && v <= 0x7FFF) src_ram = 1;
+            }
+            /* Alignment: both aligned → result aligned */
+            int src_aligned = (align_is_known(rs) && align_is_known(rt));
             mark_vreg_var(rd);
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
             int d = emit_dst_reg(rd, REG_T8);
             emit(MK_R(0, s1, s2, d, 0, 0x23));
             emit_sync_reg(rd, d);
+            if (src_ram)
+                smrv_set_ram(rd);
+            if (src_aligned)
+                align_set(rd);
             break;
         }
         case 0x24: /* AND */
